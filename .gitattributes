@@ -1,0 +1,22 @@
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.wasm binary
+*.tflite binary
+*.zip binary
+*.tgz binary
+*.jar binary
+*.so binary
+*.dll binary
+*.exe binary
+*.apk binary
+*.aab binary
+*.hap binary

@@ -1,0 +1,80 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.p12
+*.p7b
+*.cer
+*.keystore
+*.jks
+key.properties
+
+# Local SDKs, caches and temporary downloads
+.cache/
+.toolchains/
+.tmp/
+.pub-cache/
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+*.swp
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs, test output and generated artifacts
+**/*.log
+**/coverage/
+**/build/
+*.apk
+*.aab
+*.hap
+*.app
+*.msix
+*.symbols
+*.map.json
+
+# Flutter and Dart
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+**/.pub/
+**/.build/
+**/.buildlog/
+**/doc/api/
+
+# Android
+**/.gradle/
+**/local.properties
+**/captures/
+**/.cxx/
+
+# HarmonyOS / DevEco Studio
+**/node_modules/
+**/oh_modules/
+**/.hvigor/
+**/.preview/
+**/.test/
+**/BuildProfile.ets
+**/GeneratedPluginRegistrant.ets
+**/flutter/ephemeral/
+**/src/main/resources/rawfile/flutter_assets/
+**/libs/**/libapp.so
+**/libs/**/libflutter.so
+**/libs/**/libvmservice_snapshot.so
+
+# DevEco Studio writes local signing paths and passwords here.
+apps/poker_client/ohos/build-profile.json5
+
+# Go local binaries and profiles
+services/game_server/game_server.exe
+services/game_server/*.test
+services/game_server/*.prof

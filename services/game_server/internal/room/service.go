@@ -1,0 +1,273 @@
+package room
+
+import (
+	"context"
+	cryptorand "crypto/rand"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"io"
+	"math/big"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"texas/services/game_server/internal/security"
+)
+
+type ServiceConfig struct {
+	Now    func() time.Time
+	Random io.Reader
+}
+
+type Service struct {
+	mu         sync.Mutex
+	repository Repository
+	passwords  *security.PasswordHasher
+	config     ServiceConfig
+}
+
+func NewService(repository Repository, passwords *security.PasswordHasher, config ServiceConfig) (*Service, error) {
+	if repository == nil || passwords == nil {
+		return nil, errors.New("invalid room service configuration")
+	}
+	if config.Now == nil {
+		config.Now = time.Now
+	}
+	if config.Random == nil {
+		config.Random = cryptorand.Reader
+	}
+	return &Service{repository: repository, passwords: passwords, config: config}, nil
+}
+
+func (service *Service) Create(
+	ctx context.Context,
+	owner Participant,
+	preset Preset,
+	maxPlayers int,
+	password string,
+) (Room, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if !validParticipant(owner) || maxPlayers < 2 || maxPlayers > 10 {
+		return Room{}, Error{Code: "invalid_room"}
+	}
+	if _, err := service.repository.ByUser(ctx, owner.UserID); err == nil {
+		return Room{}, Error{Code: "already_in_room"}
+	} else if !errors.Is(err, ErrNotFound) {
+		return Room{}, err
+	}
+	rules, ok := rulesForPreset(preset)
+	if !ok {
+		return Room{}, Error{Code: "invalid_room"}
+	}
+	passwordHash := ""
+	password = strings.TrimSpace(password)
+	if password != "" {
+		if len(password) < 4 || len(password) > 32 {
+			return Room{}, Error{Code: "invalid_room_password"}
+		}
+		var err error
+		passwordHash, err = service.passwords.Hash("room:" + password)
+		if err != nil {
+			return Room{}, err
+		}
+	}
+
+	for attempt := 0; attempt < 10; attempt++ {
+		roomID, err := service.randomID("table_", 9)
+		if err != nil {
+			return Room{}, err
+		}
+		code, err := service.randomCode()
+		if err != nil {
+			return Room{}, err
+		}
+		now := service.config.Now()
+		value := Room{
+			RoomID:       roomID,
+			Code:         code,
+			OwnerUserID:  owner.UserID,
+			Preset:       preset,
+			Rules:        rules,
+			MaxPlayers:   maxPlayers,
+			Revision:     1,
+			CreatedAt:    now,
+			PasswordHash: passwordHash,
+			Members: []Member{{
+				UserID: owner.UserID, DisplayName: owner.DisplayName, Seat: 1, JoinedAt: now,
+			}},
+		}
+		if err := service.repository.Create(ctx, value); err == nil {
+			return publicRoom(value), nil
+		}
+	}
+	return Room{}, errors.New("could not allocate unique room identifiers")
+}
+
+func (service *Service) Join(
+	ctx context.Context,
+	participant Participant,
+	code string,
+	password string,
+) (Room, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if !validParticipant(participant) {
+		return Room{}, Error{Code: "invalid_profile"}
+	}
+	if current, err := service.repository.ByUser(ctx, participant.UserID); err == nil {
+		if current.Code == strings.TrimSpace(code) {
+			return publicRoom(current), nil
+		}
+		return Room{}, Error{Code: "already_in_room"}
+	}
+	value, err := service.repository.ByCode(ctx, strings.TrimSpace(code))
+	if err != nil {
+		return Room{}, Error{Code: "room_not_found"}
+	}
+	if value.PasswordHash != "" && !service.passwords.Verify("room:"+password, value.PasswordHash) {
+		return Room{}, Error{Code: "invalid_room_password"}
+	}
+	if len(value.Members) >= value.MaxPlayers {
+		return Room{}, Error{Code: "room_full"}
+	}
+	seat := firstAvailableSeat(value.Members, value.MaxPlayers)
+	value.Members = append(value.Members, Member{
+		UserID: participant.UserID, DisplayName: participant.DisplayName, Seat: seat, JoinedAt: service.config.Now(),
+	})
+	sort.Slice(value.Members, func(left, right int) bool { return value.Members[left].Seat < value.Members[right].Seat })
+	value.Revision++
+	if err := service.repository.Save(ctx, value); err != nil {
+		return Room{}, err
+	}
+	return publicRoom(value), nil
+}
+
+func (service *Service) Current(ctx context.Context, userID string) (Room, error) {
+	value, err := service.repository.ByUser(ctx, userID)
+	if err != nil {
+		return Room{}, Error{Code: "room_not_found"}
+	}
+	return publicRoom(value), nil
+}
+
+func (service *Service) GetForMember(ctx context.Context, userID string, roomID string) (Room, error) {
+	value, err := service.repository.ByID(ctx, roomID)
+	if err != nil {
+		return Room{}, Error{Code: "room_not_found"}
+	}
+	for _, member := range value.Members {
+		if member.UserID == userID {
+			return publicRoom(value), nil
+		}
+	}
+	return Room{}, Error{Code: "permission_denied"}
+}
+
+func (service *Service) SetReady(ctx context.Context, userID string, ready bool) (Room, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	value, err := service.repository.ByUser(ctx, userID)
+	if err != nil {
+		return Room{}, Error{Code: "room_not_found"}
+	}
+	for index := range value.Members {
+		if value.Members[index].UserID == userID {
+			if value.Members[index].Ready != ready {
+				value.Members[index].Ready = ready
+				value.Revision++
+			}
+			if err := service.repository.Save(ctx, value); err != nil {
+				return Room{}, err
+			}
+			return publicRoom(value), nil
+		}
+	}
+	return Room{}, Error{Code: "permission_denied"}
+}
+
+func (service *Service) Leave(ctx context.Context, userID string) (closed bool, err error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	value, err := service.repository.ByUser(ctx, userID)
+	if err != nil {
+		return false, Error{Code: "room_not_found"}
+	}
+	if value.OwnerUserID == userID {
+		return true, service.repository.Delete(ctx, value.RoomID)
+	}
+	for index, member := range value.Members {
+		if member.UserID == userID {
+			value.Members = append(value.Members[:index], value.Members[index+1:]...)
+			value.Revision++
+			return false, service.repository.Save(ctx, value)
+		}
+	}
+	return false, Error{Code: "permission_denied"}
+}
+
+func (service *Service) CanJoinVoice(ctx context.Context, userID string, tableID string) (bool, error) {
+	value, err := service.repository.ByID(ctx, tableID)
+	if err != nil {
+		return false, nil
+	}
+	for _, member := range value.Members {
+		if member.UserID == userID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func rulesForPreset(preset Preset) (Rules, bool) {
+	switch preset {
+	case PresetCasual:
+		return Rules{StartingChips: 1000, SmallBlind: 5, BigBlind: 10, ActionSeconds: 30}, true
+	case PresetStandard:
+		return Rules{StartingChips: 2000, SmallBlind: 10, BigBlind: 20, ActionSeconds: 20}, true
+	case PresetDeep:
+		return Rules{StartingChips: 5000, SmallBlind: 10, BigBlind: 20, ActionSeconds: 30}, true
+	default:
+		return Rules{}, false
+	}
+}
+
+func validParticipant(participant Participant) bool {
+	return participant.UserID != "" && strings.TrimSpace(participant.DisplayName) != ""
+}
+
+func firstAvailableSeat(members []Member, maxPlayers int) int {
+	occupied := make(map[int]struct{}, len(members))
+	for _, member := range members {
+		occupied[member.Seat] = struct{}{}
+	}
+	for seat := 1; seat <= maxPlayers; seat++ {
+		if _, exists := occupied[seat]; !exists {
+			return seat
+		}
+	}
+	return 0
+}
+
+func publicRoom(value Room) Room {
+	value.PasswordHash = ""
+	return cloneRoom(value)
+}
+
+func (service *Service) randomID(prefix string, byteCount int) (string, error) {
+	value := make([]byte, byteCount)
+	if _, err := io.ReadFull(service.config.Random, value); err != nil {
+		return "", err
+	}
+	return prefix + base64.RawURLEncoding.EncodeToString(value), nil
+}
+
+func (service *Service) randomCode() (string, error) {
+	value, err := cryptorand.Int(service.config.Random, big.NewInt(900_000))
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%06d", value.Int64()+100_000), nil
+}
