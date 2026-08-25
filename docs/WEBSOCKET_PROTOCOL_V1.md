@@ -58,6 +58,7 @@
 | `table.join` | 加入或恢复牌桌 | `lastSequence?` |
 | `table.leave` | 请求离桌 | `reason` |
 | `table.ready.set` | 设置下一手准备状态 | `ready` |
+| `table.rebuy` | 两手之间从账户钱包补充牌桌筹码 | `amount` |
 | `table.snapshot.request` | 主动请求完整快照 | `lastSequence?`, `reason` |
 | `table.action.submit` | 提交牌局动作 | `actionId`, `action`, `raiseTo?` |
 | `table.chat.send` | 发送文字、快捷语或表情 | `clientMessageId`, `kind`, `content` |
@@ -83,7 +84,9 @@
 }
 ```
 
-`action` 仅允许 `fold`、`check`、`call`、`bet`、`raise`、`all_in`。`raiseTo` 只用于 `bet` 和 `raise`，表示本轮累计投入目标。
+`action` 仅允许 `fold`、`check`、`call`、`bet`、`raise`、`all_in`。`raiseTo` 只用于 `bet` 和 `raise`，表示本轮累计投入目标，并且必须是房间小盲的整数倍；全下不受整倍数限制。
+当玩家剩余筹码小于 `toCall` 时，合法动作中不得包含 `call`，客户端只展示弃牌与 `all_in`；不足额投入由 `all_in` 明确表达。
+比例快捷项面对下注时使用完成跟注后的底池计算；低于 `minRaiseTo` 的多个结果合并为 `label: "min_raise"`。客户端应将 `raiseTo - 当前玩家本轮已投入` 显示为“本次投入”，并将 `raiseTo` 显示为“加注至”，避免混淆两种金额。
 
 聊天示例：
 
@@ -139,6 +142,8 @@
 | `table.showdown` | 可公开玩家的牌和最佳牌型 |
 | `table.pots.updated` | 主池和边池变化 |
 | `table.hand.settled` | 各底池赢家、分配和结算后筹码 |
+| `table.rebuy.accepted` | 补码已完成；随后广播最新私人快照 |
+| `table.rebuy.rejected` | 补码未执行，包含稳定错误码 |
 
 `table.action.required` 示例：
 
@@ -181,7 +186,7 @@
 `table.snapshot` 至少包含：
 
 - `tableId`、`sequence`、`tableRevision`、`phase`、`serverTime`。
-- 房间规则、按钮座位、小盲和大盲座位。
+- 房间规则、按钮座位、小盲和大盲座位，以及 `maxBuyIn`。
 - 座位、玩家公开资料、筹码、连接和准备状态。
 - 当前 `handId`、公共牌、各玩家本轮投入和本手总投入。
 - 主池、边池、当前行动座位、截止时间和合法动作。
@@ -206,6 +211,10 @@
 | `stale_revision` | `tableRevision` 已过期，需要同步 |
 | `illegal_action` | 当前局面不允许该动作 |
 | `invalid_amount` | 下注目标不合法 |
+| `hand_in_progress` | 仅允许在两手之间执行补码或离桌结算 |
+| `insufficient_wallet_chips` | 账户娱乐筹码不足 |
+| `maximum_buy_in_exceeded` | 本次补码会超过房间最大带入 |
+| `rebuy_required` | 牌桌筹码为零，完成补码前不能准备下一手 |
 | `chat_muted` | 玩家被禁言 |
 | `content_rejected` | 聊天内容不符合规则 |
 

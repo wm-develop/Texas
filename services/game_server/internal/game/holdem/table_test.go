@@ -111,6 +111,31 @@ func TestShortAllInDoesNotReopenRaise(t *testing.T) {
 	}
 }
 
+func TestShortStackCannotCallAndMustFoldOrGoAllIn(t *testing.T) {
+	table := mustTable(t, Config{MaxSeats: 2, SmallBlind: 5, BigBlind: 10})
+	mustAddReady(t, table, "short", 1, 7)
+	mustAddReady(t, table, "big", 2, 100)
+	if err := table.StartHand(zeroRandom{}); err != nil {
+		t.Fatalf("StartHand: %v", err)
+	}
+	options, err := table.CurrentActionOptions()
+	if err != nil {
+		t.Fatalf("CurrentActionOptions: %v", err)
+	}
+	if options.ToCall != 5 || options.CanCall || !options.CanFold || !options.CanAllIn ||
+		options.CanCheck || options.CanBet || options.CanRaise {
+		t.Fatalf("short-stack options = %#v", options)
+	}
+	_, err = table.SubmitAction(ActionRequest{
+		ActionID: "misleading-call", PlayerID: "short", HandID: table.HandID(),
+		TableRevision: table.Revision(), Action: ActionCall,
+	})
+	var ruleErr RuleError
+	if !errors.As(err, &ruleErr) || ruleErr.Code != "illegal_action" {
+		t.Fatalf("short call error = %v", err)
+	}
+}
+
 func TestFullRaiseReopensRaise(t *testing.T) {
 	table := mustTable(t, Config{MaxSeats: 3, SmallBlind: 5, BigBlind: 10})
 	mustAddReady(t, table, "dealer", 1, 100)
@@ -129,6 +154,35 @@ func TestFullRaiseReopensRaise(t *testing.T) {
 	}
 	if !options.CanRaise || options.MinRaiseTo != 30 {
 		t.Fatalf("options after full raise = %#v", options)
+	}
+}
+
+func TestRegularRaiseUsesSmallBlindUnitWhileAllInMayUseRemainder(t *testing.T) {
+	table := mustTable(t, Config{MaxSeats: 2, SmallBlind: 10, BigBlind: 20})
+	mustAddReady(t, table, "dealer", 1, 103)
+	mustAddReady(t, table, "big", 2, 100)
+	if err := table.StartHand(zeroRandom{}); err != nil {
+		t.Fatalf("StartHand: %v", err)
+	}
+	options, err := table.CurrentActionOptions()
+	if err != nil {
+		t.Fatalf("CurrentActionOptions: %v", err)
+	}
+	if options.MinRaiseTo != 40 || options.MaxRaiseTo != 100 || !options.CanAllIn {
+		t.Fatalf("options=%#v", options)
+	}
+	player := table.players[table.CurrentSeat()]
+	_, err = table.SubmitAction(ActionRequest{
+		ActionID: "invalid-unit", PlayerID: player.PlayerID, HandID: table.HandID(),
+		TableRevision: table.Revision(), Action: ActionRaise, RaiseTo: 45,
+	})
+	var ruleError RuleError
+	if !errors.As(err, &ruleError) || ruleError.Code != "invalid_amount" {
+		t.Fatalf("non-unit raise error=%v", err)
+	}
+	result := mustAct(t, table, "all-in-remainder", ActionAllIn, 0)
+	if result.Committed != 93 {
+		t.Fatalf("all-in committed=%d want=93", result.Committed)
 	}
 }
 

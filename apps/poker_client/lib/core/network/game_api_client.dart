@@ -3,6 +3,8 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 import 'package:poker_client/core/auth/auth_session.dart';
+import 'package:poker_client/features/bankroll/domain/bankroll_entry.dart';
+import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
 import 'package:poker_client/features/history/domain/recent_hand.dart';
 
@@ -65,11 +67,25 @@ class GameApiClient {
     required String preset,
     required int maxPlayers,
     required String password,
+    required int smallBlind,
+    required int bigBlind,
+    required int maxBuyIn,
+    required int buyIn,
+    required String requestId,
   }) async => FriendRoom.fromJson(
     await _request(
       'v1/rooms',
       token: accessToken,
-      body: {'preset': preset, 'maxPlayers': maxPlayers, 'password': password},
+      body: {
+        'preset': preset,
+        'maxPlayers': maxPlayers,
+        'password': password,
+        'smallBlind': smallBlind,
+        'bigBlind': bigBlind,
+        'maxBuyIn': maxBuyIn,
+        'buyIn': buyIn,
+        'requestId': requestId,
+      },
       expectedStatus: 201,
     ),
   );
@@ -78,13 +94,55 @@ class GameApiClient {
     required String accessToken,
     required String code,
     required String password,
+    required int buyIn,
+    required String requestId,
   }) async => FriendRoom.fromJson(
     await _request(
       'v1/rooms/join',
       token: accessToken,
-      body: {'code': code, 'password': password},
+      body: {
+        'code': code,
+        'password': password,
+        'buyIn': buyIn,
+        'requestId': requestId,
+      },
     ),
   );
+
+  Future<RoomPreview> roomPreview({
+    required String accessToken,
+    required String code,
+  }) async => RoomPreview.fromJson(
+    await _get('v1/rooms/preview?code=$code', token: accessToken),
+  );
+
+  Future<BankrollSnapshot> bankroll(String accessToken) async =>
+      BankrollSnapshot.fromJson(await _get('v1/bankroll', token: accessToken));
+
+  Future<BankrollSnapshot> topUp({
+    required String accessToken,
+    required String requestId,
+    required int amount,
+  }) async => BankrollSnapshot.fromJson(
+    await _request(
+      'v1/bankroll/top-ups',
+      token: accessToken,
+      body: {'requestId': requestId, 'amount': amount},
+    ),
+  );
+
+  Future<List<BankrollEntry>> bankrollEntries({
+    required String accessToken,
+    int limit = 30,
+  }) async {
+    final payload = await _get(
+      'v1/bankroll/entries?limit=$limit',
+      token: accessToken,
+    );
+    return (payload['entries'] as List<dynamic>? ?? const [])
+        .map((value) => BankrollEntry.fromJson(value as Map<String, dynamic>))
+        .toList(growable: false);
+  }
 
   Future<void> leaveRoom(String accessToken) async {
     await _request('v1/rooms/leave', token: accessToken, body: const {});

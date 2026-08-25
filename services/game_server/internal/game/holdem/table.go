@@ -140,7 +140,8 @@ type Table struct {
 func NewTable(config Config) (*Table, error) {
 	if !validTableID.MatchString(config.TableID) ||
 		config.MaxSeats < 2 || config.MaxSeats > 10 ||
-		config.SmallBlind <= 0 || config.BigBlind < config.SmallBlind {
+		config.SmallBlind <= 0 || config.BigBlind < config.SmallBlind ||
+		config.BigBlind%config.SmallBlind != 0 {
 		return nil, errors.New("invalid table configuration")
 	}
 	return &Table{
@@ -214,6 +215,25 @@ func (table *Table) SetReady(playerID string, ready bool) error {
 	}
 	return nil
 }
+
+func (table *Table) AddChips(playerID string, amount int64) error {
+	if table.phase != PhaseWaiting && table.phase != PhaseWaitingNextHand {
+		return RuleError{Code: "hand_in_progress"}
+	}
+	player := table.playerByID(playerID)
+	if player == nil {
+		return RuleError{Code: "not_seated"}
+	}
+	if amount <= 0 || player.Stack > maximumTableChips-amount {
+		return RuleError{Code: "invalid_chip_amount"}
+	}
+	player.Stack += amount
+	player.Ready = false
+	table.revision++
+	return nil
+}
+
+const maximumTableChips int64 = 9_000_000_000_000_000
 
 func (table *Table) StartHand(random IntnSource) error {
 	if table.phase != PhaseWaiting && table.phase != PhaseWaitingNextHand {

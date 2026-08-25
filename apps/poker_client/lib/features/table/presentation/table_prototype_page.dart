@@ -10,9 +10,10 @@ import 'package:poker_client/core/platform/voice_chat_service.dart';
 import 'package:poker_client/core/platform/voice_chat_service_factory.dart';
 import 'package:poker_client/core/settings/app_settings.dart';
 import 'package:poker_client/core/settings/settings_dialog.dart';
+import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
+import 'package:poker_client/features/lobby/domain/friend_room.dart';
 import 'package:poker_client/features/table/domain/table_seat.dart';
 import 'package:poker_client/features/table/domain/table_snapshot.dart';
-import 'package:poker_client/features/lobby/domain/friend_room.dart';
 
 class TablePrototypePage extends StatefulWidget {
   const TablePrototypePage({
@@ -20,6 +21,7 @@ class TablePrototypePage extends StatefulWidget {
     required this.room,
     required this.settings,
     required this.onLeave,
+    required this.loadBankroll,
     super.key,
   });
 
@@ -27,6 +29,7 @@ class TablePrototypePage extends StatefulWidget {
   final FriendRoom room;
   final AppSettingsController settings;
   final Future<void> Function() onLeave;
+  final Future<BankrollSnapshot> Function() loadBankroll;
 
   @override
   State<TablePrototypePage> createState() => _TablePrototypePageState();
@@ -56,6 +59,8 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
   String? _lastActionSoundUserId;
   String? _lastSettlementSoundHandId;
   bool _autoJoinAttempted = false;
+  bool _rebuyDialogOpen = false;
+  String? _autoRebuyHandId;
 
   bool get _voiceJoined =>
       _voiceState == VoiceConnectionState.connected ||
@@ -217,6 +222,8 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
                       child: _ActionBar(
                         client: _gameSocket,
                         userId: widget.session.user.userId,
+                        smallBlind: widget.room.rules.smallBlind,
+                        onRebuy: _showRebuyDialog,
                       ),
                     ),
                   ],
@@ -313,6 +320,7 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
       }
     }
     _playTableSounds();
+    _offerAutomaticRebuy();
     if (error == null) _lastShownGameError = null;
     if (error != null && error != _lastShownGameError) {
       _lastShownGameError = error;
@@ -358,11 +366,80 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
     }
   }
 
-  Future<void> _leaveTable() async {
-    if (_voiceJoined) {
-      await _setVoiceJoined(false);
+  void _offerAutomaticRebuy() {
+    final snapshot = _gameSocket.snapshot;
+    final settlementHandId = snapshot?.settlement?.handId;
+    if (settlementHandId == null ||
+        settlementHandId == _autoRebuyHandId ||
+        _rebuyDialogOpen) {
+      return;
     }
-    await widget.onLeave();
+    final ownSeat = snapshot?.seats
+        .where((seat) => seat.userId == widget.session.user.userId)
+        .firstOrNull;
+    if (ownSeat == null || ownSeat.stack > 0) return;
+    _autoRebuyHandId = settlementHandId;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_showRebuyDialog(automatic: true));
+    });
+  }
+
+  Future<void> _showRebuyDialog({bool automatic = false}) async {
+    if (_rebuyDialogOpen) return;
+    final snapshot = _gameSocket.snapshot;
+    final ownSeat = snapshot?.seats
+        .where((seat) => seat.userId == widget.session.user.userId)
+        .firstOrNull;
+    if (snapshot == null || ownSeat == null) return;
+    final maximum = snapshot.maxBuyIn > 0
+        ? snapshot.maxBuyIn
+        : widget.room.rules.maxBuyIn;
+    final room = maximum - ownSeat.stack;
+    if (room <= 0) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前牌桌筹码已达到最大带入')));
+      return;
+    }
+    _rebuyDialogOpen = true;
+    try {
+      final bankroll = await widget.loadBankroll();
+      if (!mounted) return;
+      final available = math.min(room, bankroll.walletChips);
+      final selected = await showDialog<int>(
+        context: context,
+        barrierDismissible: !automatic,
+        builder: (context) => _RebuyAmountDialog(
+          automatic: automatic,
+          walletChips: bankroll.walletChips,
+          currentStack: ownSeat.stack,
+          maximum: maximum,
+          available: available,
+        ),
+      );
+      if (selected != null && selected > 0) {
+        _gameSocket.rebuy(selected);
+      }
+    } on Object {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('读取钱包失败，请稍后重试')));
+      }
+    } finally {
+      _rebuyDialogOpen = false;
+    }
+  }
+
+  Future<void> _leaveTable() async {
+    try {
+      await widget.onLeave();
+    } on Object {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('本手牌结束后才能离开并返还筹码')));
+    }
   }
 
   List<TableSeat> get _tableSeats {
@@ -693,8 +770,8 @@ class _PokerTable extends StatelessWidget {
           if (seats[index].streetBet > 0)
             Align(
               alignment: Alignment(
-                alignments[index].x * 0.64,
-                alignments[index].y * 0.74,
+                alignments[index].x * 0.54,
+                alignments[index].y * 0.58,
               ),
               child: _BetChip(amount: seats[index].streetBet),
             ),
@@ -702,8 +779,8 @@ class _PokerTable extends StatelessWidget {
           if (seats[index].revealedCards.isNotEmpty)
             Align(
               alignment: Alignment(
-                alignments[index].x * 0.72,
-                alignments[index].y * 0.62,
+                alignments[index].x * 0.66,
+                alignments[index].y * 0.54,
               ),
               child: _RevealedCardsBadge(seat: seats[index]),
             ),
@@ -752,8 +829,13 @@ class _BoardCenter extends StatelessWidget {
                 fontWeight: FontWeight.w700,
               ),
             ),
+          const SizedBox(height: 5),
+          Text(
+            _phaseLabel(snapshot!.phase),
+            style: const TextStyle(color: Colors.white70),
+          ),
         ],
-        const SizedBox(height: 16),
+        SizedBox(height: snapshot?.settlement == null ? 16 : 10),
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: List.generate(5, (index) {
@@ -765,13 +847,15 @@ class _BoardCenter extends StatelessWidget {
             );
           }),
         ),
-        const SizedBox(height: 18),
-        Text(
-          actorName == null
-              ? _phaseLabel(snapshot?.phase)
-              : '轮到 $actorName 行动 · ${_remainingSeconds(actionRemaining)} 秒',
-          style: const TextStyle(color: Colors.white70),
-        ),
+        if (snapshot?.settlement == null) ...[
+          const SizedBox(height: 18),
+          Text(
+            actorName == null
+                ? _phaseLabel(snapshot?.phase)
+                : '轮到 $actorName 行动 · ${_remainingSeconds(actionRemaining)} 秒',
+            style: const TextStyle(color: Colors.white70),
+          ),
+        ],
       ],
     );
   }
@@ -845,9 +929,9 @@ class _SeatCard extends StatelessWidget {
     return AnimatedContainer(
       duration: const Duration(milliseconds: 240),
       curve: Curves.easeOut,
-      width: 118,
-      height: 76,
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      width: 148,
+      height: 92,
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
       decoration: BoxDecoration(
         color: seat.isEmpty
             ? const Color(0x80112622)
@@ -872,22 +956,22 @@ class _SeatCard extends StatelessWidget {
       child: Row(
         children: [
           CircleAvatar(
-            radius: 18,
+            radius: 22,
             backgroundColor: seat.isEmpty
                 ? Colors.white10
                 : const Color(0xFF315F51),
             child: seat.isEmpty
-                ? const Icon(Icons.add, color: Colors.white54, size: 20)
+                ? const Icon(Icons.add, color: Colors.white54, size: 24)
                 : Text(
                     seat.position.isEmpty ? '${seat.number}' : seat.position,
                     textAlign: TextAlign.center,
                     style: const TextStyle(
                       fontWeight: FontWeight.w700,
-                      fontSize: 10,
+                      fontSize: 11,
                     ),
                   ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 9),
           Expanded(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -899,7 +983,10 @@ class _SeatCard extends StatelessWidget {
                       child: Text(
                         seat.displayName,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontWeight: FontWeight.w600),
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 14,
+                        ),
                       ),
                     ),
                     if (seat.isDealer)
@@ -916,7 +1003,7 @@ class _SeatCard extends StatelessWidget {
                         child: Icon(
                           Icons.graphic_eq,
                           color: Color(0xFF6DE0A4),
-                          size: 15,
+                          size: 17,
                         ),
                       ),
                     if (seat.isReady && !seat.isDealer)
@@ -925,7 +1012,7 @@ class _SeatCard extends StatelessWidget {
                         child: Icon(
                           Icons.check_circle,
                           color: Color(0xFF6DE0A4),
-                          size: 13,
+                          size: 15,
                         ),
                       ),
                     if (seat.isParticipating)
@@ -935,23 +1022,43 @@ class _SeatCard extends StatelessWidget {
                           '⏱${seat.timeExtensions}',
                           style: const TextStyle(
                             color: Colors.white54,
-                            fontSize: 9,
+                            fontSize: 10,
                           ),
                         ),
                       ),
                   ],
                 ),
-                Text(
-                  seat.isEmpty
-                      ? '空座位'
-                      : seat.isAllIn
-                      ? '${seat.chips} · 全下'
-                      : !seat.isConnected
-                      ? '${seat.chips} · 已断线'
-                      : '${seat.chips} 筹码',
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Colors.white60, fontSize: 11),
-                ),
+                if (seat.isEmpty)
+                  const Text(
+                    '空座位',
+                    style: TextStyle(color: Colors.white60, fontSize: 12),
+                  )
+                else
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.paid,
+                        size: 14,
+                        color: Color(0xFFF6D986),
+                      ),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          '${seat.chips}${seat.isAllIn
+                              ? ' · 全下'
+                              : !seat.isConnected
+                              ? ' · 已断线'
+                              : ''}',
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 if (!seat.isEmpty && seat.isCurrentActor)
                   Text(
                     '剩余 ${_remainingSeconds(actionRemaining)} 秒',
@@ -959,7 +1066,7 @@ class _SeatCard extends StatelessWidget {
                       color: _remainingSeconds(actionRemaining) <= 5
                           ? Colors.redAccent
                           : const Color(0xFFFFA94D),
-                      fontSize: 10,
+                      fontSize: 11,
                       fontWeight: FontWeight.w700,
                     ),
                   )
@@ -969,7 +1076,7 @@ class _SeatCard extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       color: Color(0xFFF6D986),
-                      fontSize: 10,
+                      fontSize: 11,
                     ),
                   ),
               ],
@@ -1322,11 +1429,121 @@ class _HandCardsPanel extends StatelessWidget {
   }
 }
 
+class _RebuyAmountDialog extends StatefulWidget {
+  const _RebuyAmountDialog({
+    required this.automatic,
+    required this.walletChips,
+    required this.currentStack,
+    required this.maximum,
+    required this.available,
+  });
+
+  final bool automatic;
+  final int walletChips;
+  final int currentStack;
+  final int maximum;
+  final int available;
+
+  @override
+  State<_RebuyAmountDialog> createState() => _RebuyAmountDialogState();
+}
+
+class _RebuyAmountDialogState extends State<_RebuyAmountDialog> {
+  late final TextEditingController _controller;
+  late int _amount;
+
+  bool get _valid => _amount > 0 && _amount <= widget.available;
+
+  @override
+  void initState() {
+    super.initState();
+    _amount = widget.available;
+    _controller = TextEditingController(text: '$_amount');
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sliderMaximum = widget.available > 0 ? widget.available : 1;
+    final sliderValue = _amount.clamp(0, sliderMaximum).toDouble();
+    return AlertDialog(
+      title: Text(widget.automatic ? '筹码已用完，请补码' : '补码'),
+      content: SizedBox(
+        width: 440,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              '钱包 ${widget.walletChips} · 当前 ${widget.currentStack} · 最大带入 ${widget.maximum}',
+            ),
+            const SizedBox(height: 12),
+            Slider(
+              value: sliderValue,
+              min: 0,
+              max: sliderMaximum.toDouble(),
+              divisions: widget.available > 0
+                  ? math.min(widget.available, 100)
+                  : 1,
+              label: '$_amount',
+              onChanged: widget.available <= 0
+                  ? null
+                  : (value) {
+                      setState(() => _amount = value.round());
+                      _controller.text = '$_amount';
+                    },
+            ),
+            TextField(
+              controller: _controller,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: InputDecoration(
+                labelText: '补码数量',
+                helperText: widget.available > 0
+                    ? '本次最多可补 ${widget.available}'
+                    : '钱包余额不足，请返回大厅充值',
+                errorText: _amount > widget.available ? '补码数量超过本次上限' : null,
+              ),
+              onChanged: (value) =>
+                  setState(() => _amount = int.tryParse(value) ?? 0),
+              onSubmitted: (_) {
+                if (_valid) Navigator.of(context).pop(_amount);
+              },
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(widget.automatic ? '暂不补码' : '取消'),
+        ),
+        FilledButton(
+          onPressed: _valid ? () => Navigator.of(context).pop(_amount) : null,
+          child: const Text('确认补码'),
+        ),
+      ],
+    );
+  }
+}
+
 class _ActionBar extends StatelessWidget {
-  const _ActionBar({required this.client, required this.userId});
+  const _ActionBar({
+    required this.client,
+    required this.userId,
+    required this.smallBlind,
+    required this.onRebuy,
+  });
 
   final GameSocketClient client;
   final String userId;
+  final int smallBlind;
+  final VoidCallback onRebuy;
 
   @override
   Widget build(BuildContext context) {
@@ -1361,18 +1578,33 @@ class _ActionBar extends StatelessWidget {
           ],
           if (waiting)
             Expanded(
-              child: Center(
-                child: FilledButton.icon(
-                  onPressed: client.status == GameSocketStatus.joined
-                      ? () => client.setReady(!(ownSeat?.ready ?? false))
-                      : null,
-                  icon: Icon(
-                    ownSeat?.ready == true
-                        ? Icons.pause_circle
-                        : Icons.play_circle,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  FilledButton.icon(
+                    onPressed:
+                        client.status == GameSocketStatus.joined &&
+                            (ownSeat?.stack ?? 0) > 0
+                        ? () => client.setReady(!(ownSeat?.ready ?? false))
+                        : null,
+                    icon: Icon(
+                      ownSeat?.ready == true
+                          ? Icons.pause_circle
+                          : Icons.play_circle,
+                    ),
+                    label: Text(ownSeat?.ready == true ? '取消准备' : '准备开始'),
                   ),
-                  label: Text(ownSeat?.ready == true ? '取消准备' : '准备开始'),
-                ),
+                  const SizedBox(width: 12),
+                  OutlinedButton.icon(
+                    onPressed:
+                        client.status == GameSocketStatus.joined &&
+                            (ownSeat?.stack ?? 0) < (snapshot?.maxBuyIn ?? 0)
+                        ? onRebuy
+                        : null,
+                    icon: const Icon(Icons.add_circle_outline),
+                    label: const Text('补码'),
+                  ),
+                ],
               ),
             )
           else if (!ownTurn)
@@ -1402,19 +1634,19 @@ class _ActionBar extends StatelessWidget {
                           child: const Text('弃牌'),
                         ),
                         const SizedBox(width: 7),
-                        FilledButton.tonal(
-                          onPressed: client.actionPending
-                              ? null
-                              : options.canCheck
-                              ? () => client.submitAction('check')
-                              : options.canCall
-                              ? () => client.submitAction('call')
-                              : null,
-                          child: Text(
-                            options.canCheck ? '过牌' : '跟注 ${options.toCall}',
+                        if (options.canCheck || options.canCall) ...[
+                          FilledButton.tonal(
+                            onPressed: client.actionPending
+                                ? null
+                                : options.canCheck
+                                ? () => client.submitAction('check')
+                                : () => client.submitAction('call'),
+                            child: Text(
+                              options.canCheck ? '过牌' : '跟注 ${options.toCall}',
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 7),
+                          const SizedBox(width: 7),
+                        ],
                         for (final suggestion in current!.suggestions) ...[
                           FilledButton.tonal(
                             onPressed: client.actionPending
@@ -1426,33 +1658,41 @@ class _ActionBar extends StatelessWidget {
                                         : suggestion.raiseTo,
                                   ),
                             child: Text(
-                              suggestion.action == 'all_in'
-                                  ? '全下\n${suggestion.raiseTo}'
-                                  : '${_suggestionLabel(suggestion.label)}\n${suggestion.raiseTo}',
+                              _suggestionButtonLabel(
+                                suggestion,
+                                ownSeat?.streetBet ?? 0,
+                              ),
                               textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                fontSize: 11,
+                                height: 1.05,
+                              ),
                             ),
                           ),
                           const SizedBox(width: 7),
                         ],
-                        OutlinedButton.icon(
-                          onPressed:
-                              client.actionPending ||
-                                  (!options.canBet && !options.canRaise)
-                              ? null
-                              : () => showDialog<void>(
-                                  context: context,
-                                  builder: (context) => _BetAmountDialog(
-                                    client: client,
-                                    options: options,
-                                    suggestions: current.suggestions,
-                                    streetBet: ownSeat?.streetBet ?? 0,
-                                    onSubmit: (action, raiseTo) => client
-                                        .submitAction(action, raiseTo: raiseTo),
+                        if (options.canBet || options.canRaise)
+                          OutlinedButton.icon(
+                            onPressed: client.actionPending
+                                ? null
+                                : () => showDialog<void>(
+                                    context: context,
+                                    builder: (context) => _BetAmountDialog(
+                                      client: client,
+                                      options: options,
+                                      suggestions: current.suggestions,
+                                      streetBet: ownSeat?.streetBet ?? 0,
+                                      smallBlind: smallBlind,
+                                      onSubmit: (action, raiseTo) =>
+                                          client.submitAction(
+                                            action,
+                                            raiseTo: raiseTo,
+                                          ),
+                                    ),
                                   ),
-                                ),
-                          icon: const Icon(Icons.tune, size: 18),
-                          label: const Text('自定义'),
-                        ),
+                            icon: const Icon(Icons.tune, size: 18),
+                            label: const Text('自定义'),
+                          ),
                       ],
                     ),
                   ),
@@ -1471,6 +1711,7 @@ class _BetAmountDialog extends StatefulWidget {
     required this.options,
     required this.suggestions,
     required this.streetBet,
+    required this.smallBlind,
     required this.onSubmit,
   });
 
@@ -1478,6 +1719,7 @@ class _BetAmountDialog extends StatefulWidget {
   final TableActionOptions options;
   final List<BetSuggestion> suggestions;
   final int streetBet;
+  final int smallBlind;
   final void Function(String action, int raiseTo) onSubmit;
 
   @override
@@ -1489,6 +1731,8 @@ class _BetAmountDialogState extends State<_BetAmountDialog> {
   late final TextEditingController _controller;
   String? _error;
   Timer? _clock;
+
+  int get _unit => math.max(1, widget.smallBlind);
 
   @override
   void initState() {
@@ -1564,7 +1808,8 @@ class _BetAmountDialogState extends State<_BetAmountDialog> {
             ),
             const SizedBox(height: 12),
             Text(
-              '允许范围：${options.minRaiseTo} ～ ${options.maxRaiseTo}',
+              '允许范围：${options.minRaiseTo} ～ ${options.maxRaiseTo} · '
+              '最小单位：小盲 $_unit',
               style: const TextStyle(color: Colors.white60),
             ),
             const SizedBox(height: 10),
@@ -1592,7 +1837,7 @@ class _BetAmountDialogState extends State<_BetAmountDialog> {
                 if (parsed != null) {
                   setState(() {
                     _amount = parsed;
-                    _error = null;
+                    _error = parsed % _unit == 0 ? null : '额度必须是小盲 $_unit 的整数倍';
                   });
                 }
               },
@@ -1637,7 +1882,12 @@ class _BetAmountDialogState extends State<_BetAmountDialog> {
             final entered = int.tryParse(_controller.text);
             if (entered == null ||
                 entered < options.minRaiseTo ||
-                entered > options.maxRaiseTo) {
+                entered > options.maxRaiseTo ||
+                entered % _unit != 0) {
+              if (entered != null && entered % _unit != 0) {
+                setState(() => _error = '额度必须是小盲 $_unit 的整数倍');
+                return;
+              }
               setState(() => _error = '请输入允许范围内的额度');
               return;
             }
@@ -1651,7 +1901,8 @@ class _BetAmountDialogState extends State<_BetAmountDialog> {
   }
 
   void _setAmount(int value) {
-    final clamped = value.clamp(
+    final snapped = ((value + _unit ~/ 2) ~/ _unit) * _unit;
+    final clamped = snapped.clamp(
       widget.options.minRaiseTo,
       widget.options.maxRaiseTo,
     );
@@ -1702,6 +1953,7 @@ String _actionLabel(String action, int actionTo) => switch (action) {
 };
 
 String _suggestionLabel(String label) => switch (label) {
+  'min_raise' => '最小加注',
   'quarter_pot' => '1/4 池',
   'third_pot' => '1/3 池',
   'half_pot' => '1/2 池',
@@ -1711,6 +1963,15 @@ String _suggestionLabel(String label) => switch (label) {
   'all_in' => '全下',
   _ => label,
 };
+
+String _suggestionButtonLabel(BetSuggestion suggestion, int streetBet) {
+  final committed = math.max(0, suggestion.raiseTo - streetBet);
+  if (suggestion.action == 'all_in') {
+    return '全下\n投入 $committed';
+  }
+  return '${_suggestionLabel(suggestion.label)}\n'
+      '投入 $committed · 至 ${suggestion.raiseTo}';
+}
 
 String _handCategoryLabel(String category) => switch (category) {
   'high_card' => '高牌',
@@ -1750,6 +2011,10 @@ String _gameErrorLabel(String code) => switch (code) {
   'authentication_required' => '登录状态已失效，请重新登录',
   'no_time_extensions' => '本手的两张加时卡已经用完',
   'time_extension_expired' => '本次行动已经超时，无法再主动加时',
+  'insufficient_wallet_chips' => '账户筹码不足，请返回大厅充值',
+  'maximum_buy_in_exceeded' => '本次补码会超过房间最大带入',
+  'hand_in_progress' => '只能在两手牌之间补码',
+  'rebuy_required' => '筹码已用完，请先补码再准备',
   _ when code.startsWith('invalid_server_message') => '收到的牌桌数据无法解析',
   _ => '牌桌操作失败（$code）',
 };
@@ -1785,6 +2050,7 @@ class _MiniCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final redSuit = label.contains('♥') || label.contains('♦');
     return Container(
       width: compact ? 27 : 38,
       height: compact ? 34 : 48,
@@ -1796,7 +2062,7 @@ class _MiniCard extends StatelessWidget {
       child: Text(
         label,
         style: TextStyle(
-          color: Colors.black87,
+          color: redSuit ? const Color(0xFFC63D45) : Colors.black87,
           fontWeight: FontWeight.w800,
           fontSize: compact ? 10 : null,
         ),

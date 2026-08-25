@@ -3,6 +3,8 @@ import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
 import 'package:poker_client/core/settings/app_settings.dart';
 import 'package:poker_client/features/auth/presentation/auth_page.dart';
+import 'package:poker_client/features/bankroll/domain/bankroll_entry.dart';
+import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/history/domain/recent_hand.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
 import 'package:poker_client/features/lobby/presentation/lobby_page.dart';
@@ -20,6 +22,7 @@ class _PokerAppState extends State<PokerApp> {
   late final AppSettingsController _settings;
   AuthSession? _session;
   FriendRoom? _room;
+  BankrollSnapshot? _bankroll;
 
   @override
   void initState() {
@@ -59,15 +62,26 @@ class _PokerAppState extends State<PokerApp> {
     if (session == null) {
       return AuthPage(onLogin: _login, onRegister: _register);
     }
+    final bankroll = _bankroll;
+    if (bankroll == null) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
     final room = _room;
     if (room == null) {
       return LobbyPage(
         session: session,
+        bankroll: bankroll,
         onCreateRoom: _createRoom,
         onJoinRoom: _joinRoom,
         onLoadRecentHands: _loadRecentHands,
+        onTopUp: _topUp,
+        onLoadBankrollEntries: _loadBankrollEntries,
+        onPreviewRoom: _previewRoom,
         settings: _settings,
-        onLogout: () => setState(() => _session = null),
+        onLogout: () => setState(() {
+          _session = null;
+          _bankroll = null;
+        }),
       );
     }
     return TablePrototypePage(
@@ -75,12 +89,19 @@ class _PokerAppState extends State<PokerApp> {
       room: room,
       settings: _settings,
       onLeave: _leaveRoom,
+      loadBankroll: () => _api.bankroll(_session!.accessToken),
     );
   }
 
   Future<AuthSession> _login(String username, String password) async {
     final session = await _api.login(username: username, password: password);
-    if (mounted) setState(() => _session = session);
+    final chips = await _api.bankroll(session.accessToken);
+    if (mounted) {
+      setState(() {
+        _session = session;
+        _bankroll = chips;
+      });
+    }
     return session;
   }
 
@@ -94,43 +115,86 @@ class _PokerAppState extends State<PokerApp> {
       displayName: displayName,
       password: password,
     );
-    if (mounted) setState(() => _session = session);
+    final chips = await _api.bankroll(session.accessToken);
+    if (mounted) {
+      setState(() {
+        _session = session;
+        _bankroll = chips;
+      });
+    }
     return session;
   }
 
-  Future<FriendRoom> _createRoom(
-    String preset,
-    int maxPlayers,
-    String password,
-  ) async {
+  Future<FriendRoom> _createRoom(CreateRoomInput input) async {
     final room = await _api.createRoom(
       accessToken: _session!.accessToken,
-      preset: preset,
-      maxPlayers: maxPlayers,
-      password: password,
+      preset: input.preset,
+      maxPlayers: input.maxPlayers,
+      password: input.password,
+      smallBlind: input.smallBlind,
+      bigBlind: input.bigBlind,
+      maxBuyIn: input.maxBuyIn,
+      buyIn: input.buyIn,
+      requestId: _requestId('create'),
     );
-    if (mounted) setState(() => _room = room);
+    final chips = await _api.bankroll(_session!.accessToken);
+    if (mounted) {
+      setState(() {
+        _room = room;
+        _bankroll = chips;
+      });
+    }
     return room;
   }
 
-  Future<FriendRoom> _joinRoom(String code, String password) async {
+  Future<FriendRoom> _joinRoom(String code, String password, int buyIn) async {
     final room = await _api.joinRoom(
       accessToken: _session!.accessToken,
       code: code,
       password: password,
+      buyIn: buyIn,
+      requestId: _requestId('join'),
     );
-    if (mounted) setState(() => _room = room);
+    final chips = await _api.bankroll(_session!.accessToken);
+    if (mounted) {
+      setState(() {
+        _room = room;
+        _bankroll = chips;
+      });
+    }
     return room;
   }
 
   Future<void> _leaveRoom() async {
-    try {
-      await _api.leaveRoom(_session!.accessToken);
-    } finally {
-      if (mounted) setState(() => _room = null);
+    await _api.leaveRoom(_session!.accessToken);
+    final chips = await _api.bankroll(_session!.accessToken);
+    if (mounted) {
+      setState(() {
+        _room = null;
+        _bankroll = chips;
+      });
     }
   }
 
   Future<List<RecentHand>> _loadRecentHands() =>
       _api.recentHands(accessToken: _session!.accessToken);
+
+  Future<List<BankrollEntry>> _loadBankrollEntries() =>
+      _api.bankrollEntries(accessToken: _session!.accessToken);
+
+  Future<RoomPreview> _previewRoom(String code) =>
+      _api.roomPreview(accessToken: _session!.accessToken, code: code);
+
+  Future<BankrollSnapshot> _topUp(int amount) async {
+    final chips = await _api.topUp(
+      accessToken: _session!.accessToken,
+      requestId: _requestId('topup'),
+      amount: amount,
+    );
+    if (mounted) setState(() => _bankroll = chips);
+    return chips;
+  }
+
+  String _requestId(String prefix) =>
+      '$prefix-${DateTime.now().microsecondsSinceEpoch}';
 }

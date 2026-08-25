@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"texas/services/game_server/internal/bankroll"
 	"texas/services/game_server/internal/game/holdem"
 	"texas/services/game_server/internal/history"
 	"texas/services/game_server/internal/ledger"
@@ -23,6 +24,7 @@ type Manager struct {
 	snapshotListener func(string)
 	ledger           ledger.Store
 	history          history.Store
+	bankroll         *bankroll.Service
 }
 
 type runtime struct {
@@ -53,6 +55,7 @@ type ManagerConfig struct {
 	AfterFunc func(time.Duration, func()) ScheduledTimer
 	Ledger    ledger.Store
 	History   history.Store
+	Bankroll  *bankroll.Service
 }
 
 type SeatSnapshot struct {
@@ -104,6 +107,7 @@ type Snapshot struct {
 	CurrentAction  *ActionSnapshot    `json:"currentAction,omitempty"`
 	TotalPot       int64              `json:"totalPot"`
 	Settlement     *holdem.Settlement `json:"settlement,omitempty"`
+	MaxBuyIn       int64              `json:"maxBuyIn"`
 }
 
 func New(rooms *room.Service, random holdem.IntnSource) (*Manager, error) {
@@ -132,6 +136,7 @@ func NewWithConfig(rooms *room.Service, random holdem.IntnSource, config Manager
 		rooms: rooms, random: random, tables: make(map[string]*runtime),
 		now: config.Now, afterFunc: config.AfterFunc,
 		ledger: config.Ledger, history: config.History,
+		bankroll: config.Bankroll,
 	}, nil
 }
 
@@ -306,6 +311,118 @@ func (manager *Manager) UseTimeExtension(ctx context.Context, userID string, roo
 	)
 }
 
+func (manager *Manager) Rebuy(
+	ctx context.Context,
+	userID string,
+	roomID string,
+	requestID string,
+	amount int64,
+) (Snapshot, error) {
+	if manager.bankroll == nil {
+		return Snapshot{}, room.Error{Code: "service_unavailable"}
+	}
+	roomValue, err := manager.rooms.GetForMember(ctx, userID, roomID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	runtime := manager.existingRuntime(roomID)
+	if runtime == nil {
+		return Snapshot{}, room.Error{Code: "table_not_started"}
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.engine.Phase() != holdem.PhaseWaiting && runtime.engine.Phase() != holdem.PhaseWaitingNextHand {
+		return Snapshot{}, holdem.RuleError{Code: "hand_in_progress"}
+	}
+	var current int64 = -1
+	for _, player := range runtime.engine.Players() {
+		if player.PlayerID == userID {
+			current = player.Stack
+			break
+		}
+	}
+	if current < 0 {
+		return Snapshot{}, holdem.RuleError{Code: "not_seated"}
+	}
+	if amount <= 0 || current > roomValue.Rules.MaxBuyIn-amount {
+		return Snapshot{}, room.Error{Code: "maximum_buy_in_exceeded"}
+	}
+	position, err := manager.bankroll.Rebuy(ctx, userID, roomID, requestID, amount, roomValue.Rules.MaxBuyIn)
+	if err != nil {
+		var bankrollError bankroll.Error
+		if errors.As(err, &bankrollError) {
+			return Snapshot{}, room.Error{Code: bankrollError.Code}
+		}
+		return Snapshot{}, err
+	}
+	delta := position.TableChips - current
+	if delta == 0 {
+		return snapshotFor(runtime.engine, roomValue, userID, runtime.deadline, runtime.timeExtensions)
+	}
+	if delta != amount {
+		return Snapshot{}, room.Error{Code: "table_balance_mismatch"}
+	}
+	if err := runtime.engine.AddChips(userID, delta); err != nil {
+		return Snapshot{}, err
+	}
+	roomValue, err = manager.rooms.AddToStack(ctx, roomID, userID, delta)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return snapshotFor(runtime.engine, roomValue, userID, runtime.deadline, runtime.timeExtensions)
+}
+
+// Leave returns the player's table balance to their wallet before removing the
+// room membership. Closing a room cashes out every member. A player cannot
+// cash out while a hand is active because their chips may still be committed.
+func (manager *Manager) Leave(ctx context.Context, userID string) (bool, error) {
+	roomValue, err := manager.rooms.Current(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	runtime := manager.existingRuntime(roomValue.RoomID)
+	if runtime != nil {
+		runtime.mu.Lock()
+		defer runtime.mu.Unlock()
+		if runtime.engine.Phase() != holdem.PhaseWaiting && runtime.engine.Phase() != holdem.PhaseWaitingNextHand {
+			return false, holdem.RuleError{Code: "hand_in_progress"}
+		}
+	}
+	targets := []string{userID}
+	if roomValue.OwnerUserID == userID {
+		targets = make([]string, 0, len(roomValue.Members))
+		for _, member := range roomValue.Members {
+			targets = append(targets, member.UserID)
+		}
+	}
+	if manager.bankroll != nil {
+		for _, targetUserID := range targets {
+			requestID := "cashout:" + roomValue.RoomID + ":" + targetUserID
+			if _, err := manager.bankroll.CashOut(ctx, targetUserID, roomValue.RoomID, requestID); err != nil {
+				return false, err
+			}
+		}
+	}
+	closed, err := manager.rooms.Leave(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	if runtime != nil {
+		for _, targetUserID := range targets {
+			_ = runtime.engine.RequestLeave(targetUserID)
+		}
+		if closed && runtime.timer != nil {
+			runtime.timer.Stop()
+		}
+	}
+	if closed {
+		manager.mu.Lock()
+		delete(manager.tables, roomValue.RoomID)
+		manager.mu.Unlock()
+	}
+	return closed, nil
+}
+
 func (manager *Manager) runtimeFor(roomValue room.Room) (*runtime, error) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
@@ -430,6 +547,17 @@ func (manager *Manager) persistSettlementLocked(runtime *runtime, roomValue room
 			return err
 		}
 	}
+	if manager.bankroll != nil {
+		if err := manager.bankroll.ApplySettlement(
+			context.Background(), roomValue.RoomID, settlement.HandID,
+			settlement.StacksByPlayer, roomValue.Rules.MaxBuyIn,
+		); err != nil {
+			return err
+		}
+		if _, err := manager.rooms.UpdateStacks(context.Background(), roomValue.RoomID, settlement.StacksByPlayer); err != nil {
+			return err
+		}
+	}
 	if _, exists := manager.history.Hand(settlement.HandID); !exists {
 		displayNames := make(map[string]string, len(roomValue.Members))
 		for _, member := range roomValue.Members {
@@ -485,7 +613,7 @@ func syncMembers(engine *holdem.Table, roomValue room.Room) error {
 	}
 	for _, member := range roomValue.Members {
 		if _, exists := byID[member.UserID]; !exists {
-			if err := engine.AddPlayer(member.UserID, member.Seat, roomValue.Rules.StartingChips); err != nil {
+			if err := engine.AddPlayer(member.UserID, member.Seat, member.Stack); err != nil {
 				return err
 			}
 			if err := engine.SetConnected(member.UserID, false); err != nil {
@@ -521,6 +649,7 @@ func snapshotFor(
 		TableRevision: engine.Revision(), Phase: engine.Phase(), HandID: engine.HandID(),
 		DealerSeat: engine.DealerSeat(), SmallBlindSeat: engine.SmallBlindSeat(), BigBlindSeat: engine.BigBlindSeat(),
 		Board: make([]string, 0, len(engine.Board())), Seats: make([]SeatSnapshot, 0, len(players)),
+		MaxBuyIn: roomValue.Rules.MaxBuyIn,
 	}
 	for _, card := range engine.Board() {
 		result.Board = append(result.Board, card.String())
@@ -548,7 +677,9 @@ func snapshotFor(
 		}
 		result.CurrentAction = &ActionSnapshot{
 			UserID: engine.CurrentPlayerID(), Seat: engine.CurrentSeat(), Options: options,
-			Suggestions: betSuggestions(result.TotalPot, players, engine.CurrentPlayerID(), options),
+			Suggestions: betSuggestions(
+				result.TotalPot, players, engine.CurrentPlayerID(), options, roomValue.Rules.SmallBlind,
+			),
 		}
 		if !deadline.IsZero() {
 			result.CurrentAction.Deadline = deadline.UnixMilli()
@@ -620,6 +751,7 @@ func betSuggestions(
 	players []holdem.Player,
 	currentPlayerID string,
 	options holdem.ActionOptions,
+	smallBlind int64,
 ) []BetSuggestion {
 	var player holdem.Player
 	for _, candidate := range players {
@@ -643,26 +775,42 @@ func betSuggestions(
 			{"overbet_120", 6, 5},
 		}
 		potAfterCall := totalPot + options.ToCall
+		seenTargets := make(map[int64]struct{}, len(fractions))
 		for _, fraction := range fractions {
 			raiseBy := (potAfterCall*fraction.numerator + fraction.denominator/2) / fraction.denominator
-			target := player.StreetBet + options.ToCall + raiseBy
+			target := roundToNearestUnit(player.StreetBet+options.ToCall+raiseBy, smallBlind)
+			label := fraction.label
 			if target < options.MinRaiseTo {
 				target = options.MinRaiseTo
+				label = "min_raise"
 			}
 			if target > options.MaxRaiseTo {
 				target = options.MaxRaiseTo
 			}
+			if _, exists := seenTargets[target]; exists {
+				continue
+			}
+			seenTargets[target] = struct{}{}
 			action := holdem.ActionRaise
 			if options.CanBet {
 				action = holdem.ActionBet
 			}
-			result = append(result, BetSuggestion{Label: fraction.label, Action: action, RaiseTo: target})
+			result = append(result, BetSuggestion{Label: label, Action: action, RaiseTo: target})
 		}
 	}
 	if options.CanAllIn {
-		result = append(result, BetSuggestion{Label: "all_in", Action: holdem.ActionAllIn, RaiseTo: options.MaxRaiseTo})
+		result = append(result, BetSuggestion{
+			Label: "all_in", Action: holdem.ActionAllIn, RaiseTo: player.StreetBet + player.Stack,
+		})
 	}
 	return result
+}
+
+func roundToNearestUnit(value, unit int64) int64 {
+	if unit <= 1 {
+		return value
+	}
+	return ((value + unit/2) / unit) * unit
 }
 
 func allReady(members []room.Member) bool {

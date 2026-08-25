@@ -144,6 +144,11 @@ class GameSocketClient extends ChangeNotifier {
     _send('table.time_extension.use', payload: const {});
   }
 
+  void rebuy(int amount) {
+    if (amount <= 0 || _recoveringSequenceGap) return;
+    _send('table.rebuy', payload: {'amount': amount});
+  }
+
   void setVoiceState({required bool joined, required bool microphoneEnabled}) =>
       _send(
         'table.voice.state.set',
@@ -245,6 +250,8 @@ class GameSocketClient extends ChangeNotifier {
         case 'table.action.accepted':
           _actionPending = false;
           _pendingRevision = null;
+        case 'table.rebuy.accepted':
+          _errorMessage = null;
         case 'table.chat.message':
           if (payload is Map<String, dynamic>) {
             final chat = TableChatMessage.fromJson(payload);
@@ -263,6 +270,7 @@ class GameSocketClient extends ChangeNotifier {
         case 'table.action.rejected':
         case 'table.chat.rejected':
         case 'table.time_extension.rejected':
+        case 'table.rebuy.rejected':
           if (payload is Map<String, dynamic>) {
             _errorMessage = payload['code'] as String? ?? type;
             if (type == 'table.action.rejected') {

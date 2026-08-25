@@ -73,6 +73,31 @@ func TestMemberLeaveKeepsRoom(t *testing.T) {
 	}
 }
 
+func TestBlindLevelHasMinimumAndUsesSmallBlindDenomination(t *testing.T) {
+	tests := []struct {
+		small int64
+		big   int64
+		valid bool
+	}{
+		{10, 20, true},
+		{25, 50, true},
+		{10, 30, true},
+		{5, 20, false},
+		{10, 10, false},
+		{10, 15, false},
+		{20, 30, false},
+	}
+	for _, test := range tests {
+		if actual := validBlindLevel(test.small, test.big); actual != test.valid {
+			t.Fatalf("validBlindLevel(%d, %d)=%v want=%v", test.small, test.big, actual, test.valid)
+		}
+	}
+	rules, ok := rulesForPreset(PresetCasual)
+	if !ok || rules.SmallBlind != 10 || rules.BigBlind != 20 {
+		t.Fatalf("casual rules=%#v ok=%v", rules, ok)
+	}
+}
+
 func mustRoomService(t *testing.T) *Service {
 	t.Helper()
 	hasher, err := security.NewPasswordHasher(1_000, cryptorand.Reader)

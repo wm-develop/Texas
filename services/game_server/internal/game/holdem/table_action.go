@@ -80,20 +80,21 @@ func (table *Table) actionOptions(player *Player) ActionOptions {
 	if toCall < 0 {
 		toCall = 0
 	}
-	maxRaiseTo := player.StreetBet + player.Stack
+	allInRaiseTo := player.StreetBet + player.Stack
+	maxRaiseTo := roundDownToUnit(allInRaiseTo, table.config.SmallBlind)
 	options := ActionOptions{
 		ToCall:     toCall,
 		CanFold:    toCall > 0,
 		CanCheck:   toCall == 0,
-		CanCall:    toCall > 0 && player.Stack > 0,
-		CanAllIn:   player.Stack > 0 && (maxRaiseTo <= table.currentBet || player.RaiseAllowed),
+		CanCall:    toCall > 0 && player.Stack >= toCall,
+		CanAllIn:   player.Stack > 0 && (allInRaiseTo <= table.currentBet || player.RaiseAllowed),
 		MaxRaiseTo: maxRaiseTo,
 	}
 	if table.currentBet == 0 {
-		options.MinRaiseTo = table.config.BigBlind
+		options.MinRaiseTo = roundUpToUnit(table.config.BigBlind, table.config.SmallBlind)
 		options.CanBet = player.RaiseAllowed && maxRaiseTo >= options.MinRaiseTo
 	} else {
-		options.MinRaiseTo = table.currentBet + table.minRaiseIncrement
+		options.MinRaiseTo = roundUpToUnit(table.currentBet+table.minRaiseIncrement, table.config.SmallBlind)
 		options.CanRaise = player.RaiseAllowed && maxRaiseTo >= options.MinRaiseTo
 	}
 	return options
@@ -129,12 +130,14 @@ func (table *Table) applyAction(player *Player, request ActionRequest, options A
 		player.RaiseAllowed = false
 		return amount, nil
 	case ActionBet:
-		if !options.CanBet || request.RaiseTo < options.MinRaiseTo || request.RaiseTo > options.MaxRaiseTo {
+		if !options.CanBet || request.RaiseTo < options.MinRaiseTo || request.RaiseTo > options.MaxRaiseTo ||
+			request.RaiseTo%table.config.SmallBlind != 0 {
 			return 0, RuleError{Code: "invalid_amount"}
 		}
 		return table.applyAggressiveAction(player, request.RaiseTo)
 	case ActionRaise:
-		if !options.CanRaise || request.RaiseTo < options.MinRaiseTo || request.RaiseTo > options.MaxRaiseTo {
+		if !options.CanRaise || request.RaiseTo < options.MinRaiseTo || request.RaiseTo > options.MaxRaiseTo ||
+			request.RaiseTo%table.config.SmallBlind != 0 {
 			return 0, RuleError{Code: "invalid_amount"}
 		}
 		return table.applyAggressiveAction(player, request.RaiseTo)
@@ -142,7 +145,7 @@ func (table *Table) applyAction(player *Player, request ActionRequest, options A
 		if !options.CanAllIn {
 			return 0, RuleError{Code: "illegal_action"}
 		}
-		target := options.MaxRaiseTo
+		target := player.StreetBet + player.Stack
 		if target <= table.currentBet {
 			amount := player.Stack
 			table.commit(player, amount)
@@ -154,6 +157,14 @@ func (table *Table) applyAction(player *Player, request ActionRequest, options A
 	default:
 		return 0, RuleError{Code: "illegal_action"}
 	}
+}
+
+func roundDownToUnit(value, unit int64) int64 {
+	return value - value%unit
+}
+
+func roundUpToUnit(value, unit int64) int64 {
+	return ((value + unit - 1) / unit) * unit
 }
 
 func (table *Table) applyAggressiveAction(player *Player, target int64) (int64, error) {

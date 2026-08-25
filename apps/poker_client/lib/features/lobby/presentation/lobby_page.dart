@@ -4,6 +4,8 @@ import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
 import 'package:poker_client/core/settings/app_settings.dart';
 import 'package:poker_client/core/settings/settings_dialog.dart';
+import 'package:poker_client/features/bankroll/domain/bankroll_entry.dart';
+import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/history/domain/recent_hand.dart';
 import 'package:poker_client/features/history/presentation/recent_hands_page.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
@@ -11,23 +13,27 @@ import 'package:poker_client/features/lobby/domain/friend_room.dart';
 class LobbyPage extends StatefulWidget {
   const LobbyPage({
     required this.session,
+    required this.bankroll,
     required this.onCreateRoom,
     required this.onJoinRoom,
     required this.onLoadRecentHands,
+    required this.onTopUp,
+    required this.onLoadBankrollEntries,
+    required this.onPreviewRoom,
     required this.settings,
     required this.onLogout,
     super.key,
   });
 
   final AuthSession session;
-  final Future<FriendRoom> Function(
-    String preset,
-    int maxPlayers,
-    String password,
-  )
-  onCreateRoom;
-  final Future<FriendRoom> Function(String code, String password) onJoinRoom;
+  final BankrollSnapshot bankroll;
+  final Future<FriendRoom> Function(CreateRoomInput input) onCreateRoom;
+  final Future<FriendRoom> Function(String code, String password, int buyIn)
+  onJoinRoom;
   final Future<List<RecentHand>> Function() onLoadRecentHands;
+  final Future<BankrollSnapshot> Function(int amount) onTopUp;
+  final Future<List<BankrollEntry>> Function() onLoadBankrollEntries;
+  final Future<RoomPreview> Function(String code) onPreviewRoom;
   final AppSettingsController settings;
   final VoidCallback onLogout;
 
@@ -39,6 +45,10 @@ class _LobbyPageState extends State<LobbyPage> {
   final _roomCode = TextEditingController();
   final _joinPassword = TextEditingController();
   final _createPassword = TextEditingController();
+  final _smallBlind = TextEditingController(text: '10');
+  final _bigBlind = TextEditingController(text: '20');
+  final _maxBuyIn = TextEditingController(text: '2000');
+  final _createBuyIn = TextEditingController(text: '2000');
   String _preset = 'standard';
   double _maxPlayers = 6;
   bool _busy = false;
@@ -49,6 +59,10 @@ class _LobbyPageState extends State<LobbyPage> {
     _roomCode.dispose();
     _joinPassword.dispose();
     _createPassword.dispose();
+    _smallBlind.dispose();
+    _bigBlind.dispose();
+    _maxBuyIn.dispose();
+    _createBuyIn.dispose();
     super.dispose();
   }
 
@@ -58,6 +72,20 @@ class _LobbyPageState extends State<LobbyPage> {
       appBar: AppBar(
         title: const Text('好友房大厅'),
         actions: [
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: ActionChip(
+              avatar: const Icon(Icons.toll, size: 18),
+              label: Text('总筹码 ${widget.bankroll.walletChips}'),
+              onPressed: _busy ? null : _showTopUpDialog,
+            ),
+          ),
+          IconButton(
+            onPressed: _busy ? null : _showBankrollEntries,
+            icon: const Icon(Icons.receipt_long_outlined),
+            tooltip: '筹码流水',
+          ),
+          const SizedBox(width: 8),
           IconButton(
             onPressed: () => showAppSettingsDialog(context, widget.settings),
             icon: const Icon(Icons.settings_outlined),
@@ -195,7 +223,7 @@ class _LobbyPageState extends State<LobbyPage> {
             items: const [
               DropdownMenuItem(
                 value: 'casual',
-                child: Text('休闲 · 1000 筹码 · 5/10'),
+                child: Text('休闲 · 1000 筹码 · 10/20'),
               ),
               DropdownMenuItem(
                 value: 'standard',
@@ -206,9 +234,28 @@ class _LobbyPageState extends State<LobbyPage> {
                 child: Text('深筹 · 5000 筹码 · 10/20'),
               ),
             ],
-            onChanged: _busy
-                ? null
-                : (value) => setState(() => _preset = value!),
+            onChanged: _busy ? null : (value) => _applyPreset(value!),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(child: _chipField(_smallBlind, '小盲')),
+              const SizedBox(width: 10),
+              Expanded(child: _chipField(_bigBlind, '大盲')),
+            ],
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            '最低盲注 10/20，大盲必须是小盲的整数倍',
+            style: TextStyle(color: Colors.white60, fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(child: _chipField(_maxBuyIn, '最大带入')),
+              const SizedBox(width: 10),
+              Expanded(child: _chipField(_createBuyIn, '我的带入')),
+            ],
           ),
           const SizedBox(height: 10),
           Text('人数上限：${_maxPlayers.round()} 人'),
@@ -246,9 +293,23 @@ class _LobbyPageState extends State<LobbyPage> {
       setState(() => _error = '请输入完整的 6 位房间码');
       return;
     }
-    await _run(
-      () => widget.onJoinRoom(_roomCode.text.trim(), _joinPassword.text),
-    );
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final preview = await widget.onPreviewRoom(_roomCode.text.trim());
+      if (!mounted) return;
+      final buyIn = await _showBuyInDialog(preview);
+      if (buyIn == null) return;
+      await widget.onJoinRoom(_roomCode.text.trim(), _joinPassword.text, buyIn);
+    } on GameApiException catch (error) {
+      if (mounted) setState(() => _error = _roomError(error.code));
+    } on Object {
+      if (mounted) setState(() => _error = '无法连接游戏服务，请确认服务端已启动');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   void _openRecentHands() {
@@ -268,8 +329,133 @@ class _LobbyPageState extends State<LobbyPage> {
       setState(() => _error = '房间密码至少需要 4 位');
       return;
     }
+    final smallBlind = int.tryParse(_smallBlind.text);
+    final bigBlind = int.tryParse(_bigBlind.text);
+    final maximum = int.tryParse(_maxBuyIn.text);
+    final buyIn = int.tryParse(_createBuyIn.text);
+    if (smallBlind == null ||
+        bigBlind == null ||
+        smallBlind < 10 ||
+        bigBlind < 20 ||
+        bigBlind <= smallBlind ||
+        bigBlind % smallBlind != 0) {
+      setState(() => _error = '最低盲注为 10/20，且大盲必须是小盲的整数倍');
+      return;
+    }
+    if (maximum == null ||
+        buyIn == null ||
+        maximum < bigBlind ||
+        buyIn <= 0 ||
+        buyIn > maximum) {
+      setState(() => _error = '请检查盲注、最大带入和我的带入额度');
+      return;
+    }
+    if (buyIn > widget.bankroll.walletChips) {
+      setState(() => _error = '账户筹码不足，请先点击顶部总筹码进行虚拟充值');
+      return;
+    }
     await _run(
-      () => widget.onCreateRoom(_preset, _maxPlayers.round(), password),
+      () => widget.onCreateRoom(
+        CreateRoomInput(
+          preset: _preset,
+          maxPlayers: _maxPlayers.round(),
+          password: password,
+          smallBlind: smallBlind,
+          bigBlind: bigBlind,
+          maxBuyIn: maximum,
+          buyIn: buyIn,
+        ),
+      ),
+    );
+  }
+
+  Widget _chipField(TextEditingController controller, String label) =>
+      TextField(
+        controller: controller,
+        keyboardType: TextInputType.number,
+        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+        decoration: InputDecoration(
+          labelText: label,
+          border: const OutlineInputBorder(),
+        ),
+      );
+
+  void _applyPreset(String value) {
+    setState(() {
+      _preset = value;
+      switch (value) {
+        case 'casual':
+          _smallBlind.text = '10';
+          _bigBlind.text = '20';
+          _maxBuyIn.text = '1000';
+          _createBuyIn.text = '1000';
+        case 'deep':
+          _smallBlind.text = '10';
+          _bigBlind.text = '20';
+          _maxBuyIn.text = '5000';
+          _createBuyIn.text = '5000';
+        default:
+          _smallBlind.text = '10';
+          _bigBlind.text = '20';
+          _maxBuyIn.text = '2000';
+          _createBuyIn.text = '2000';
+      }
+    });
+  }
+
+  Future<void> _showTopUpDialog() async {
+    final amount = await showDialog<int>(
+      context: context,
+      builder: (context) => const _ChipAmountDialog(
+        title: '虚拟充值娱乐筹码',
+        description: '不接入支付平台，不产生订单或现实货币交易。',
+        fieldLabel: '充值筹码数量',
+        confirmLabel: '确认充值',
+      ),
+    );
+    if (amount == null) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.onTopUp(amount);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('充值成功，增加 $amount 筹码')));
+      }
+    } on GameApiException catch (error) {
+      if (mounted) setState(() => _error = _roomError(error.code));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  void _showBankrollEntries() {
+    showDialog<void>(
+      context: context,
+      builder: (context) =>
+          _BankrollEntriesDialog(loadEntries: widget.onLoadBankrollEntries),
+    );
+  }
+
+  Future<int?> _showBuyInDialog(RoomPreview preview) async {
+    final suggested = preview.rules.maxBuyIn < widget.bankroll.walletChips
+        ? preview.rules.maxBuyIn
+        : widget.bankroll.walletChips;
+    return showDialog<int>(
+      context: context,
+      builder: (context) => _ChipAmountDialog(
+        title: '选择带入量',
+        description:
+            '盲注 ${preview.rules.smallBlind}/${preview.rules.bigBlind} · 最大带入 ${preview.rules.maxBuyIn}\n'
+            '账户可用 ${widget.bankroll.walletChips} · 房间 ${preview.currentPlayers}/${preview.maxPlayers} 人',
+        fieldLabel: '本次带入',
+        confirmLabel: '带入并加入',
+        initialAmount: suggested,
+        maximum: suggested,
+      ),
     );
   }
 
@@ -290,10 +476,258 @@ class _LobbyPageState extends State<LobbyPage> {
   }
 }
 
+class _ChipAmountDialog extends StatefulWidget {
+  const _ChipAmountDialog({
+    required this.title,
+    required this.description,
+    required this.fieldLabel,
+    required this.confirmLabel,
+    this.initialAmount,
+    this.maximum,
+  });
+
+  final String title;
+  final String description;
+  final String fieldLabel;
+  final String confirmLabel;
+  final int? initialAmount;
+  final int? maximum;
+
+  @override
+  State<_ChipAmountDialog> createState() => _ChipAmountDialogState();
+}
+
+class _ChipAmountDialogState extends State<_ChipAmountDialog> {
+  late final TextEditingController _controller;
+  int _amount = 0;
+
+  bool get _valid =>
+      _amount > 0 && (widget.maximum == null || _amount <= widget.maximum!);
+
+  @override
+  void initState() {
+    super.initState();
+    _amount = widget.initialAmount ?? 0;
+    _controller = TextEditingController(
+      text: widget.initialAmount == null ? '' : '$_amount',
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(widget.description),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            decoration: InputDecoration(
+              labelText: widget.fieldLabel,
+              helperText: widget.maximum == null
+                  ? null
+                  : '本次最多可输入 ${widget.maximum}',
+              border: const OutlineInputBorder(),
+            ),
+            onChanged: (value) =>
+                setState(() => _amount = int.tryParse(value) ?? 0),
+            onSubmitted: (_) {
+              if (_valid) Navigator.of(context).pop(_amount);
+            },
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: _valid ? () => Navigator.of(context).pop(_amount) : null,
+          child: Text(widget.confirmLabel),
+        ),
+      ],
+    );
+  }
+}
+
+class _BankrollEntriesDialog extends StatefulWidget {
+  const _BankrollEntriesDialog({required this.loadEntries});
+
+  final Future<List<BankrollEntry>> Function() loadEntries;
+
+  @override
+  State<_BankrollEntriesDialog> createState() => _BankrollEntriesDialogState();
+}
+
+class _BankrollEntriesDialogState extends State<_BankrollEntriesDialog> {
+  late Future<List<BankrollEntry>> _entries;
+
+  @override
+  void initState() {
+    super.initState();
+    _entries = widget.loadEntries();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Row(
+        children: [
+          Icon(Icons.receipt_long_outlined),
+          SizedBox(width: 8),
+          Text('娱乐筹码流水'),
+        ],
+      ),
+      content: SizedBox(
+        width: 560,
+        height: 420,
+        child: FutureBuilder<List<BankrollEntry>>(
+          future: _entries,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState != ConnectionState.done) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (snapshot.hasError) {
+              return Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('筹码流水加载失败'),
+                    const SizedBox(height: 10),
+                    OutlinedButton.icon(
+                      onPressed: () =>
+                          setState(() => _entries = widget.loadEntries()),
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('重试'),
+                    ),
+                  ],
+                ),
+              );
+            }
+            final entries = snapshot.data ?? const [];
+            if (entries.isEmpty) {
+              return const Center(
+                child: Text('还没有筹码流水', style: TextStyle(color: Colors.white54)),
+              );
+            }
+            return ListView.separated(
+              itemCount: entries.length,
+              separatorBuilder: (_, _) => const Divider(height: 1),
+              itemBuilder: (context, index) =>
+                  _BankrollEntryTile(entry: entries[index]),
+            );
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('关闭'),
+        ),
+      ],
+    );
+  }
+}
+
+class _BankrollEntryTile extends StatelessWidget {
+  const _BankrollEntryTile({required this.entry});
+
+  final BankrollEntry entry;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+      leading: CircleAvatar(
+        backgroundColor: const Color(0xFF315F51),
+        child: Icon(_bankrollReasonIcon(entry.reason), size: 20),
+      ),
+      title: Text(_bankrollReasonLabel(entry.reason)),
+      subtitle: Text(
+        '${_formatLocalTime(entry.createdAt)}\n'
+        '余额：钱包 ${entry.walletBalanceAfter} · 牌桌 ${entry.tableBalanceAfter}',
+      ),
+      isThreeLine: true,
+      trailing: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          if (entry.walletDelta != 0)
+            _DeltaText(label: '钱包', value: entry.walletDelta),
+          if (entry.tableDelta != 0)
+            _DeltaText(label: '牌桌', value: entry.tableDelta),
+          if (entry.walletDelta == 0 && entry.tableDelta == 0)
+            const Text('无变化', style: TextStyle(color: Colors.white38)),
+        ],
+      ),
+    );
+  }
+}
+
+class _DeltaText extends StatelessWidget {
+  const _DeltaText({required this.label, required this.value});
+
+  final String label;
+  final int value;
+
+  @override
+  Widget build(BuildContext context) => Text(
+    '$label ${value > 0 ? '+' : ''}$value',
+    style: TextStyle(
+      color: value > 0 ? const Color(0xFF6DE0A4) : Colors.orangeAccent,
+      fontWeight: FontWeight.w700,
+      fontSize: 12,
+    ),
+  );
+}
+
+String _bankrollReasonLabel(String reason) => switch (reason) {
+  'virtual_top_up' => '虚拟充值',
+  'buy_in' => '带入牌桌',
+  'rebuy' => '牌桌补码',
+  'hand_settlement' => '牌局结算',
+  'cash_out' => '离桌返还',
+  _ => reason,
+};
+
+IconData _bankrollReasonIcon(String reason) => switch (reason) {
+  'virtual_top_up' => Icons.add_card,
+  'buy_in' => Icons.login,
+  'rebuy' => Icons.add_circle_outline,
+  'hand_settlement' => Icons.style_outlined,
+  'cash_out' => Icons.logout,
+  _ => Icons.toll,
+};
+
+String _formatLocalTime(DateTime value) {
+  final local = value.toLocal();
+  String two(int number) => number.toString().padLeft(2, '0');
+  return '${local.year}-${two(local.month)}-${two(local.day)} '
+      '${two(local.hour)}:${two(local.minute)}';
+}
+
 String _roomError(String code) => switch (code) {
   'room_not_found' => '没有找到这个房间',
   'invalid_room_password' => '房间密码不正确',
   'room_full' => '这个房间已经满员',
   'already_in_room' => '你已经在另一个房间中',
+  'insufficient_wallet_chips' => '账户筹码不足，请先充值或减少带入',
+  'maximum_buy_in_exceeded' => '带入量超过房间上限',
+  'invalid_room_rules' => '最低盲注为 10/20，大盲必须是小盲的整数倍，并请检查带入设置',
+  'invalid_buy_in' => '带入量必须为正整数且不超过房间上限',
+  'invalid_chip_amount' => '请输入有效的正整数筹码数量',
   _ => '操作失败（$code）',
 };

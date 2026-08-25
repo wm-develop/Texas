@@ -55,6 +55,7 @@ void main() {
           ],
         },
         'totalPot': 400,
+        'maxBuyIn': 5000,
         'settlement': {
           'handId': 'hand_1',
           'potAwards': [
@@ -79,6 +80,7 @@ void main() {
       });
 
       expect(snapshot.seats.single.position, 'BTN');
+      expect(snapshot.maxBuyIn, 5000);
       expect(snapshot.seats.single.lastActionTo, 100);
       expect(snapshot.seats.single.timeExtensions, 2);
       expect(snapshot.currentAction!.options.minRaiseTo, 120);

@@ -4,10 +4,12 @@ import (
 	"context"
 	cryptorand "crypto/rand"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"texas/services/game_server/internal/bankroll"
 	"texas/services/game_server/internal/game/holdem"
 	"texas/services/game_server/internal/history"
 	"texas/services/game_server/internal/ledger"
@@ -178,9 +180,9 @@ func TestPositionsSkipEmptySeatsClockwise(t *testing.T) {
 func TestBetSuggestionsIncludeRequestedPotFractionsAndAllIn(t *testing.T) {
 	players := []holdem.Player{{PlayerID: "actor", StreetBet: 10, Stack: 990}}
 	options := holdem.ActionOptions{
-		ToCall: 10, CanRaise: true, CanAllIn: true, MinRaiseTo: 40, MaxRaiseTo: 1000,
+		ToCall: 10, CanRaise: true, CanAllIn: true, MinRaiseTo: 20, MaxRaiseTo: 1000,
 	}
-	suggestions := betSuggestions(30, players, "actor", options)
+	suggestions := betSuggestions(300, players, "actor", options, 10)
 	labels := []string{"quarter_pot", "third_pot", "half_pot", "two_thirds_pot", "pot", "overbet_120", "all_in"}
 	if len(suggestions) != len(labels) {
 		t.Fatalf("suggestions=%#v", suggestions)
@@ -193,8 +195,54 @@ func TestBetSuggestionsIncludeRequestedPotFractionsAndAllIn(t *testing.T) {
 			t.Fatalf("suggestion below minimum: %#v", suggestions[index])
 		}
 	}
-	if suggestions[5].RaiseTo != 68 || suggestions[6].RaiseTo != 1000 {
+	for _, suggestion := range suggestions[:6] {
+		if suggestion.RaiseTo%10 != 0 {
+			t.Fatalf("suggestion does not use small blind denomination: %#v", suggestion)
+		}
+	}
+	if suggestions[5].RaiseTo != 390 || suggestions[6].RaiseTo != 1000 {
 		t.Fatalf("overbet/all-in suggestions=%#v", suggestions)
+	}
+}
+
+func TestBetSuggestionsUsePostCallPotAndCollapseIllegalFractionsToMinimumRaise(t *testing.T) {
+	players := []holdem.Player{{PlayerID: "actor", StreetBet: 20, Stack: 980}}
+	options := holdem.ActionOptions{
+		ToCall: 180, CanRaise: true, CanAllIn: true, MinRaiseTo: 380, MaxRaiseTo: 1000,
+	}
+	suggestions := betSuggestions(220, players, "actor", options, 10)
+	want := []struct {
+		label   string
+		target  int64
+		commits int64
+	}{
+		{"min_raise", 380, 360},
+		{"half_pot", 400, 380},
+		{"two_thirds_pot", 470, 450},
+		{"pot", 600, 580},
+		{"overbet_120", 680, 660},
+		{"all_in", 1000, 980},
+	}
+	if len(suggestions) != len(want) {
+		t.Fatalf("suggestions=%#v", suggestions)
+	}
+	for index, expected := range want {
+		actual := suggestions[index]
+		if actual.Label != expected.label || actual.RaiseTo != expected.target ||
+			actual.RaiseTo-players[0].StreetBet != expected.commits {
+			t.Fatalf("suggestion %d=%#v want=%#v", index, actual, expected)
+		}
+	}
+
+	secondOptions := holdem.ActionOptions{
+		ToCall: 100, CanRaise: true, CanAllIn: true, MinRaiseTo: 300, MaxRaiseTo: 1725,
+	}
+	second := betSuggestions(
+		300, []holdem.Player{{PlayerID: "actor", StreetBet: 100, Stack: 1625}},
+		"actor", secondOptions, 10,
+	)
+	if len(second) == 0 || second[0].Label != "quarter_pot" || second[0].RaiseTo != 300 {
+		t.Fatalf("second preflop suggestions=%#v", second)
 	}
 }
 
@@ -344,6 +392,94 @@ func TestActionDeadlineBecomesSixtySecondsWhenThreePlayersBecomeTwo(t *testing.T
 	if afterFold.CurrentAction == nil || afterFold.CurrentAction.Deadline != now.Add(60*time.Second).UnixMilli() {
 		t.Fatalf("heads-up deadline=%#v", afterFold.CurrentAction)
 	}
+}
+
+func TestConfiguredBuyInRebuyIsIdempotentAndLeaveCashesOut(t *testing.T) {
+	ctx := context.Background()
+	chips, err := bankroll.NewService(bankroll.NewMemoryRepository(), time.Now)
+	if err != nil {
+		t.Fatalf("bankroll NewService: %v", err)
+	}
+	for _, userID := range []string{"owner", "guest"} {
+		if _, err := chips.TopUp(ctx, userID, "topup-"+userID, 5_000); err != nil {
+			t.Fatalf("TopUp %s: %v", userID, err)
+		}
+	}
+	hasher, err := security.NewPasswordHasher(1_000, cryptorand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rooms, err := room.NewService(room.NewMemoryRepository(), hasher, room.ServiceConfig{Bankroll: chips})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := rooms.CreateConfigured(ctx, room.Participant{UserID: "owner", DisplayName: "房主"}, room.CreateOptions{
+		Preset: room.PresetStandard, MaxPlayers: 2, SmallBlind: 10, BigBlind: 20,
+		MaxBuyIn: 2_000, BuyIn: 1_000, RequestID: "create-owner",
+	})
+	if err != nil {
+		t.Fatalf("CreateConfigured: %v", err)
+	}
+	if _, err := rooms.JoinWithBuyIn(ctx, room.Participant{UserID: "guest", DisplayName: "好友"}, room.JoinOptions{
+		Code: created.Code, BuyIn: 500, RequestID: "join-guest",
+	}); err != nil {
+		t.Fatalf("JoinWithBuyIn: %v", err)
+	}
+	manager, err := NewWithConfig(rooms, zeroRandom{}, ManagerConfig{Bankroll: chips})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Join(ctx, "owner", created.RoomID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Join(ctx, "guest", created.RoomID); err != nil {
+		t.Fatal(err)
+	}
+	first, err := manager.Rebuy(ctx, "guest", created.RoomID, "rebuy-guest", 600)
+	if err != nil {
+		t.Fatalf("Rebuy: %v", err)
+	}
+	duplicate, err := manager.Rebuy(ctx, "guest", created.RoomID, "rebuy-guest", 600)
+	if err != nil {
+		t.Fatalf("duplicate Rebuy: %v", err)
+	}
+	guestStack := func(snapshot Snapshot) int64 {
+		for _, seat := range snapshot.Seats {
+			if seat.UserID == "guest" {
+				return seat.Stack
+			}
+		}
+		return -1
+	}
+	if guestStack(first) != 1_100 || guestStack(duplicate) != 1_100 {
+		t.Fatalf("rebuy stacks first=%d duplicate=%d", guestStack(first), guestStack(duplicate))
+	}
+	if _, err := manager.Rebuy(ctx, "guest", created.RoomID, "rebuy-over-cap", 901); errorCodeForTest(err) != "maximum_buy_in_exceeded" {
+		t.Fatalf("expected cap error, got %v", err)
+	}
+	closed, err := manager.Leave(ctx, "guest")
+	if err != nil || closed {
+		t.Fatalf("guest Leave closed=%v err=%v", closed, err)
+	}
+	guestWallet, err := chips.Snapshot(ctx, "guest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if guestWallet.WalletChips != 5_000 || guestWallet.TableChips != 0 {
+		t.Fatalf("guest cash-out=%#v", guestWallet)
+	}
+}
+
+func errorCodeForTest(err error) string {
+	var roomError room.Error
+	if errors.As(err, &roomError) {
+		return roomError.Code
+	}
+	var ruleError holdem.RuleError
+	if errors.As(err, &ruleError) {
+		return ruleError.Code
+	}
+	return ""
 }
 
 func testRoomService(t *testing.T) *room.Service {

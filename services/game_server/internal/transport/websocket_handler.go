@@ -14,6 +14,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 
 	"texas/services/game_server/internal/account"
+	"texas/services/game_server/internal/bankroll"
 	"texas/services/game_server/internal/chat"
 	"texas/services/game_server/internal/game/holdem"
 	"texas/services/game_server/internal/game/tablemanager"
@@ -137,6 +138,8 @@ func (client *webSocketClient) route(ctx context.Context, message protocol.Envel
 		return client.submitAction(ctx, message)
 	case protocol.TypeTableTimeExtensionUse:
 		return client.useTimeExtension(ctx, message)
+	case protocol.TypeTableRebuy:
+		return client.rebuy(ctx, message)
 	case protocol.TypeTableVoiceStateSet:
 		return client.setVoiceState(message)
 	case protocol.TypeTableChatSend:
@@ -144,6 +147,24 @@ func (client *webSocketClient) route(ctx context.Context, message protocol.Envel
 	default:
 		return client.sendError(message, protocol.TypeSystemError, "unsupported_message_type", 0)
 	}
+}
+
+func (client *webSocketClient) rebuy(ctx context.Context, message protocol.Envelope) error {
+	if client.roomID == "" || client.server.tables == nil {
+		return client.sendError(message, protocol.TypeTableRebuyRejected, "table_not_joined", 0)
+	}
+	var payload protocol.RebuyPayload
+	if !decodePayload(message.Payload, &payload) {
+		return client.sendError(message, protocol.TypeTableRebuyRejected, "invalid_request", 0)
+	}
+	snapshot, err := client.server.tables.Rebuy(ctx, client.user.UserID, client.roomID, message.RequestID, payload.Amount)
+	if err != nil {
+		return client.sendError(message, protocol.TypeTableRebuyRejected, errorCode(err), 0)
+	}
+	if err := client.respond(message, protocol.TypeTableRebuyAccepted, map[string]int64{"amount": payload.Amount}); err != nil {
+		return err
+	}
+	return client.server.hub.broadcastSnapshots(ctx, client.server.tables, client.roomID, &snapshot)
 }
 
 func (client *webSocketClient) useTimeExtension(ctx context.Context, message protocol.Envelope) error {
@@ -595,6 +616,10 @@ func errorCode(err error) string {
 	if errors.As(err, &roomError) {
 		return roomError.Code
 	}
+	var bankrollError bankroll.Error
+	if errors.As(err, &bankrollError) {
+		return bankrollError.Code
+	}
 	var ruleError holdem.RuleError
 	if errors.As(err, &ruleError) {
 		return ruleError.Code
@@ -632,6 +657,7 @@ func isIdempotentRequest(messageType protocol.MessageType) bool {
 		protocol.TypeTableReadySet,
 		protocol.TypeTableActionSubmit,
 		protocol.TypeTableTimeExtensionUse,
+		protocol.TypeTableRebuy,
 		protocol.TypeTableVoiceStateSet,
 		protocol.TypeTableChatSend:
 		return true

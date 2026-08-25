@@ -7,7 +7,7 @@
 阶段 0～2 已完成，当前已经具备可供熟人联机测试的 MVP：
 
 - 注册、登录、好友房、房间码和 2～10 人座位/准备流程。
-- 服务端权威的完整德州牌局，包括主池、边池、摊牌、倒计时、每手两张 30 秒加时卡和自定义下注额度。
+- 服务端权威的完整德州牌局，包括主池、边池、摊牌、倒计时、每手两张 30 秒加时卡和按小盲单位控制的自定义下注额度。
 - WebSocket 事件序列、请求幂等、断线补发和私人快照安全恢复。
 - 牌桌文字聊天、快捷语、表情、本地屏蔽和服务端禁言。
 - TRTC 自由麦语音、语音成员、开麦/说话状态、单人静音和播放音量。
@@ -15,9 +15,9 @@
 - Web、Windows、Android、HarmonyOS 构建验证。
 - 10 个独立 WebSocket 客户端连续完成 100 手，1000 条玩家账本记录逐手守恒。
 
-下一阶段是上线准备。第一条产品链路将补齐账户娱乐筹码余额、无支付的虚拟充值、房主自定义盲注/最大带入、玩家自主带入及每手结束后的补码；随后完成 PostgreSQL/Redis 持久化、多实例运行、管理治理、可观测性、安全加固、自动发布和 24 小时稳定性验收。执行顺序见 [阶段 3 计划](docs/PHASE_3_PLAN.md)。
+阶段 3 已开始。账户娱乐筹码余额、无支付虚拟充值、最近筹码流水、房主自定义盲注/最大带入、玩家自主带入、手间补码、输光自动补码和离桌返还已经形成可本地测试的内存纵向链路；盲注最低为 10/20，普通下注和加注统一使用小盲整数倍。PostgreSQL 的首版数据迁移契约也已建立。下一步是把这些仓储切换为 PostgreSQL 事务实现，再进入 Redis、多实例、管理治理、可观测性、安全加固、自动发布和 24 小时稳定性验收。执行顺序见 [阶段 3 计划](docs/PHASE_3_PLAN.md)。
 
-> 当前服务端默认使用进程内仓储。服务重启后账号、会话、房间、聊天和最近牌局会清空，因此现阶段只适合本地及封闭联机测试。
+> 当前服务端仍默认使用进程内仓储。服务重启后账号、钱包、会话、房间、聊天和最近牌局会清空，因此现阶段只适合本地及封闭联机测试。`services/game_server/migrations` 只是已评审的数据契约，程序尚未启用 PostgreSQL。
 
 ## 文档索引
 
@@ -87,38 +87,3 @@ flutter run -d <设备ID> `
   --dart-define=GAME_SERVER_URL=ws://<电脑IP>:8080/ws `
   --dart-define=GAME_HTTP_SERVER_URL=http://<电脑IP>:8080
 ```
-
-## 质量检查与构建
-
-服务端：
-
-```powershell
-go vet ./...
-go test ./...
-```
-
-客户端：
-
-```powershell
-flutter analyze
-flutter test
-flutter build web
-flutter build windows --debug
-flutter build apk --debug
-flutter build hap --debug
-```
-
-WebSocket 单客户端冒烟工具：
-
-```powershell
-dart run tool\websocket_smoke.dart
-```
-
-10 客户端/100 手协议验收已经包含在 Go 测试套件中。
-
-## 仓库安全约定
-
-- 不提交 `.env`、TRTC SecretKey、调试令牌、证书、私钥、签名口令或本机绝对路径。
-- 不提交 APK、HAP、Windows/Web 构建目录、本地 SDK、缓存和临时下载文件。
-- Web TRTC SDK 位于 `apps/poker_client/web/vendor`，是客户端离线运行所需的受控依赖，应随源码提交。
-- 提交前至少运行 `go test ./...`、`flutter analyze` 和 `flutter test`。

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"texas/services/game_server/internal/account"
+	"texas/services/game_server/internal/bankroll"
 	"texas/services/game_server/internal/chat"
 	"texas/services/game_server/internal/game/tablemanager"
 	"texas/services/game_server/internal/history"
@@ -22,6 +23,7 @@ type Options struct {
 	TRTCDebugToken string
 	TRTCAuthorizer trtc.AccessAuthorizer
 	Accounts       *account.Service
+	Bankroll       *bankroll.Service
 	Rooms          *room.Service
 	Tables         *tablemanager.Manager
 	Chat           *chat.Service
@@ -32,7 +34,8 @@ func NewHandler(logger *slog.Logger, options Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealth)
 	registerAccountRoutes(mux, options.Accounts)
-	registerRoomRoutes(mux, options.Accounts, options.Rooms)
+	registerBankrollRoutes(mux, options.Accounts, options.Bankroll)
+	registerRoomRoutes(mux, options.Accounts, options.Rooms, options.Tables)
 	registerHistoryRoutes(mux, options.Accounts, options.History)
 	mux.Handle("GET /ws", newWebSocketServer(logger, options))
 	mux.Handle("POST /v1/trtc/credentials", trtcCredentialsHandler(options))

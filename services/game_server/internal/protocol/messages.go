@@ -27,6 +27,9 @@ const (
 	TypeTableTimeExtensionUse      MessageType = "table.time_extension.use"
 	TypeTableTimeExtensionAccepted MessageType = "table.time_extension.accepted"
 	TypeTableTimeExtensionRejected MessageType = "table.time_extension.rejected"
+	TypeTableRebuy                 MessageType = "table.rebuy"
+	TypeTableRebuyAccepted         MessageType = "table.rebuy.accepted"
+	TypeTableRebuyRejected         MessageType = "table.rebuy.rejected"
 	TypeTableVoiceStateSet         MessageType = "table.voice.state.set"
 	TypeTableVoiceState            MessageType = "table.voice.state"
 	TypeTableChatSend              MessageType = "table.chat.send"
@@ -79,6 +82,10 @@ type ChatSendPayload struct {
 type VoiceStateSetPayload struct {
 	Joined            bool `json:"joined"`
 	MicrophoneEnabled bool `json:"microphoneEnabled"`
+}
+
+type RebuyPayload struct {
+	Amount int64 `json:"amount"`
 }
 
 type VoiceMemberState struct {

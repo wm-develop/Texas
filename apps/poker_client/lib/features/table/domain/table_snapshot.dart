@@ -235,6 +235,7 @@ class TableSnapshot {
     required this.seats,
     required this.currentAction,
     required this.totalPot,
+    required this.maxBuyIn,
     required this.settlement,
   });
 
@@ -249,6 +250,7 @@ class TableSnapshot {
   final List<TableSeatSnapshot> seats;
   final CurrentTableAction? currentAction;
   final int totalPot;
+  final int maxBuyIn;
   final TableSettlement? settlement;
   bool get hasSettlement => settlement != null;
 
@@ -272,6 +274,7 @@ class TableSnapshot {
             json['currentAction'] as Map<String, dynamic>,
           ),
     totalPot: json['totalPot'] as int? ?? 0,
+    maxBuyIn: json['maxBuyIn'] as int? ?? 0,
     settlement: json['settlement'] == null
         ? null
         : TableSettlement.fromJson(json['settlement'] as Map<String, dynamic>),

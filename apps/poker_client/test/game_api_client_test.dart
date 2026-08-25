@@ -51,6 +51,12 @@ void main() {
       serverBaseUri: Uri.parse('http://game.test'),
       httpClient: MockClient((request) async {
         expect(request.headers['authorization'], 'Bearer access-token');
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        expect(body['smallBlind'], 10);
+        expect(body['bigBlind'], 20);
+        expect(body['maxBuyIn'], 5000);
+        expect(body['buyIn'], 2000);
+        expect(body['requestId'], 'create-room-1');
         return http.Response.bytes(
           utf8.encode(
             jsonEncode({
@@ -62,6 +68,7 @@ void main() {
                 'startingChips': 2000,
                 'smallBlind': 10,
                 'bigBlind': 20,
+                'maxBuyIn': 5000,
                 'actionSeconds': 20,
               },
               'maxPlayers': 10,
@@ -71,6 +78,7 @@ void main() {
                   'displayName': '好友一',
                   'seat': 1,
                   'ready': false,
+                  'stack': 2000,
                   'joinedAt': '2026-08-24T00:00:00Z',
                 },
               ],
@@ -89,10 +97,81 @@ void main() {
       preset: 'standard',
       maxPlayers: 10,
       password: '',
+      smallBlind: 10,
+      bigBlind: 20,
+      maxBuyIn: 5000,
+      buyIn: 2000,
+      requestId: 'create-room-1',
     );
 
     expect(room.maxPlayers, 10);
     expect(room.members.single.displayName, '好友一');
+  });
+
+  test('parses and sends an idempotent virtual top-up', () async {
+    final client = GameApiClient(
+      serverBaseUri: Uri.parse('http://game.test'),
+      httpClient: MockClient((request) async {
+        expect(request.method, 'POST');
+        expect(request.url.path, '/v1/bankroll/top-ups');
+        expect(request.headers['authorization'], 'Bearer access-token');
+        expect(jsonDecode(request.body), {
+          'requestId': 'topup-1',
+          'amount': 8888,
+        });
+        return http.Response(
+          jsonEncode({
+            'userId': 'usr_1',
+            'walletChips': 8888,
+            'tableChips': 0,
+            'revision': 1,
+          }),
+          200,
+        );
+      }),
+    );
+
+    final bankroll = await client.topUp(
+      accessToken: 'access-token',
+      requestId: 'topup-1',
+      amount: 8888,
+    );
+
+    expect(bankroll.walletChips, 8888);
+    expect(bankroll.revision, 1);
+  });
+
+  test('loads newest entertainment chip ledger entries', () async {
+    final client = GameApiClient(
+      serverBaseUri: Uri.parse('http://game.test'),
+      httpClient: MockClient((request) async {
+        expect(request.method, 'GET');
+        expect(request.url.path, '/v1/bankroll/entries');
+        expect(request.url.queryParameters['limit'], '30');
+        return http.Response(
+          jsonEncode({
+            'entries': [
+              {
+                'entryId': 'bank_1',
+                'reason': 'rebuy',
+                'walletDelta': -500,
+                'tableDelta': 500,
+                'walletBalanceAfter': 4500,
+                'tableBalanceAfter': 1500,
+                'createdAt': '2026-08-25T10:00:00Z',
+              },
+            ],
+          }),
+          200,
+        );
+      }),
+    );
+
+    final entries = await client.bankrollEntries(accessToken: 'access-token');
+
+    expect(entries.single.reason, 'rebuy');
+    expect(entries.single.walletDelta, -500);
+    expect(entries.single.tableBalanceAfter, 1500);
   });
 
   test('loads personalized recent hand history', () async {

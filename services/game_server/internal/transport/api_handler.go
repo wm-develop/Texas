@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"texas/services/game_server/internal/account"
+	"texas/services/game_server/internal/bankroll"
+	"texas/services/game_server/internal/game/tablemanager"
 	"texas/services/game_server/internal/history"
 	"texas/services/game_server/internal/room"
 )
@@ -83,7 +85,92 @@ func registerAccountRoutes(mux *http.ServeMux, accounts *account.Service) {
 	})
 }
 
-func registerRoomRoutes(mux *http.ServeMux, accounts *account.Service, rooms *room.Service) {
+func registerBankrollRoutes(mux *http.ServeMux, accounts *account.Service, chips *bankroll.Service) {
+	mux.HandleFunc("GET /v1/bankroll", func(writer http.ResponseWriter, request *http.Request) {
+		user, ok := authenticateRequest(writer, request, accounts)
+		if !ok {
+			return
+		}
+		if chips == nil {
+			writeJSONError(writer, http.StatusServiceUnavailable, "service_unavailable")
+			return
+		}
+		snapshot, err := chips.Snapshot(request.Context(), user.UserID)
+		if err != nil {
+			writeBankrollError(writer, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, snapshot)
+	})
+
+	mux.HandleFunc("POST /v1/bankroll/top-ups", func(writer http.ResponseWriter, request *http.Request) {
+		user, ok := authenticateRequest(writer, request, accounts)
+		if !ok {
+			return
+		}
+		if chips == nil {
+			writeJSONError(writer, http.StatusServiceUnavailable, "service_unavailable")
+			return
+		}
+		var body struct {
+			RequestID string `json:"requestId"`
+			Amount    int64  `json:"amount"`
+		}
+		if !decodeJSONBody(writer, request, &body) {
+			return
+		}
+		snapshot, err := chips.TopUp(request.Context(), user.UserID, body.RequestID, body.Amount)
+		if err != nil {
+			writeBankrollError(writer, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, snapshot)
+	})
+
+	mux.HandleFunc("GET /v1/bankroll/entries", func(writer http.ResponseWriter, request *http.Request) {
+		user, ok := authenticateRequest(writer, request, accounts)
+		if !ok {
+			return
+		}
+		if chips == nil {
+			writeJSONError(writer, http.StatusServiceUnavailable, "service_unavailable")
+			return
+		}
+		limit := 20
+		if raw := request.URL.Query().Get("limit"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed <= 0 || parsed > 100 {
+				writeJSONError(writer, http.StatusBadRequest, "invalid_request")
+				return
+			}
+			limit = parsed
+		}
+		entries, err := chips.Entries(request.Context(), user.UserID, limit)
+		if err != nil {
+			writeBankrollError(writer, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, map[string]any{"entries": entries})
+	})
+}
+
+func registerRoomRoutes(mux *http.ServeMux, accounts *account.Service, rooms *room.Service, tables *tablemanager.Manager) {
+	mux.HandleFunc("GET /v1/rooms/preview", func(writer http.ResponseWriter, request *http.Request) {
+		if _, ok := authenticateRequest(writer, request, accounts); !ok {
+			return
+		}
+		if rooms == nil {
+			writeJSONError(writer, http.StatusServiceUnavailable, "service_unavailable")
+			return
+		}
+		value, err := rooms.Preview(request.Context(), request.URL.Query().Get("code"))
+		if err != nil {
+			writeRoomError(writer, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, value)
+	})
+
 	mux.HandleFunc("POST /v1/rooms", func(writer http.ResponseWriter, request *http.Request) {
 		user, ok := authenticateRequest(writer, request, accounts)
 		if !ok {
@@ -97,13 +184,27 @@ func registerRoomRoutes(mux *http.ServeMux, accounts *account.Service, rooms *ro
 			Preset     room.Preset `json:"preset"`
 			MaxPlayers int         `json:"maxPlayers"`
 			Password   string      `json:"password"`
+			SmallBlind int64       `json:"smallBlind"`
+			BigBlind   int64       `json:"bigBlind"`
+			MaxBuyIn   int64       `json:"maxBuyIn"`
+			BuyIn      int64       `json:"buyIn"`
+			RequestID  string      `json:"requestId"`
 		}
 		if !decodeJSONBody(writer, request, &body) {
 			return
 		}
-		value, err := rooms.Create(request.Context(), room.Participant{
-			UserID: user.UserID, DisplayName: user.DisplayName,
-		}, body.Preset, body.MaxPlayers, body.Password)
+		participant := room.Participant{UserID: user.UserID, DisplayName: user.DisplayName}
+		var value room.Room
+		var err error
+		if body.RequestID == "" {
+			value, err = rooms.Create(request.Context(), participant, body.Preset, body.MaxPlayers, body.Password)
+		} else {
+			value, err = rooms.CreateConfigured(request.Context(), participant, room.CreateOptions{
+				Preset: body.Preset, MaxPlayers: body.MaxPlayers, Password: body.Password,
+				SmallBlind: body.SmallBlind, BigBlind: body.BigBlind, MaxBuyIn: body.MaxBuyIn,
+				BuyIn: body.BuyIn, RequestID: body.RequestID,
+			})
+		}
 		if err != nil {
 			writeRoomError(writer, err)
 			return
@@ -121,15 +222,24 @@ func registerRoomRoutes(mux *http.ServeMux, accounts *account.Service, rooms *ro
 			return
 		}
 		var body struct {
-			Code     string `json:"code"`
-			Password string `json:"password"`
+			Code      string `json:"code"`
+			Password  string `json:"password"`
+			BuyIn     int64  `json:"buyIn"`
+			RequestID string `json:"requestId"`
 		}
 		if !decodeJSONBody(writer, request, &body) {
 			return
 		}
-		value, err := rooms.Join(request.Context(), room.Participant{
-			UserID: user.UserID, DisplayName: user.DisplayName,
-		}, body.Code, body.Password)
+		participant := room.Participant{UserID: user.UserID, DisplayName: user.DisplayName}
+		var value room.Room
+		var err error
+		if body.RequestID == "" {
+			value, err = rooms.Join(request.Context(), participant, body.Code, body.Password)
+		} else {
+			value, err = rooms.JoinWithBuyIn(request.Context(), participant, room.JoinOptions{
+				Code: body.Code, Password: body.Password, BuyIn: body.BuyIn, RequestID: body.RequestID,
+			})
+		}
 		if err != nil {
 			writeRoomError(writer, err)
 			return
@@ -186,7 +296,13 @@ func registerRoomRoutes(mux *http.ServeMux, accounts *account.Service, rooms *ro
 			writeJSONError(writer, http.StatusServiceUnavailable, "service_unavailable")
 			return
 		}
-		closed, err := rooms.Leave(request.Context(), user.UserID)
+		var closed bool
+		var err error
+		if tables == nil {
+			closed, err = rooms.Leave(request.Context(), user.UserID)
+		} else {
+			closed, err = tables.Leave(request.Context(), user.UserID)
+		}
 		if err != nil {
 			writeRoomError(writer, err)
 			return
@@ -282,6 +398,20 @@ func writeRoomError(writer http.ResponseWriter, err error) {
 		writeJSONError(writer, http.StatusForbidden, roomError.Code)
 	default:
 		writeJSONError(writer, http.StatusBadRequest, roomError.Code)
+	}
+}
+
+func writeBankrollError(writer http.ResponseWriter, err error) {
+	var bankrollError bankroll.Error
+	if !errors.As(err, &bankrollError) {
+		writeJSONError(writer, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	switch bankrollError.Code {
+	case "insufficient_wallet_chips", "maximum_buy_in_exceeded":
+		writeJSONError(writer, http.StatusConflict, bankrollError.Code)
+	default:
+		writeJSONError(writer, http.StatusBadRequest, bankrollError.Code)
 	}
 }
 

@@ -13,12 +13,14 @@ import (
 	"sync"
 	"time"
 
+	"texas/services/game_server/internal/bankroll"
 	"texas/services/game_server/internal/security"
 )
 
 type ServiceConfig struct {
-	Now    func() time.Time
-	Random io.Reader
+	Now      func() time.Time
+	Random   io.Reader
+	Bankroll *bankroll.Service
 }
 
 type Service struct {
@@ -26,6 +28,7 @@ type Service struct {
 	repository Repository
 	passwords  *security.PasswordHasher
 	config     ServiceConfig
+	bankroll   *bankroll.Service
 }
 
 func NewService(repository Repository, passwords *security.PasswordHasher, config ServiceConfig) (*Service, error) {
@@ -38,7 +41,174 @@ func NewService(repository Repository, passwords *security.PasswordHasher, confi
 	if config.Random == nil {
 		config.Random = cryptorand.Reader
 	}
-	return &Service{repository: repository, passwords: passwords, config: config}, nil
+	return &Service{repository: repository, passwords: passwords, config: config, bankroll: config.Bankroll}, nil
+}
+
+type CreateOptions struct {
+	Preset     Preset
+	MaxPlayers int
+	Password   string
+	SmallBlind int64
+	BigBlind   int64
+	MaxBuyIn   int64
+	BuyIn      int64
+	RequestID  string
+}
+
+type JoinOptions struct {
+	Code      string
+	Password  string
+	BuyIn     int64
+	RequestID string
+}
+
+func (service *Service) CreateConfigured(ctx context.Context, owner Participant, options CreateOptions) (Room, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if service.bankroll == nil || !validParticipant(owner) || options.MaxPlayers < 2 || options.MaxPlayers > 10 {
+		return Room{}, Error{Code: "invalid_room"}
+	}
+	if current, err := service.repository.ByUser(ctx, owner.UserID); err == nil {
+		if current.OwnerUserID == owner.UserID {
+			return publicRoom(current), nil
+		}
+		return Room{}, Error{Code: "already_in_room"}
+	} else if !errors.Is(err, ErrNotFound) {
+		return Room{}, err
+	}
+	presetRules, ok := rulesForPreset(options.Preset)
+	if !ok || !validBlindLevel(options.SmallBlind, options.BigBlind) ||
+		options.MaxBuyIn < options.BigBlind || options.BuyIn <= 0 || options.BuyIn > options.MaxBuyIn {
+		return Room{}, Error{Code: "invalid_room_rules"}
+	}
+	passwordHash, err := service.hashRoomPassword(options.Password)
+	if err != nil {
+		return Room{}, err
+	}
+	rules := Rules{
+		StartingChips: options.MaxBuyIn, MaxBuyIn: options.MaxBuyIn,
+		SmallBlind: options.SmallBlind, BigBlind: options.BigBlind,
+		ActionSeconds: presetRules.ActionSeconds,
+	}
+	for attempt := 0; attempt < 10; attempt++ {
+		roomID, err := service.randomID("table_", 9)
+		if err != nil {
+			return Room{}, err
+		}
+		code, err := service.randomCode()
+		if err != nil {
+			return Room{}, err
+		}
+		buyInRequestID := fmt.Sprintf("%s:%d", options.RequestID, attempt)
+		position, err := service.bankroll.BuyIn(ctx, owner.UserID, roomID, buyInRequestID, options.BuyIn, options.MaxBuyIn)
+		if err != nil {
+			return Room{}, mapBankrollError(err)
+		}
+		now := service.config.Now()
+		value := Room{
+			RoomID: roomID, Code: code, OwnerUserID: owner.UserID, Preset: options.Preset,
+			Rules: rules, MaxPlayers: options.MaxPlayers, Revision: 1, CreatedAt: now,
+			PasswordHash: passwordHash,
+			Members:      []Member{{UserID: owner.UserID, DisplayName: owner.DisplayName, Seat: 1, Stack: position.TableChips, JoinedAt: now}},
+		}
+		if err := service.repository.Create(ctx, value); err == nil {
+			return publicRoom(value), nil
+		}
+		_, _ = service.bankroll.CashOut(ctx, owner.UserID, roomID, "rollback:"+buyInRequestID)
+	}
+	return Room{}, errors.New("could not allocate unique room identifiers")
+}
+
+func (service *Service) JoinWithBuyIn(ctx context.Context, participant Participant, options JoinOptions) (Room, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if service.bankroll == nil || !validParticipant(participant) {
+		return Room{}, Error{Code: "invalid_profile"}
+	}
+	if current, err := service.repository.ByUser(ctx, participant.UserID); err == nil {
+		if current.Code == strings.TrimSpace(options.Code) {
+			return publicRoom(current), nil
+		}
+		return Room{}, Error{Code: "already_in_room"}
+	}
+	value, err := service.repository.ByCode(ctx, strings.TrimSpace(options.Code))
+	if err != nil {
+		return Room{}, Error{Code: "room_not_found"}
+	}
+	if value.PasswordHash != "" && !service.passwords.Verify("room:"+options.Password, value.PasswordHash) {
+		return Room{}, Error{Code: "invalid_room_password"}
+	}
+	if len(value.Members) >= value.MaxPlayers {
+		return Room{}, Error{Code: "room_full"}
+	}
+	if options.BuyIn <= 0 || options.BuyIn > value.Rules.MaxBuyIn {
+		return Room{}, Error{Code: "invalid_buy_in"}
+	}
+	position, err := service.bankroll.BuyIn(ctx, participant.UserID, value.RoomID, options.RequestID, options.BuyIn, value.Rules.MaxBuyIn)
+	if err != nil {
+		return Room{}, mapBankrollError(err)
+	}
+	seat := firstAvailableSeat(value.Members, value.MaxPlayers)
+	value.Members = append(value.Members, Member{
+		UserID: participant.UserID, DisplayName: participant.DisplayName, Seat: seat,
+		Stack: position.TableChips, JoinedAt: service.config.Now(),
+	})
+	sort.Slice(value.Members, func(left, right int) bool { return value.Members[left].Seat < value.Members[right].Seat })
+	value.Revision++
+	if err := service.repository.Save(ctx, value); err != nil {
+		_, _ = service.bankroll.CashOut(ctx, participant.UserID, value.RoomID, "rollback:"+options.RequestID)
+		return Room{}, err
+	}
+	return publicRoom(value), nil
+}
+
+func (service *Service) UpdateStacks(ctx context.Context, roomID string, stacks map[string]int64) (Room, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	value, err := service.repository.ByID(ctx, roomID)
+	if err != nil {
+		return Room{}, Error{Code: "room_not_found"}
+	}
+	for index := range value.Members {
+		if stack, ok := stacks[value.Members[index].UserID]; ok {
+			if stack < 0 {
+				return Room{}, Error{Code: "invalid_table_balance"}
+			}
+			value.Members[index].Stack = stack
+			if stack == 0 {
+				value.Members[index].Ready = false
+			}
+		}
+	}
+	value.Revision++
+	if err := service.repository.Save(ctx, value); err != nil {
+		return Room{}, err
+	}
+	return publicRoom(value), nil
+}
+
+func (service *Service) AddToStack(ctx context.Context, roomID, userID string, amount int64) (Room, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	value, err := service.repository.ByID(ctx, roomID)
+	if err != nil {
+		return Room{}, Error{Code: "room_not_found"}
+	}
+	for index := range value.Members {
+		if value.Members[index].UserID != userID {
+			continue
+		}
+		if amount <= 0 || value.Members[index].Stack > value.Rules.MaxBuyIn-amount {
+			return Room{}, Error{Code: "maximum_buy_in_exceeded"}
+		}
+		value.Members[index].Stack += amount
+		value.Revision++
+		if err := service.repository.Save(ctx, value); err != nil {
+			return Room{}, err
+		}
+		return publicRoom(value), nil
+	}
+	return Room{}, Error{Code: "permission_denied"}
 }
 
 func (service *Service) Create(
@@ -96,7 +266,7 @@ func (service *Service) Create(
 			CreatedAt:    now,
 			PasswordHash: passwordHash,
 			Members: []Member{{
-				UserID: owner.UserID, DisplayName: owner.DisplayName, Seat: 1, JoinedAt: now,
+				UserID: owner.UserID, DisplayName: owner.DisplayName, Seat: 1, Stack: rules.StartingChips, JoinedAt: now,
 			}},
 		}
 		if err := service.repository.Create(ctx, value); err == nil {
@@ -135,7 +305,7 @@ func (service *Service) Join(
 	}
 	seat := firstAvailableSeat(value.Members, value.MaxPlayers)
 	value.Members = append(value.Members, Member{
-		UserID: participant.UserID, DisplayName: participant.DisplayName, Seat: seat, JoinedAt: service.config.Now(),
+		UserID: participant.UserID, DisplayName: participant.DisplayName, Seat: seat, Stack: value.Rules.StartingChips, JoinedAt: service.config.Now(),
 	})
 	sort.Slice(value.Members, func(left, right int) bool { return value.Members[left].Seat < value.Members[right].Seat })
 	value.Revision++
@@ -151,6 +321,17 @@ func (service *Service) Current(ctx context.Context, userID string) (Room, error
 		return Room{}, Error{Code: "room_not_found"}
 	}
 	return publicRoom(value), nil
+}
+
+func (service *Service) Preview(ctx context.Context, code string) (Preview, error) {
+	value, err := service.repository.ByCode(ctx, strings.TrimSpace(code))
+	if err != nil {
+		return Preview{}, Error{Code: "room_not_found"}
+	}
+	return Preview{
+		Code: value.Code, Rules: value.Rules, MaxPlayers: value.MaxPlayers,
+		CurrentPlayers: len(value.Members), PasswordRequired: value.PasswordHash != "",
+	}, nil
 }
 
 func (service *Service) GetForMember(ctx context.Context, userID string, roomID string) (Room, error) {
@@ -175,6 +356,9 @@ func (service *Service) SetReady(ctx context.Context, userID string, ready bool)
 	}
 	for index := range value.Members {
 		if value.Members[index].UserID == userID {
+			if ready && value.Members[index].Stack <= 0 {
+				return Room{}, Error{Code: "rebuy_required"}
+			}
 			if value.Members[index].Ready != ready {
 				value.Members[index].Ready = ready
 				value.Revision++
@@ -224,14 +408,42 @@ func (service *Service) CanJoinVoice(ctx context.Context, userID string, tableID
 func rulesForPreset(preset Preset) (Rules, bool) {
 	switch preset {
 	case PresetCasual:
-		return Rules{StartingChips: 1000, SmallBlind: 5, BigBlind: 10, ActionSeconds: 30}, true
+		return Rules{StartingChips: 1000, MaxBuyIn: 1000, SmallBlind: 10, BigBlind: 20, ActionSeconds: 30}, true
 	case PresetStandard:
-		return Rules{StartingChips: 2000, SmallBlind: 10, BigBlind: 20, ActionSeconds: 20}, true
+		return Rules{StartingChips: 2000, MaxBuyIn: 2000, SmallBlind: 10, BigBlind: 20, ActionSeconds: 20}, true
 	case PresetDeep:
-		return Rules{StartingChips: 5000, SmallBlind: 10, BigBlind: 20, ActionSeconds: 30}, true
+		return Rules{StartingChips: 5000, MaxBuyIn: 5000, SmallBlind: 10, BigBlind: 20, ActionSeconds: 30}, true
 	default:
 		return Rules{}, false
 	}
+}
+
+func validBlindLevel(smallBlind, bigBlind int64) bool {
+	return smallBlind >= MinimumSmallBlind && bigBlind >= MinimumBigBlind &&
+		bigBlind > smallBlind && bigBlind%smallBlind == 0
+}
+
+func (service *Service) hashRoomPassword(password string) (string, error) {
+	password = strings.TrimSpace(password)
+	if password == "" {
+		return "", nil
+	}
+	if len(password) < 4 || len(password) > 32 {
+		return "", Error{Code: "invalid_room_password"}
+	}
+	value, err := service.passwords.Hash("room:" + password)
+	if err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+func mapBankrollError(err error) error {
+	var bankrollError bankroll.Error
+	if errors.As(err, &bankrollError) {
+		return Error{Code: bankrollError.Code}
+	}
+	return err
 }
 
 func validParticipant(participant Participant) bool {

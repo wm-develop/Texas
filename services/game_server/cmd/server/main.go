@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"texas/services/game_server/internal/account"
+	"texas/services/game_server/internal/bankroll"
 	"texas/services/game_server/internal/chat"
 	"texas/services/game_server/internal/config"
 	"texas/services/game_server/internal/game/holdem"
@@ -47,7 +48,12 @@ func main() {
 		logger.Error("account service initialization failed", "error", err)
 		os.Exit(1)
 	}
-	roomService, err := room.NewService(room.NewMemoryRepository(), passwordHasher, room.ServiceConfig{})
+	bankrollService, err := bankroll.NewService(bankroll.NewMemoryRepository(), time.Now)
+	if err != nil {
+		logger.Error("bankroll service initialization failed", "error", err)
+		os.Exit(1)
+	}
+	roomService, err := room.NewService(room.NewMemoryRepository(), passwordHasher, room.ServiceConfig{Bankroll: bankrollService})
 	if err != nil {
 		logger.Error("room service initialization failed", "error", err)
 		os.Exit(1)
@@ -55,7 +61,7 @@ func main() {
 	ledgerStore := ledger.NewInMemoryStore()
 	historyStore := history.NewInMemoryStore()
 	tableManager, err := tablemanager.NewWithConfig(roomService, holdem.CryptoRandom{}, tablemanager.ManagerConfig{
-		Ledger: ledgerStore, History: historyStore,
+		Ledger: ledgerStore, History: historyStore, Bankroll: bankrollService,
 	})
 	if err != nil {
 		logger.Error("table manager initialization failed", "error", err)
@@ -94,6 +100,7 @@ func main() {
 				Sessions: accountService, Membership: roomService,
 			},
 			Accounts: accountService,
+			Bankroll: bankrollService,
 			Rooms:    roomService,
 			Tables:   tableManager,
 			Chat:     chatService,
