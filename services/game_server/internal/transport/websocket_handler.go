@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,15 +24,16 @@ import (
 )
 
 type webSocketServer struct {
-	logger    *slog.Logger
-	accounts  *account.Service
-	rooms     *room.Service
-	tables    *tablemanager.Manager
-	chat      *chat.Service
-	hub       *tableHub
-	requests  *protocol.RequestCache
-	requestMu sync.Mutex
-	userLocks map[string]*sync.Mutex
+	logger         *slog.Logger
+	accounts       *account.Service
+	rooms          *room.Service
+	tables         *tablemanager.Manager
+	chat           *chat.Service
+	hub            *tableHub
+	requests       *protocol.RequestCache
+	requestMu      sync.Mutex
+	userLocks      map[string]*sync.Mutex
+	originPatterns []string
 }
 
 type webSocketClient struct {
@@ -59,8 +61,9 @@ func newWebSocketServer(logger *slog.Logger, options Options) http.Handler {
 			buffers: make(map[string]*protocol.EventBuffer),
 			voice:   make(map[string]map[string]protocol.VoiceMemberState),
 		},
-		requests:  protocol.NewRequestCache(256),
-		userLocks: make(map[string]*sync.Mutex),
+		requests:       protocol.NewRequestCache(256),
+		userLocks:      make(map[string]*sync.Mutex),
+		originPatterns: webSocketOriginPatterns(options.AllowedOrigins),
 	}
 	if server.tables != nil {
 		server.tables.SetSnapshotListener(func(roomID string) {
@@ -74,7 +77,7 @@ func newWebSocketServer(logger *slog.Logger, options Options) http.Handler {
 
 func (server *webSocketServer) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 	connection, err := websocket.Accept(writer, request, &websocket.AcceptOptions{
-		OriginPatterns: []string{"localhost:*", "127.0.0.1:*"},
+		OriginPatterns: server.originPatterns,
 	})
 	if err != nil {
 		server.logger.Warn("websocket upgrade rejected", "error", err)
@@ -99,6 +102,23 @@ func (server *webSocketServer) serveHTTP(writer http.ResponseWriter, request *ht
 			return
 		}
 	}
+}
+
+func webSocketOriginPatterns(allowedOrigins []string) []string {
+	patterns := []string{"localhost:*", "127.0.0.1:*"}
+	seen := map[string]struct{}{"localhost:*": {}, "127.0.0.1:*": {}}
+	for _, origin := range allowedOrigins {
+		origin = strings.TrimSuffix(strings.TrimSpace(origin), "/")
+		if origin == "" {
+			continue
+		}
+		if _, exists := seen[origin]; exists {
+			continue
+		}
+		seen[origin] = struct{}{}
+		patterns = append(patterns, origin)
+	}
+	return patterns
 }
 
 func (client *webSocketClient) route(ctx context.Context, message protocol.Envelope) error {

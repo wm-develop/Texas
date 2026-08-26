@@ -45,3 +45,27 @@ func TestPostgresStorageRequiresDatabaseURL(t *testing.T) {
 		t.Fatal("Load should reject postgres storage without DATABASE_URL")
 	}
 }
+
+func TestLoadAllowedOrigins(t *testing.T) {
+	t.Setenv("TRTC_SDK_APP_ID", "")
+	t.Setenv("TRTC_SECRET_KEY", "")
+	t.Setenv("STORAGE_BACKEND", "memory")
+	t.Setenv("ALLOWED_ORIGINS", "https://poker.hhuwm.com.cn/, https://test.example.com:8443")
+	config, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(config.AllowedOrigins) != 2 || config.AllowedOrigins[0] != "https://poker.hhuwm.com.cn" {
+		t.Fatalf("allowed origins=%#v", config.AllowedOrigins)
+	}
+}
+
+func TestLoadRejectsPunctuatedAllowedOrigin(t *testing.T) {
+	t.Setenv("TRTC_SDK_APP_ID", "")
+	t.Setenv("TRTC_SECRET_KEY", "")
+	t.Setenv("STORAGE_BACKEND", "memory")
+	t.Setenv("ALLOWED_ORIGINS", "https://poker.hhuwm.com.cn，")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load should reject an origin with Chinese punctuation")
+	}
+}

@@ -30,6 +30,8 @@ DATABASE_AUTO_MIGRATE=false
 
 服务启动时会验证迁移版本和校验和；版本缺失或 SQL 漂移时拒绝启动。开发环境也可将 `DATABASE_AUTO_MIGRATE=true`，生产环境建议保持 `false` 并独立执行迁移命令。
 
+`ALLOWED_ORIGINS` 使用逗号分隔完整的 Web 来源（例如 `https://poker.example.com`），同时控制 REST CORS 和 WebSocket Origin 校验；不要填写路径、中文标点或通配符。
+
 仅对可丢弃的开发数据库回滚最近一次迁移：
 
 ```powershell

@@ -67,6 +67,42 @@ func TestWebSocketPing(t *testing.T) {
 	}
 }
 
+func TestWebSocketUsesConfiguredAllowedOrigin(t *testing.T) {
+	server := httptest.NewServer(NewHandler(testLogger(), Options{
+		AllowedOrigins: []string{"https://poker.hhuwm.com.cn"},
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	websocketURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws"
+	connection, _, err := websocket.Dial(ctx, websocketURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Origin": []string{"https://poker.hhuwm.com.cn"}},
+	})
+	if err != nil {
+		t.Fatalf("dial websocket with configured origin: %v", err)
+	}
+	connection.CloseNow()
+}
+
+func TestWebSocketRejectsUnconfiguredOrigin(t *testing.T) {
+	server := httptest.NewServer(NewHandler(testLogger(), Options{
+		AllowedOrigins: []string{"https://poker.hhuwm.com.cn"},
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	websocketURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws"
+	connection, response, err := websocket.Dial(ctx, websocketURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Origin": []string{"https://evil.example.com"}},
+	})
+	if connection != nil {
+		connection.CloseNow()
+	}
+	if err == nil || response == nil || response.StatusCode != http.StatusForbidden {
+		t.Fatalf("unconfigured origin response=%v err=%v", response, err)
+	}
+}
+
 func TestTRTCCredentials(t *testing.T) {
 	server := httptest.NewServer(NewHandler(testLogger(), Options{
 		TRTCIssuer: fakeTRTCIssuer{},

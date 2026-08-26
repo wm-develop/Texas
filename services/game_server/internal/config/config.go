@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -34,7 +35,10 @@ func Load() (Config, error) {
 	}
 	if origins := strings.TrimSpace(os.Getenv("ALLOWED_ORIGINS")); origins != "" {
 		for _, origin := range strings.Split(origins, ",") {
-			if origin = strings.TrimSpace(origin); origin != "" {
+			if origin = strings.TrimSuffix(strings.TrimSpace(origin), "/"); origin != "" {
+				if err := validateAllowedOrigin(origin); err != nil {
+					return Config{}, err
+				}
 				config.AllowedOrigins = append(config.AllowedOrigins, origin)
 			}
 		}
@@ -76,6 +80,19 @@ func Load() (Config, error) {
 	}
 
 	return config, nil
+}
+
+func validateAllowedOrigin(origin string) error {
+	if strings.ContainsAny(origin, "，； \t\r\n") {
+		return fmt.Errorf("ALLOWED_ORIGINS contains invalid origin %q", origin)
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		parsed.Host == "" || parsed.User != nil || parsed.Path != "" ||
+		parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("ALLOWED_ORIGINS contains invalid origin %q", origin)
+	}
+	return nil
 }
 
 func (config Config) TRTCEnabled() bool {
