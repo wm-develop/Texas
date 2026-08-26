@@ -150,6 +150,11 @@ func TestPostgresPhase3PersistenceFlow(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("append history: %v", err)
 	}
+	if loaded, found := historyStore.Hand("history-hand"); !found {
+		t.Fatal("persisted history could not be loaded by hand id")
+	} else if len(loaded.Players) != 2 || len(loaded.Actions) != 1 {
+		t.Fatalf("loaded history=%#v", loaded)
+	}
 	if recent := historyStore.RecentForPlayer("owner", 10); len(recent) != 1 || recent[0].DealerSeat != 1 || len(recent[0].Actions) != 1 {
 		t.Fatalf("recent history=%#v", recent)
 	}

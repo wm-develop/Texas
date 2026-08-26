@@ -139,19 +139,22 @@ func (store *PostgresStore) RecentForPlayer(userID string, limit int) []Hand {
 
 func (store *PostgresStore) loadHand(ctx context.Context, handID string) (Hand, error) {
 	var value Hand
-	var potAwards, revealedHands []byte
+	var boardCards, potAwards, revealedHands []byte
 	err := store.database.QueryRowContext(
 		ctx,
-		`SELECT hand_id, room_id, trim(room_code), dealer_seat, board_cards, pot_awards,
+		`SELECT hand_id, room_id, trim(room_code), dealer_seat, to_json(board_cards), pot_awards,
 		 revealed_hands, showdown, started_at, ended_at
 		 FROM hands WHERE hand_id = $1`,
 		handID,
 	).Scan(
-		&value.HandID, &value.RoomID, &value.RoomCode, &value.DealerSeat, &value.Board,
+		&value.HandID, &value.RoomID, &value.RoomCode, &value.DealerSeat, &boardCards,
 		&potAwards, &revealedHands, &value.Showdown, &value.StartedAt, &value.EndedAt,
 	)
 	if err != nil {
 		return Hand{}, err
+	}
+	if err := json.Unmarshal(boardCards, &value.Board); err != nil {
+		return Hand{}, fmt.Errorf("decode board cards: %w", err)
 	}
 	if err := json.Unmarshal(potAwards, &value.PotAwards); err != nil {
 		return Hand{}, fmt.Errorf("decode pot awards: %w", err)
@@ -162,7 +165,7 @@ func (store *PostgresStore) loadHand(ctx context.Context, handID string) (Hand, 
 	rows, err := store.database.QueryContext(
 		ctx,
 		`SELECT user_id, display_name, seat_number, starting_stack,
-		 ending_stack, chip_delta, hole_cards
+		 ending_stack, chip_delta, to_json(hole_cards)
 		 FROM hand_players WHERE hand_id = $1 ORDER BY seat_number`,
 		handID,
 	)
@@ -172,11 +175,15 @@ func (store *PostgresStore) loadHand(ctx context.Context, handID string) (Hand, 
 	defer rows.Close()
 	for rows.Next() {
 		var player PlayerResult
+		var holeCards []byte
 		if err := rows.Scan(
 			&player.UserID, &player.DisplayName, &player.Seat,
-			&player.StartingStack, &player.EndingStack, &player.Delta, &player.HoleCards,
+			&player.StartingStack, &player.EndingStack, &player.Delta, &holeCards,
 		); err != nil {
 			return Hand{}, err
+		}
+		if err := json.Unmarshal(holeCards, &player.HoleCards); err != nil {
+			return Hand{}, fmt.Errorf("decode hole cards: %w", err)
 		}
 		value.Players = append(value.Players, player)
 	}
