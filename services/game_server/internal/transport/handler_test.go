@@ -69,14 +69,14 @@ func TestWebSocketPing(t *testing.T) {
 
 func TestWebSocketUsesConfiguredAllowedOrigin(t *testing.T) {
 	server := httptest.NewServer(NewHandler(testLogger(), Options{
-		AllowedOrigins: []string{"https://poker.hhuwm.com.cn"},
+		AllowedOrigins: []string{"https://poker.example.com"},
 	}))
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	websocketURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws"
 	connection, _, err := websocket.Dial(ctx, websocketURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{"Origin": []string{"https://poker.hhuwm.com.cn"}},
+		HTTPHeader: http.Header{"Origin": []string{"https://poker.example.com"}},
 	})
 	if err != nil {
 		t.Fatalf("dial websocket with configured origin: %v", err)
@@ -86,7 +86,7 @@ func TestWebSocketUsesConfiguredAllowedOrigin(t *testing.T) {
 
 func TestWebSocketRejectsUnconfiguredOrigin(t *testing.T) {
 	server := httptest.NewServer(NewHandler(testLogger(), Options{
-		AllowedOrigins: []string{"https://poker.hhuwm.com.cn"},
+		AllowedOrigins: []string{"https://poker.example.com"},
 	}))
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

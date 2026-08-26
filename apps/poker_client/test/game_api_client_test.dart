@@ -216,4 +216,67 @@ void main() {
     expect(hands.single.players.single.delta, 40);
     expect(hands.single.players.single.holeCards, ['Ah', 'Ad']);
   });
+
+  test('loads the current room so a signed-in player can resume it', () async {
+    final client = GameApiClient(
+      serverBaseUri: Uri.parse('http://game.test'),
+      httpClient: MockClient((request) async {
+        expect(request.method, 'GET');
+        expect(request.url.path, '/v1/rooms/current');
+        expect(request.headers['authorization'], 'Bearer access-token');
+        return http.Response(
+          jsonEncode({
+            'roomId': 'table_1',
+            'code': '654321',
+            'ownerUserId': 'usr_1',
+            'preset': 'standard',
+            'rules': {
+              'startingChips': 2000,
+              'smallBlind': 10,
+              'bigBlind': 20,
+              'maxBuyIn': 5000,
+              'actionSeconds': 20,
+            },
+            'maxPlayers': 6,
+            'members': <Object?>[],
+            'revision': 3,
+          }),
+          200,
+        );
+      }),
+    );
+
+    final room = await client.currentRoom('access-token');
+
+    expect(room?.roomId, 'table_1');
+    expect(room?.code, '654321');
+  });
+
+  test('returns null when the signed-in player has no current room', () async {
+    final client = GameApiClient(
+      serverBaseUri: Uri.parse('http://game.test'),
+      httpClient: MockClient(
+        (_) async =>
+            http.Response(jsonEncode({'error': 'room_not_found'}), 404),
+      ),
+    );
+
+    expect(await client.currentRoom('access-token'), isNull);
+  });
+
+  test('reports slow network timeouts separately from server errors', () async {
+    final client = GameApiClient(
+      serverBaseUri: Uri.parse('http://game.test'),
+      requestTimeout: const Duration(milliseconds: 5),
+      httpClient: MockClient((_) async {
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        return http.Response('{}', 200);
+      }),
+    );
+
+    await expectLater(
+      client.login(username: 'friend_1', password: 'password-123'),
+      throwsA(isA<GameApiTimeoutException>()),
+    );
+  });
 }

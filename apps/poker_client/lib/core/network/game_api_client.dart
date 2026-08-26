@@ -18,23 +18,37 @@ class GameApiException implements Exception {
   String toString() => 'GameApiException($statusCode, $code)';
 }
 
+class GameApiTimeoutException implements Exception {
+  const GameApiTimeoutException(this.path, this.timeout);
+
+  final String path;
+  final Duration timeout;
+
+  @override
+  String toString() => 'GameApiTimeoutException($path, ${timeout.inSeconds}s)';
+}
+
 class GameApiClient {
-  GameApiClient({Uri? serverBaseUri, http.Client? httpClient})
-    : _serverBaseUri = _withTrailingSlash(
-        serverBaseUri ??
-            Uri.parse(
-              const String.fromEnvironment(
-                'GAME_HTTP_SERVER_URL',
-                defaultValue: 'http://127.0.0.1:8080',
-              ),
-            ),
-      ),
-      _httpClient = httpClient ?? http.Client(),
-      _ownsClient = httpClient == null;
+  GameApiClient({
+    Uri? serverBaseUri,
+    http.Client? httpClient,
+    this.requestTimeout = const Duration(seconds: 30),
+  }) : _serverBaseUri = _withTrailingSlash(
+         serverBaseUri ??
+             Uri.parse(
+               const String.fromEnvironment(
+                 'GAME_HTTP_SERVER_URL',
+                 defaultValue: 'http://127.0.0.1:8080',
+               ),
+             ),
+       ),
+       _httpClient = httpClient ?? http.Client(),
+       _ownsClient = httpClient == null;
 
   final Uri _serverBaseUri;
   final http.Client _httpClient;
   final bool _ownsClient;
+  final Duration requestTimeout;
 
   Future<AuthSession> register({
     required String username,
@@ -116,6 +130,17 @@ class GameApiClient {
     await _get('v1/rooms/preview?code=$code', token: accessToken),
   );
 
+  Future<FriendRoom?> currentRoom(String accessToken) async {
+    try {
+      return FriendRoom.fromJson(
+        await _get('v1/rooms/current', token: accessToken),
+      );
+    } on GameApiException catch (error) {
+      if (error.code == 'room_not_found') return null;
+      rethrow;
+    }
+  }
+
   Future<BankrollSnapshot> bankroll(String accessToken) async =>
       BankrollSnapshot.fromJson(await _get('v1/bankroll', token: accessToken));
 
@@ -172,13 +197,18 @@ class GameApiClient {
       'accept': 'application/json',
     };
     if (token != null) headers['authorization'] = 'Bearer $token';
-    final response = await _httpClient
-        .post(
-          _serverBaseUri.resolve(path),
-          headers: headers,
-          body: jsonEncode(body),
-        )
-        .timeout(const Duration(seconds: 10));
+    late final http.Response response;
+    try {
+      response = await _httpClient
+          .post(
+            _serverBaseUri.resolve(path),
+            headers: headers,
+            body: jsonEncode(body),
+          )
+          .timeout(requestTimeout);
+    } on TimeoutException {
+      throw GameApiTimeoutException(path, requestTimeout);
+    }
     final decoded = _decode(response.bodyBytes);
     if (response.statusCode != expectedStatus) {
       throw GameApiException(
@@ -193,15 +223,20 @@ class GameApiClient {
     String path, {
     required String token,
   }) async {
-    final response = await _httpClient
-        .get(
-          _serverBaseUri.resolve(path),
-          headers: {
-            'accept': 'application/json',
-            'authorization': 'Bearer $token',
-          },
-        )
-        .timeout(const Duration(seconds: 10));
+    late final http.Response response;
+    try {
+      response = await _httpClient
+          .get(
+            _serverBaseUri.resolve(path),
+            headers: {
+              'accept': 'application/json',
+              'authorization': 'Bearer $token',
+            },
+          )
+          .timeout(requestTimeout);
+    } on TimeoutException {
+      throw GameApiTimeoutException(path, requestTimeout);
+    }
     final decoded = _decode(response.bodyBytes);
     if (response.statusCode != 200) {
       throw GameApiException(

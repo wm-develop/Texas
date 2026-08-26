@@ -178,6 +178,10 @@ class _AuthPageState extends State<AuthPage> {
       } else {
         await widget.onLogin(_username.text.trim(), _password.text);
       }
+    } on GameApiTimeoutException {
+      if (mounted) {
+        setState(() => _error = '网络响应较慢，请稍后重试；注册结果会自动核验');
+      }
     } on GameApiException catch (error) {
       if (mounted) setState(() => _error = _messageFor(error.code));
     } on Object {

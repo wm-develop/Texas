@@ -14,6 +14,7 @@ import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
 import 'package:poker_client/features/table/domain/table_seat.dart';
 import 'package:poker_client/features/table/domain/table_snapshot.dart';
+import 'package:poker_client/features/table/presentation/table_viewport_layout.dart';
 
 class TablePrototypePage extends StatefulWidget {
   const TablePrototypePage({
@@ -36,7 +37,6 @@ class TablePrototypePage extends StatefulWidget {
 }
 
 class _TablePrototypePageState extends State<TablePrototypePage> {
-  static const _designSize = Size(1280, 720);
   static const _gameHttpServerUrl = String.fromEnvironment(
     'GAME_HTTP_SERVER_URL',
     defaultValue: 'http://127.0.0.1:8080',
@@ -69,6 +69,7 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
   @override
   void initState() {
     super.initState();
+    unawaited(_setTableSystemUi(immersive: true));
     _gameSocket = GameSocketClient(
       accessToken: widget.session.accessToken,
       roomId: widget.room.roomId,
@@ -103,6 +104,7 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
 
   @override
   void dispose() {
+    unawaited(_setTableSystemUi(immersive: false));
     _gameSocket
       ..removeListener(_refresh)
       ..dispose();
@@ -118,122 +120,137 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: SafeArea(
-        child: Center(
-          child: FittedBox(
-            fit: BoxFit.contain,
-            child: SizedBox.fromSize(
-              size: _designSize,
-              child: DecoratedBox(
-                decoration: const BoxDecoration(
-                  gradient: RadialGradient(
-                    colors: [Color(0xFF16473B), Color(0xFF061814)],
-                    radius: 1.1,
-                  ),
-                ),
-                child: Stack(
-                  children: [
-                    Positioned(
-                      left: 24,
-                      top: 18,
-                      child: _RoomHeader(
-                        room: widget.room,
-                        onLeave: _leaveTable,
-                        onSettings: () =>
-                            showAppSettingsDialog(context, widget.settings),
-                      ),
-                    ),
-                    Positioned(
-                      left: 430,
-                      top: 16,
-                      child: _ConnectionStatusBar(client: _gameSocket),
-                    ),
-                    Positioned(
-                      right: 24,
-                      top: 16,
-                      child: _VoiceControls(
-                        voiceJoined: _voiceJoined,
-                        connectionState: _voiceState,
-                        microphoneEnabled: _microphoneEnabled,
-                        operationInProgress: _voiceOperationInProgress,
-                        speakingCount: _speakingUserIds.length,
-                        members: _gameSocket.voiceMembers,
-                        speakingUserIds: _speakingUserIds,
-                        userId: widget.session.user.displayName,
-                        onJoinChanged: _setVoiceJoined,
-                        onMicrophoneChanged: _setMicrophoneEnabled,
-                      ),
-                    ),
-                    Positioned.fill(
-                      left: 104,
-                      right: _chatVisible ? 264 : 104,
-                      top: 62,
-                      bottom: 132,
-                      child: _PokerTable(
-                        seats: _tableSeats,
-                        alignments: _seatAlignments,
-                        snapshot: _gameSocket.snapshot,
-                        actionRemaining: _actionRemaining,
-                      ),
-                    ),
-                    if (_chatVisible)
-                      Positioned(
-                        right: 18,
-                        top: 86,
-                        bottom: 104,
-                        width: 230,
-                        child: _ChatPanel(
-                          client: _gameSocket,
-                          currentUserId: widget.session.user.userId,
-                          blockedUserIds: _blockedUserIds,
-                          onBlockChanged: _setUserBlocked,
-                          onClose: _toggleChat,
+      body: DecoratedBox(
+        decoration: const BoxDecoration(
+          gradient: RadialGradient(
+            colors: [Color(0xFF16473B), Color(0xFF061814)],
+            radius: 1.1,
+          ),
+        ),
+        child: SafeArea(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final viewport = TableViewportLayout.fromSize(
+                constraints.biggest,
+                chatVisible: _chatVisible,
+              );
+              final handWidth = math.min(680.0, viewport.tableRect.width);
+              return Center(
+                child: FittedBox(
+                  fit: BoxFit.contain,
+                  child: SizedBox.fromSize(
+                    size: viewport.canvasSize,
+                    child: Stack(
+                      children: [
+                        Positioned(
+                          left: 24,
+                          top: 18,
+                          child: _RoomHeader(
+                            room: widget.room,
+                            onLeave: _leaveTable,
+                            onSettings: () =>
+                                showAppSettingsDialog(context, widget.settings),
+                          ),
                         ),
-                      )
-                    else
-                      Positioned(
-                        right: 24,
-                        bottom: 118,
-                        child: FilledButton.tonalIcon(
-                          onPressed: _toggleChat,
-                          icon: const Icon(Icons.chat_bubble_outline),
-                          label: const Text('文字聊天'),
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          top: 16,
+                          child: Center(
+                            child: _ConnectionStatusBar(client: _gameSocket),
+                          ),
                         ),
-                      ),
-                    Positioned(
-                      left: 104,
-                      right: _chatVisible ? 264 : 104,
-                      bottom: 92,
-                      height: 66,
-                      child: Center(
-                        child: SizedBox(
-                          width: 680,
+                        Positioned(
+                          right: 24,
+                          top: 16,
+                          child: _VoiceControls(
+                            voiceJoined: _voiceJoined,
+                            connectionState: _voiceState,
+                            microphoneEnabled: _microphoneEnabled,
+                            operationInProgress: _voiceOperationInProgress,
+                            speakingCount: _speakingUserIds.length,
+                            members: _gameSocket.voiceMembers,
+                            speakingUserIds: _speakingUserIds,
+                            userId: widget.session.user.displayName,
+                            onJoinChanged: _setVoiceJoined,
+                            onMicrophoneChanged: _setMicrophoneEnabled,
+                          ),
+                        ),
+                        Positioned.fromRect(
+                          rect: viewport.tableRect,
+                          child: _PokerTable(
+                            seats: _tableSeats,
+                            alignments: _seatAlignments,
+                            snapshot: _gameSocket.snapshot,
+                            actionRemaining: _actionRemaining,
+                          ),
+                        ),
+                        if (_chatVisible)
+                          Positioned(
+                            right: 18,
+                            top: 86,
+                            bottom: 104,
+                            width: 230,
+                            child: _ChatPanel(
+                              client: _gameSocket,
+                              currentUserId: widget.session.user.userId,
+                              blockedUserIds: _blockedUserIds,
+                              onBlockChanged: _setUserBlocked,
+                              onClose: _toggleChat,
+                            ),
+                          )
+                        else
+                          Positioned(
+                            right: 24,
+                            bottom: 118,
+                            child: FilledButton.tonalIcon(
+                              onPressed: _toggleChat,
+                              icon: const Icon(Icons.chat_bubble_outline),
+                              label: const Text('文字聊天'),
+                            ),
+                          ),
+                        Positioned(
+                          left: viewport.tableRect.center.dx - handWidth / 2,
+                          bottom: 92,
+                          width: handWidth,
+                          height: 66,
                           child: _HandCardsPanel(
                             client: _gameSocket,
                             userId: widget.session.user.userId,
                           ),
                         ),
-                      ),
+                        Positioned(
+                          left: 24,
+                          right: 24,
+                          bottom: 18,
+                          child: _ActionBar(
+                            client: _gameSocket,
+                            userId: widget.session.user.userId,
+                            smallBlind: widget.room.rules.smallBlind,
+                            onRebuy: _showRebuyDialog,
+                          ),
+                        ),
+                      ],
                     ),
-                    Positioned(
-                      left: 24,
-                      right: 24,
-                      bottom: 18,
-                      child: _ActionBar(
-                        client: _gameSocket,
-                        userId: widget.session.user.userId,
-                        smallBlind: widget.room.rules.smallBlind,
-                        onRebuy: _showRebuyDialog,
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
-              ),
-            ),
+              );
+            },
           ),
         ),
       ),
     );
+  }
+
+  Future<void> _setTableSystemUi({required bool immersive}) async {
+    try {
+      await SystemChrome.setEnabledSystemUIMode(
+        immersive ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
+      );
+    } on Object {
+      // Desktop, Web, and some OpenHarmony embeddings do not implement every
+      // system UI mode. The responsive layout still works without it.
+    }
   }
 
   Future<void> _setVoiceJoined(bool value) async {
@@ -2001,6 +2018,7 @@ String _potAwardLabel(PotAward award, List<TableSeatSnapshot> seats) {
 }
 
 String _gameErrorLabel(String code) => switch (code) {
+  'connection_failed' => '牌桌网络暂时不可用，正在自动重新连接',
   'sequence_gap' => '检测到网络消息缺口，正在恢复牌桌状态',
   'stale_revision' || 'stale_hand' => '牌桌状态已经更新，正在为你恢复最新画面',
   'not_your_turn' => '现在还没有轮到你',

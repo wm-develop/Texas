@@ -22,6 +22,7 @@ class GameSocketClient extends ChangeNotifier {
     required this.roomId,
     required this.userId,
     String? serverUrl,
+    this.connectTimeout = const Duration(seconds: 20),
   }) : serverUrl =
            serverUrl ??
            const String.fromEnvironment(
@@ -33,6 +34,7 @@ class GameSocketClient extends ChangeNotifier {
   final String accessToken;
   final String roomId;
   final String userId;
+  final Duration connectTimeout;
 
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _subscription;
@@ -43,6 +45,7 @@ class GameSocketClient extends ChangeNotifier {
   final List<TableChatMessage> _chatMessages = [];
   List<TableVoiceMember> _voiceMembers = const [];
   Timer? _reconnectTimer;
+  Timer? _heartbeatTimer;
   int _reconnectAttempts = 0;
   bool _disposed = false;
   Duration _serverClockOffset = Duration.zero;
@@ -51,6 +54,7 @@ class GameSocketClient extends ChangeNotifier {
   final TableSequenceTracker _sequences = TableSequenceTracker();
   bool _recoveringSequenceGap = false;
   int _requestCounter = 0;
+  DateTime _lastServerMessageAt = DateTime.now();
 
   GameSocketStatus get status => _status;
   String? get lastMessageType => _lastMessageType;
@@ -74,9 +78,11 @@ class GameSocketClient extends ChangeNotifier {
     await _channel?.sink.close();
     _setStatus(GameSocketStatus.connecting);
     _errorMessage = null;
+    WebSocketChannel? pendingChannel;
     try {
-      final channel = WebSocketChannel.connect(Uri.parse(serverUrl));
-      await channel.ready;
+      pendingChannel = WebSocketChannel.connect(Uri.parse(serverUrl));
+      await pendingChannel.ready.timeout(connectTimeout);
+      final channel = pendingChannel;
       _channel = channel;
       _subscription = channel.stream.listen(
         _handleMessage,
@@ -84,6 +90,9 @@ class GameSocketClient extends ChangeNotifier {
         onDone: _handleDone,
         cancelOnError: true,
       );
+      _errorMessage = null;
+      _lastServerMessageAt = DateTime.now();
+      _startHeartbeat();
       _setStatus(GameSocketStatus.connected);
       _send(
         'session.authenticate',
@@ -93,8 +102,9 @@ class GameSocketClient extends ChangeNotifier {
               '${defaultTargetPlatform.name}-${DateTime.now().millisecondsSinceEpoch}',
         },
       );
-    } on Object catch (error) {
-      _errorMessage = error.toString();
+    } on Object {
+      await pendingChannel?.sink.close();
+      _errorMessage = 'connection_failed';
       _scheduleReconnect();
     }
   }
@@ -187,6 +197,7 @@ class GameSocketClient extends ChangeNotifier {
 
   void _handleMessage(dynamic rawMessage) {
     try {
+      _lastServerMessageAt = DateTime.now();
       final message = jsonDecode(rawMessage as String) as Map<String, dynamic>;
       final type = message['type'] as String?;
       _lastMessageType = type;
@@ -292,7 +303,7 @@ class GameSocketClient extends ChangeNotifier {
   }
 
   void _handleError(Object error, StackTrace stackTrace) {
-    _errorMessage = error.toString();
+    _errorMessage = 'connection_failed';
     _scheduleReconnect();
   }
 
@@ -302,12 +313,27 @@ class GameSocketClient extends ChangeNotifier {
 
   void _scheduleReconnect() {
     if (_disposed || _reconnectTimer?.isActive == true) return;
+    _heartbeatTimer?.cancel();
     _setStatus(GameSocketStatus.reconnecting);
     _actionPending = false;
     _pendingRevision = null;
     final seconds = 1 << _reconnectAttempts.clamp(0, 3);
     _reconnectAttempts++;
     _reconnectTimer = Timer(Duration(seconds: seconds), connect);
+  }
+
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 25), (_) {
+      if (DateTime.now().difference(_lastServerMessageAt) >
+          const Duration(seconds: 75)) {
+        _errorMessage = 'connection_failed';
+        unawaited(_channel?.sink.close());
+        _scheduleReconnect();
+        return;
+      }
+      sendPing();
+    });
   }
 
   void _setStatus(GameSocketStatus value, {bool notify = true}) {
@@ -345,6 +371,7 @@ class GameSocketClient extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _reconnectTimer?.cancel();
+    _heartbeatTimer?.cancel();
     unawaited(_subscription?.cancel());
     unawaited(_channel?.sink.close());
     super.dispose();
