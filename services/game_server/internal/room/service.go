@@ -100,17 +100,31 @@ func (service *Service) CreateConfigured(ctx context.Context, owner Participant,
 			return Room{}, err
 		}
 		buyInRequestID := fmt.Sprintf("%s:%d", options.RequestID, attempt)
-		position, err := service.bankroll.BuyIn(ctx, owner.UserID, roomID, buyInRequestID, options.BuyIn, options.MaxBuyIn)
-		if err != nil {
-			return Room{}, mapBankrollError(err)
+		if !bankroll.ValidRequestID(buyInRequestID) {
+			return Room{}, Error{Code: "invalid_request"}
 		}
 		now := service.config.Now()
 		value := Room{
 			RoomID: roomID, Code: code, OwnerUserID: owner.UserID, Preset: options.Preset,
 			Rules: rules, MaxPlayers: options.MaxPlayers, Revision: 1, CreatedAt: now,
 			PasswordHash: passwordHash,
-			Members:      []Member{{UserID: owner.UserID, DisplayName: owner.DisplayName, Seat: 1, Stack: position.TableChips, JoinedAt: now}},
+			Members:      []Member{{UserID: owner.UserID, DisplayName: owner.DisplayName, Seat: 1, Stack: options.BuyIn, JoinedAt: now}},
 		}
+		if atomic, ok := service.repository.(BuyInRepository); ok {
+			err := atomic.CreateWithBuyIn(ctx, value, buyInRequestID, options.BuyIn, now)
+			if err == nil {
+				return publicRoom(value), nil
+			}
+			if !errors.Is(err, ErrConflict) {
+				return Room{}, mapBankrollError(err)
+			}
+			continue
+		}
+		position, err := service.bankroll.BuyIn(ctx, owner.UserID, roomID, buyInRequestID, options.BuyIn, options.MaxBuyIn)
+		if err != nil {
+			return Room{}, mapBankrollError(err)
+		}
+		value.Members[0].Stack = position.TableChips
 		if err := service.repository.Create(ctx, value); err == nil {
 			return publicRoom(value), nil
 		}
@@ -144,15 +158,31 @@ func (service *Service) JoinWithBuyIn(ctx context.Context, participant Participa
 	if options.BuyIn <= 0 || options.BuyIn > value.Rules.MaxBuyIn {
 		return Room{}, Error{Code: "invalid_buy_in"}
 	}
+	if !bankroll.ValidRequestID(options.RequestID) {
+		return Room{}, Error{Code: "invalid_request"}
+	}
+	member := Member{
+		UserID: participant.UserID, DisplayName: participant.DisplayName,
+		Stack: options.BuyIn, JoinedAt: service.config.Now(),
+	}
+	if atomic, ok := service.repository.(BuyInRepository); ok {
+		joined, err := atomic.JoinWithBuyIn(ctx, value.RoomID, member, options.RequestID, options.BuyIn, member.JoinedAt)
+		if err != nil {
+			if errors.Is(err, ErrConflict) {
+				return Room{}, Error{Code: "already_in_room"}
+			}
+			return Room{}, mapBankrollError(err)
+		}
+		return publicRoom(joined), nil
+	}
 	position, err := service.bankroll.BuyIn(ctx, participant.UserID, value.RoomID, options.RequestID, options.BuyIn, value.Rules.MaxBuyIn)
 	if err != nil {
 		return Room{}, mapBankrollError(err)
 	}
 	seat := firstAvailableSeat(value.Members, value.MaxPlayers)
-	value.Members = append(value.Members, Member{
-		UserID: participant.UserID, DisplayName: participant.DisplayName, Seat: seat,
-		Stack: position.TableChips, JoinedAt: service.config.Now(),
-	})
+	member.Seat = seat
+	member.Stack = position.TableChips
+	value.Members = append(value.Members, member)
 	sort.Slice(value.Members, func(left, right int) bool { return value.Members[left].Seat < value.Members[right].Seat })
 	value.Revision++
 	if err := service.repository.Save(ctx, value); err != nil {
@@ -205,6 +235,32 @@ func (service *Service) AddToStack(ctx context.Context, roomID, userID string, a
 		value.Revision++
 		if err := service.repository.Save(ctx, value); err != nil {
 			return Room{}, err
+		}
+		return publicRoom(value), nil
+	}
+	return Room{}, Error{Code: "permission_denied"}
+}
+
+func (service *Service) SetStack(ctx context.Context, roomID, userID string, stack int64) (Room, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	value, err := service.repository.ByID(ctx, roomID)
+	if err != nil {
+		return Room{}, Error{Code: "room_not_found"}
+	}
+	for index := range value.Members {
+		if value.Members[index].UserID != userID {
+			continue
+		}
+		if stack < 0 || stack > value.Rules.MaxBuyIn {
+			return Room{}, Error{Code: "maximum_buy_in_exceeded"}
+		}
+		if value.Members[index].Stack != stack {
+			value.Members[index].Stack = stack
+			value.Revision++
+			if err := service.repository.Save(ctx, value); err != nil {
+				return Room{}, err
+			}
 		}
 		return publicRoom(value), nil
 	}

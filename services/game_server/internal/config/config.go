@@ -11,6 +11,10 @@ import (
 
 type Config struct {
 	Port           string
+	StorageBackend string
+	DatabaseURL    string
+	AutoMigrate    bool
+	AllowedOrigins []string
 	TRTCSDKAppID   int
 	TRTCSecretKey  string
 	TRTCDebugToken string
@@ -22,9 +26,31 @@ func Load() (Config, error) {
 
 	config := Config{
 		Port:           valueOrDefault("PORT", "8080"),
+		StorageBackend: strings.ToLower(valueOrDefault("STORAGE_BACKEND", "memory")),
+		DatabaseURL:    strings.TrimSpace(os.Getenv("DATABASE_URL")),
 		TRTCSecretKey:  strings.TrimSpace(os.Getenv("TRTC_SECRET_KEY")),
 		TRTCDebugToken: strings.TrimSpace(os.Getenv("TRTC_DEBUG_TOKEN")),
 		TRTCExpire:     3600,
+	}
+	if origins := strings.TrimSpace(os.Getenv("ALLOWED_ORIGINS")); origins != "" {
+		for _, origin := range strings.Split(origins, ",") {
+			if origin = strings.TrimSpace(origin); origin != "" {
+				config.AllowedOrigins = append(config.AllowedOrigins, origin)
+			}
+		}
+	}
+	if config.StorageBackend != "memory" && config.StorageBackend != "postgres" {
+		return Config{}, errors.New("STORAGE_BACKEND must be memory or postgres")
+	}
+	if config.StorageBackend == "postgres" && config.DatabaseURL == "" {
+		return Config{}, errors.New("DATABASE_URL is required when STORAGE_BACKEND=postgres")
+	}
+	if autoMigrateText := strings.TrimSpace(os.Getenv("DATABASE_AUTO_MIGRATE")); autoMigrateText != "" {
+		autoMigrate, err := strconv.ParseBool(autoMigrateText)
+		if err != nil {
+			return Config{}, errors.New("DATABASE_AUTO_MIGRATE must be true or false")
+		}
+		config.AutoMigrate = autoMigrate
 	}
 
 	appIDText := strings.TrimSpace(os.Getenv("TRTC_SDK_APP_ID"))
@@ -55,6 +81,12 @@ func Load() (Config, error) {
 func (config Config) TRTCEnabled() bool {
 	return config.TRTCSDKAppID > 0 && config.TRTCSecretKey != ""
 }
+
+func (config Config) DatabaseEnabled() bool {
+	return config.StorageBackend == "postgres"
+}
+
+func (config Config) DatabaseConfigured() bool { return config.DatabaseURL != "" }
 
 func loadLocalEnvironment() {
 	paths := []string{os.Getenv("TEXAS_ENV_FILE"), ".env", "../../.env"}

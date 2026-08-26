@@ -1,5 +1,3 @@
-BEGIN;
-
 CREATE TABLE users (
     user_id         text PRIMARY KEY,
     username        text NOT NULL,
@@ -8,18 +6,21 @@ CREATE TABLE users (
     status          text NOT NULL DEFAULT 'active'
                     CHECK (status IN ('active', 'suspended', 'deleted')),
     created_at      timestamptz NOT NULL DEFAULT now(),
-    updated_at      timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (username)
+    updated_at      timestamptz NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX users_username_normalized_idx ON users (lower(username));
 
 CREATE TABLE refresh_sessions (
     session_id          text PRIMARY KEY,
     user_id             text NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    access_token_hash   text NOT NULL UNIQUE,
     refresh_token_hash  text NOT NULL UNIQUE,
     device_id           text NOT NULL DEFAULT '',
-    expires_at          timestamptz NOT NULL,
+    access_expires_at   timestamptz NOT NULL,
+    refresh_expires_at  timestamptz NOT NULL,
     revoked_at          timestamptz,
-    created_at          timestamptz NOT NULL DEFAULT now()
+    created_at          timestamptz NOT NULL DEFAULT now(),
+    CHECK (refresh_expires_at > access_expires_at)
 );
 CREATE INDEX refresh_sessions_user_id_idx ON refresh_sessions(user_id);
 
@@ -37,8 +38,12 @@ CREATE TABLE rooms (
     preset           text NOT NULL CHECK (preset IN ('casual', 'standard', 'deep')),
     password_hash    text NOT NULL DEFAULT '',
     max_players      smallint NOT NULL CHECK (max_players BETWEEN 2 AND 10),
-    small_blind      bigint NOT NULL CHECK (small_blind > 0),
-    big_blind        bigint NOT NULL CHECK (big_blind > small_blind),
+    small_blind      bigint NOT NULL CHECK (small_blind >= 10),
+    big_blind        bigint NOT NULL CHECK (
+                         big_blind >= 20 AND
+                         big_blind > small_blind AND
+                         big_blind % small_blind = 0
+                     ),
     max_buy_in       bigint NOT NULL CHECK (max_buy_in >= big_blind),
     action_seconds   integer NOT NULL CHECK (action_seconds BETWEEN 5 AND 120),
     status           text NOT NULL DEFAULT 'open'
@@ -74,6 +79,7 @@ CREATE TABLE bankroll_entries (
     table_delta          bigint NOT NULL,
     wallet_balance_after bigint NOT NULL CHECK (wallet_balance_after >= 0),
     table_balance_after  bigint NOT NULL CHECK (table_balance_after >= 0),
+    revision_after       bigint NOT NULL CHECK (revision_after >= 0),
     created_at           timestamptz NOT NULL DEFAULT now(),
     UNIQUE (user_id, request_id)
 );
@@ -82,12 +88,21 @@ CREATE INDEX bankroll_entries_user_created_idx
 CREATE INDEX bankroll_entries_room_reference_idx
     ON bankroll_entries(room_id, reference_id);
 
+CREATE TABLE bankroll_settlements (
+    room_id          text NOT NULL,
+    hand_id          text NOT NULL,
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (room_id, hand_id)
+);
+
 CREATE TABLE hands (
     hand_id          text PRIMARY KEY,
     room_id          text NOT NULL,
     room_code        char(6) NOT NULL,
     dealer_seat      smallint NOT NULL CHECK (dealer_seat BETWEEN 1 AND 10),
     board_cards      text[] NOT NULL DEFAULT '{}',
+	pot_awards       jsonb NOT NULL DEFAULT '[]'::jsonb,
+	revealed_hands   jsonb NOT NULL DEFAULT '[]'::jsonb,
     showdown         boolean NOT NULL,
     started_at       timestamptz NOT NULL,
     ended_at         timestamptz NOT NULL,
@@ -96,7 +111,7 @@ CREATE TABLE hands (
 CREATE INDEX hands_room_ended_idx ON hands(room_id, ended_at DESC);
 
 CREATE TABLE hand_players (
-    hand_id          text NOT NULL REFERENCES hands(hand_id) ON DELETE RESTRICT,
+	hand_id          text NOT NULL REFERENCES hands(hand_id) ON DELETE RESTRICT,
     user_id          text NOT NULL REFERENCES users(user_id) ON DELETE RESTRICT,
     display_name     text NOT NULL,
     seat_number      smallint NOT NULL CHECK (seat_number BETWEEN 1 AND 10),
@@ -124,7 +139,8 @@ CREATE TABLE hand_actions (
 );
 
 CREATE TABLE hand_ledger_entries (
-    hand_id          text NOT NULL REFERENCES hands(hand_id) ON DELETE RESTRICT,
+	entry_id         text NOT NULL UNIQUE,
+	hand_id          text NOT NULL,
     user_id          text NOT NULL REFERENCES users(user_id) ON DELETE RESTRICT,
     chip_delta       bigint NOT NULL,
     balance_after    bigint NOT NULL CHECK (balance_after >= 0),
@@ -140,7 +156,7 @@ CREATE TABLE chat_messages (
     kind             text NOT NULL CHECK (kind IN ('text', 'quick_text', 'emoji')),
     content          text NOT NULL,
     sent_at          timestamptz NOT NULL,
-    UNIQUE (user_id, client_message_id)
+	UNIQUE (room_id, user_id, client_message_id)
 );
 CREATE INDEX chat_messages_room_sent_idx ON chat_messages(room_id, sent_at DESC);
 
@@ -166,6 +182,10 @@ CREATE TRIGGER bankroll_entries_immutable
 BEFORE UPDATE OR DELETE ON bankroll_entries
 FOR EACH ROW EXECUTE FUNCTION reject_immutable_row_change();
 
+CREATE TRIGGER bankroll_settlements_immutable
+BEFORE UPDATE OR DELETE ON bankroll_settlements
+FOR EACH ROW EXECUTE FUNCTION reject_immutable_row_change();
+
 CREATE TRIGGER hand_ledger_entries_immutable
 BEFORE UPDATE OR DELETE ON hand_ledger_entries
 FOR EACH ROW EXECUTE FUNCTION reject_immutable_row_change();
@@ -173,5 +193,3 @@ FOR EACH ROW EXECUTE FUNCTION reject_immutable_row_change();
 CREATE TRIGGER audit_events_immutable
 BEFORE UPDATE OR DELETE ON audit_events
 FOR EACH ROW EXECUTE FUNCTION reject_immutable_row_change();
-
-COMMIT;

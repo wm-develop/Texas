@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,6 +39,7 @@ type runtime struct {
 	timeExtensions  map[string]int
 	handStartedAt   time.Time
 	persistedHandID string
+	actions         []history.Action
 }
 
 const (
@@ -204,6 +206,7 @@ func (manager *Manager) SetReady(ctx context.Context, userID string, ready bool)
 	if allReady(roomValue.Members) &&
 		(runtime.engine.Phase() == holdem.PhaseWaiting || runtime.engine.Phase() == holdem.PhaseWaitingNextHand) {
 		runtime.handStartedAt = manager.now()
+		runtime.actions = nil
 		runtime.persistedHandID = ""
 		if err := runtime.engine.StartHand(manager.random); err != nil {
 			return Snapshot{}, err
@@ -247,9 +250,17 @@ func (manager *Manager) SubmitAction(
 	defer runtime.mu.Unlock()
 	request.PlayerID = userID
 	previousRevision := runtime.engine.Revision()
+	street := runtime.engine.Phase()
 	result, err := runtime.engine.SubmitAction(request)
 	if err != nil {
 		return holdem.ActionResult{}, Snapshot{}, err
+	}
+	if runtime.engine.Revision() != previousRevision {
+		runtime.actions = append(runtime.actions, history.Action{
+			ActionID: result.ActionID, UserID: userID, Sequence: len(runtime.actions) + 1,
+			Street: strings.ToLower(string(street)), Type: string(result.Action),
+			Committed: result.Committed, RaiseTo: request.RaiseTo, CreatedAt: manager.now(),
+		})
 	}
 	if result.HandEnded {
 		if err := manager.persistSettlementLocked(runtime, roomValue); err != nil {
@@ -365,7 +376,7 @@ func (manager *Manager) Rebuy(
 	if err := runtime.engine.AddChips(userID, delta); err != nil {
 		return Snapshot{}, err
 	}
-	roomValue, err = manager.rooms.AddToStack(ctx, roomID, userID, delta)
+	roomValue, err = manager.rooms.SetStack(ctx, roomID, userID, position.TableChips)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -501,7 +512,15 @@ func (manager *Manager) handleTimeout(roomID string, generation uint64) {
 	roomValue, err := manager.rooms.GetForMember(context.Background(), actorUserID, roomID)
 	if err == nil {
 		var result holdem.ActionResult
+		street := runtime.engine.Phase()
 		result, err = runtime.engine.ApplyTimeout()
+		if err == nil {
+			runtime.actions = append(runtime.actions, history.Action{
+				ActionID: result.ActionID, UserID: actorUserID, Sequence: len(runtime.actions) + 1,
+				Street: strings.ToLower(string(street)), Type: string(result.Action), Committed: result.Committed,
+				CreatedAt: manager.now(),
+			})
+		}
 		if err == nil && result.HandEnded {
 			err = manager.persistSettlementLocked(runtime, roomValue)
 			if err == nil {
@@ -570,8 +589,10 @@ func (manager *Manager) persistSettlementLocked(runtime *runtime, roomValue room
 		}
 		record := history.Hand{
 			HandID: settlement.HandID, RoomID: roomValue.RoomID, RoomCode: roomValue.Code,
-			StartedAt: runtime.handStartedAt, EndedAt: manager.now(), Showdown: settlement.Showdown,
+			DealerSeat: runtime.engine.DealerSeat(),
+			StartedAt:  runtime.handStartedAt, EndedAt: manager.now(), Showdown: settlement.Showdown,
 			PotAwards: settlement.PotAwards, RevealedHands: settlement.RevealedHands,
+			Actions: append([]history.Action(nil), runtime.actions...),
 		}
 		for _, card := range runtime.engine.Board() {
 			record.Board = append(record.Board, card.String())

@@ -3,11 +3,15 @@ package account
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("repository conflict")
+)
 
 type Repository interface {
 	CreateUser(ctx context.Context, user User) error
@@ -43,10 +47,10 @@ func (repository *MemoryRepository) CreateUser(_ context.Context, user User) err
 	defer repository.mu.Unlock()
 	username := strings.ToLower(user.Username)
 	if _, exists := repository.usersByID[user.UserID]; exists {
-		return errors.New("user id already exists")
+		return fmt.Errorf("%w: user id already exists", ErrConflict)
 	}
 	if _, exists := repository.userIDByUsername[username]; exists {
-		return errors.New("username already exists")
+		return fmt.Errorf("%w: username already exists", ErrConflict)
 	}
 	repository.usersByID[user.UserID] = user
 	repository.userIDByUsername[username] = user.UserID

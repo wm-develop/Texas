@@ -76,6 +76,18 @@ func registerAccountRoutes(mux *http.ServeMux, accounts *account.Service) {
 		writeJSON(writer, http.StatusOK, result)
 	})
 
+	mux.HandleFunc("POST /v1/auth/logout", func(writer http.ResponseWriter, request *http.Request) {
+		if accounts == nil {
+			writeJSONError(writer, http.StatusServiceUnavailable, "service_unavailable")
+			return
+		}
+		if err := accounts.Logout(request.Context(), readBearerToken(request.Header.Get("Authorization"))); err != nil {
+			writeAccountError(writer, err)
+			return
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	})
+
 	mux.HandleFunc("GET /v1/users/me", func(writer http.ResponseWriter, request *http.Request) {
 		user, ok := authenticateRequest(writer, request, accounts)
 		if !ok {

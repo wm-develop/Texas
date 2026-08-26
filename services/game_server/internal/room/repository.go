@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 )
 
-var ErrNotFound = errors.New("room not found")
+var (
+	ErrNotFound = errors.New("room not found")
+	ErrConflict = errors.New("room conflict")
+)
 
 type Repository interface {
 	Create(ctx context.Context, room Room) error
@@ -15,6 +19,13 @@ type Repository interface {
 	ByCode(ctx context.Context, code string) (Room, error)
 	ByUser(ctx context.Context, userID string) (Room, error)
 	Delete(ctx context.Context, roomID string) error
+}
+
+// BuyInRepository is implemented by persistent repositories that must commit
+// wallet and room membership changes in one database transaction.
+type BuyInRepository interface {
+	CreateWithBuyIn(ctx context.Context, value Room, requestID string, amount int64, now time.Time) error
+	JoinWithBuyIn(ctx context.Context, roomID string, member Member, requestID string, amount int64, now time.Time) (Room, error)
 }
 
 type MemoryRepository struct {
@@ -34,10 +45,10 @@ func (repository *MemoryRepository) Create(_ context.Context, value Room) error 
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
 	if _, exists := repository.byID[value.RoomID]; exists {
-		return errors.New("room id already exists")
+		return ErrConflict
 	}
 	if _, exists := repository.roomIDByCode[value.Code]; exists {
-		return errors.New("room code already exists")
+		return ErrConflict
 	}
 	repository.byID[value.RoomID] = cloneRoom(value)
 	repository.roomIDByCode[value.Code] = value.RoomID

@@ -61,17 +61,20 @@ type Clock func() time.Time
 type IDGenerator func() string
 
 type Service struct {
-	mu       sync.Mutex
-	policy   Policy
-	now      Clock
-	nextID   IDGenerator
-	recent   map[string][]time.Time
-	accepted map[string]Message
-	history  map[string][]Message
-	muted    map[string]bool
+	mu     sync.Mutex
+	policy Policy
+	now    Clock
+	nextID IDGenerator
+	store  Store
+	recent map[string][]time.Time
+	muted  map[string]bool
 }
 
 func NewService(policy Policy, clock Clock, idGenerator IDGenerator) (*Service, error) {
+	return NewServiceWithStore(policy, clock, idGenerator, nil)
+}
+
+func NewServiceWithStore(policy Policy, clock Clock, idGenerator IDGenerator, store Store) (*Service, error) {
 	if policy.MaximumRunes <= 0 || policy.MaximumPerWindow <= 0 || policy.RateWindow <= 0 ||
 		clock == nil || idGenerator == nil {
 		return nil, errors.New("invalid chat service configuration")
@@ -79,14 +82,16 @@ func NewService(policy Policy, clock Clock, idGenerator IDGenerator) (*Service, 
 	if policy.HistoryLimit <= 0 {
 		policy.HistoryLimit = 50
 	}
+	if store == nil {
+		store = NewMemoryStore(policy.HistoryLimit)
+	}
 	return &Service{
-		policy:   policy,
-		now:      clock,
-		nextID:   idGenerator,
-		recent:   make(map[string][]time.Time),
-		accepted: make(map[string]Message),
-		history:  make(map[string][]Message),
-		muted:    make(map[string]bool),
+		policy: policy,
+		now:    clock,
+		nextID: idGenerator,
+		store:  store,
+		recent: make(map[string][]time.Time),
+		muted:  make(map[string]bool),
 	}, nil
 }
 
@@ -100,8 +105,9 @@ func (service *Service) Send(sender Sender, request Request) (Message, error) {
 
 	service.mu.Lock()
 	defer service.mu.Unlock()
-	idempotencyKey := sender.TableID + "\x00" + sender.UserID + "\x00" + request.ClientMessageID
-	if previous, exists := service.accepted[idempotencyKey]; exists {
+	if previous, exists, err := service.store.ByClientMessage(sender.TableID, sender.UserID, request.ClientMessageID); err != nil {
+		return Message{}, err
+	} else if exists {
 		return previous, nil
 	}
 	if sender.Muted || service.muted[sender.UserID] {
@@ -142,13 +148,7 @@ func (service *Service) Send(sender Sender, request Request) (Message, error) {
 		Content:         content,
 		SentAt:          now,
 	}
-	service.accepted[idempotencyKey] = message
-	history := append(service.history[sender.TableID], message)
-	if len(history) > service.policy.HistoryLimit {
-		history = append([]Message(nil), history[len(history)-service.policy.HistoryLimit:]...)
-	}
-	service.history[sender.TableID] = history
-	return message, nil
+	return service.store.Save(message)
 }
 
 func (service *Service) SetMuted(userID string, muted bool) error {
@@ -177,11 +177,11 @@ func (service *Service) History(tableID string, limit int) []Message {
 	if limit <= 0 || limit > service.policy.HistoryLimit {
 		limit = service.policy.HistoryLimit
 	}
-	history := service.history[tableID]
-	if len(history) > limit {
-		history = history[len(history)-limit:]
+	history, err := service.store.History(tableID, limit)
+	if err != nil {
+		return nil
 	}
-	return append([]Message(nil), history...)
+	return history
 }
 
 func (service *Service) validateContent(kind Kind, content string) error {

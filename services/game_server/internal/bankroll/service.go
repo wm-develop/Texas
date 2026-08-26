@@ -11,6 +11,8 @@ const maximumChipAmount int64 = 9_000_000_000_000_000
 
 var validRequestID = regexp.MustCompile(`^[A-Za-z0-9:_-]{1,96}$`)
 
+func ValidRequestID(value string) bool { return validRequestID.MatchString(value) }
+
 type Service struct {
 	repository Repository
 	now        func() time.Time
@@ -34,7 +36,7 @@ func (service *Service) Snapshot(ctx context.Context, userID string) (Snapshot, 
 }
 
 func (service *Service) TopUp(ctx context.Context, userID, requestID string, amount int64) (Snapshot, error) {
-	if userID == "" || !validRequestID.MatchString(requestID) || amount <= 0 || amount > maximumChipAmount {
+	if userID == "" || !ValidRequestID(requestID) || amount <= 0 || amount > maximumChipAmount {
 		return Snapshot{}, Error{Code: "invalid_chip_amount"}
 	}
 	return service.repository.TopUp(ctx, userID, requestID, amount, service.now())
@@ -49,7 +51,7 @@ func (service *Service) Rebuy(ctx context.Context, userID, tableID, requestID st
 }
 
 func (service *Service) transfer(ctx context.Context, userID, tableID, requestID string, amount, maximum int64, reason Reason) (Snapshot, error) {
-	if userID == "" || tableID == "" || !validRequestID.MatchString(requestID) || amount <= 0 || maximum <= 0 || maximum > maximumChipAmount {
+	if userID == "" || tableID == "" || !ValidRequestID(requestID) || amount <= 0 || maximum <= 0 || maximum > maximumChipAmount {
 		return Snapshot{}, Error{Code: "invalid_chip_amount"}
 	}
 	return service.repository.TransferToTable(ctx, userID, tableID, requestID, amount, maximum, reason, service.now())
@@ -63,7 +65,7 @@ func (service *Service) ApplySettlement(ctx context.Context, tableID, handID str
 }
 
 func (service *Service) CashOut(ctx context.Context, userID, tableID, requestID string) (Snapshot, error) {
-	if userID == "" || tableID == "" || !validRequestID.MatchString(requestID) {
+	if userID == "" || tableID == "" || !ValidRequestID(requestID) {
 		return Snapshot{}, Error{Code: "invalid_request"}
 	}
 	return service.repository.CashOut(ctx, userID, tableID, requestID, service.now())

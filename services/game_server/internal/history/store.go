@@ -19,14 +19,27 @@ type PlayerResult struct {
 	HoleCards     []string `json:"holeCards,omitempty"`
 }
 
+type Action struct {
+	ActionID  string    `json:"actionId"`
+	UserID    string    `json:"userId"`
+	Sequence  int       `json:"sequence"`
+	Street    string    `json:"street"`
+	Type      string    `json:"type"`
+	Committed int64     `json:"committed"`
+	RaiseTo   int64     `json:"raiseTo"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
 type Hand struct {
 	HandID        string                `json:"handId"`
 	RoomID        string                `json:"roomId"`
 	RoomCode      string                `json:"roomCode"`
+	DealerSeat    int                   `json:"dealerSeat"`
 	StartedAt     time.Time             `json:"startedAt"`
 	EndedAt       time.Time             `json:"endedAt"`
 	Board         []string              `json:"board"`
 	Players       []PlayerResult        `json:"players"`
+	Actions       []Action              `json:"actions"`
 	PotAwards     []holdem.PotAward     `json:"potAwards"`
 	Showdown      bool                  `json:"showdown"`
 	RevealedHands []holdem.RevealedHand `json:"revealedHands"`
@@ -148,6 +161,7 @@ func cloneHand(hand Hand) Hand {
 		result.Players[index] = player
 		result.Players[index].HoleCards = append([]string(nil), player.HoleCards...)
 	}
+	result.Actions = append([]Action(nil), hand.Actions...)
 	result.PotAwards = make([]holdem.PotAward, len(hand.PotAwards))
 	for index, award := range hand.PotAwards {
 		result.PotAwards[index] = award

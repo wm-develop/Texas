@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"texas/services/game_server/internal/account"
 	"texas/services/game_server/internal/bankroll"
@@ -28,24 +30,32 @@ type Options struct {
 	Tables         *tablemanager.Manager
 	Chat           *chat.Service
 	History        history.Store
+	Readiness      func(context.Context) error
+	AllowedOrigins []string
 }
 
 func NewHandler(logger *slog.Logger, options Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealth)
+	mux.HandleFunc("GET /readyz", handleReadiness(options.Readiness))
 	registerAccountRoutes(mux, options.Accounts)
 	registerBankrollRoutes(mux, options.Accounts, options.Bankroll)
 	registerRoomRoutes(mux, options.Accounts, options.Rooms, options.Tables)
 	registerHistoryRoutes(mux, options.Accounts, options.History)
 	mux.Handle("GET /ws", newWebSocketServer(logger, options))
 	mux.Handle("POST /v1/trtc/credentials", trtcCredentialsHandler(options))
-	return localDevelopmentCORS(mux)
+	return securityHeaders(configuredCORS(mux, options.AllowedOrigins))
 }
 
-func localDevelopmentCORS(next http.Handler) http.Handler {
+func configuredCORS(next http.Handler, allowedOrigins []string) http.Handler {
+	allowed := make(map[string]struct{}, len(allowedOrigins))
+	for _, origin := range allowedOrigins {
+		allowed[strings.TrimSpace(origin)] = struct{}{}
+	}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		origin := request.Header.Get("Origin")
-		if isLocalDevelopmentOrigin(origin) {
+		_, explicitlyAllowed := allowed[origin]
+		if explicitlyAllowed || isLocalDevelopmentOrigin(origin) {
 			writer.Header().Set("Access-Control-Allow-Origin", origin)
 			writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
@@ -55,6 +65,16 @@ func localDevelopmentCORS(next http.Handler) http.Handler {
 				return
 			}
 		}
+		next.ServeHTTP(writer, request)
+	})
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("X-Content-Type-Options", "nosniff")
+		writer.Header().Set("X-Frame-Options", "DENY")
+		writer.Header().Set("Referrer-Policy", "no-referrer")
+		writer.Header().Set("Permissions-Policy", "camera=(), geolocation=()")
 		next.ServeHTTP(writer, request)
 	})
 }
@@ -72,6 +92,21 @@ func handleHealth(writer http.ResponseWriter, _ *http.Request) {
 	writer.Header().Set("Content-Type", "application/json")
 	writer.WriteHeader(http.StatusOK)
 	_, _ = writer.Write([]byte(`{"status":"ok"}`))
+}
+
+func handleReadiness(check func(context.Context) error) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		if check != nil {
+			ctx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+			err := check(ctx)
+			cancel()
+			if err != nil {
+				writeJSONError(writer, http.StatusServiceUnavailable, "not_ready")
+				return
+			}
+		}
+		writeJSON(writer, http.StatusOK, map[string]string{"status": "ready"})
+	}
 }
 
 type trtcCredentialsRequest struct {

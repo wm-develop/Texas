@@ -77,7 +77,10 @@ func (service *Service) Register(
 		CreatedAt:    service.config.Now(),
 	}
 	if err := service.repository.CreateUser(ctx, user); err != nil {
-		return AuthResult{}, Error{Code: "username_taken"}
+		if errors.Is(err, ErrConflict) {
+			return AuthResult{}, Error{Code: "username_taken"}
+		}
+		return AuthResult{}, err
 	}
 	return service.createSession(ctx, user)
 }
@@ -115,6 +118,20 @@ func (service *Service) Authenticate(ctx context.Context, accessToken string) (U
 		return User{}, Error{Code: "authentication_required"}
 	}
 	return user, nil
+}
+
+func (service *Service) Logout(ctx context.Context, accessToken string) error {
+	if strings.TrimSpace(accessToken) == "" {
+		return Error{Code: "authentication_required"}
+	}
+	session, err := service.repository.SessionByAccessHash(ctx, tokenHash(accessToken))
+	if err != nil {
+		return Error{Code: "authentication_required"}
+	}
+	if err := service.repository.DeleteSession(ctx, session.SessionID); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (service *Service) ResolveUser(ctx context.Context, accessToken string) (string, error) {

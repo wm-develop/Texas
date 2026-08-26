@@ -38,6 +38,7 @@ type Entry struct {
 	TableDelta         int64     `json:"tableDelta"`
 	WalletBalanceAfter int64     `json:"walletBalanceAfter"`
 	TableBalanceAfter  int64     `json:"tableBalanceAfter"`
+	RevisionAfter      uint64    `json:"revisionAfter"`
 	CreatedAt          time.Time `json:"createdAt"`
 }
 
@@ -98,7 +99,7 @@ func (repository *MemoryRepository) TopUp(_ context.Context, userID, requestID s
 	repository.appendLocked(Entry{
 		EntryID: entryID(userID, requestID), RequestID: requestID, UserID: userID,
 		Reason: ReasonVirtualTopUp, WalletDelta: amount,
-		WalletBalanceAfter: result.WalletChips, CreatedAt: now,
+		WalletBalanceAfter: result.WalletChips, RevisionAfter: result.Revision, CreatedAt: now,
 	})
 	repository.results[idempotencyKey(userID, requestID)] = result
 	return result, nil
@@ -131,7 +132,8 @@ func (repository *MemoryRepository) TransferToTable(
 	repository.appendLocked(Entry{
 		EntryID: entryID(userID, requestID), RequestID: requestID, UserID: userID, TableID: tableID,
 		Reason: reason, WalletDelta: -amount, TableDelta: amount,
-		WalletBalanceAfter: result.WalletChips, TableBalanceAfter: result.TableChips, CreatedAt: now,
+		WalletBalanceAfter: result.WalletChips, TableBalanceAfter: result.TableChips,
+		RevisionAfter: result.Revision, CreatedAt: now,
 	})
 	repository.results[idempotencyKey(userID, requestID)] = result
 	return result, nil
@@ -179,7 +181,8 @@ func (repository *MemoryRepository) ApplySettlement(
 			EntryID:   entryID(userID, "settlement:"+tableID+":"+handID),
 			RequestID: "settlement:" + handID, UserID: userID, TableID: tableID,
 			ReferenceID: handID, Reason: ReasonSettlement, TableDelta: balance - previous,
-			WalletBalanceAfter: state.wallet, TableBalanceAfter: balance, CreatedAt: now,
+			WalletBalanceAfter: state.wallet, TableBalanceAfter: balance,
+			RevisionAfter: state.revision, CreatedAt: now,
 		})
 	}
 	repository.settled[settlementKey] = struct{}{}
@@ -204,7 +207,7 @@ func (repository *MemoryRepository) CashOut(_ context.Context, userID, tableID, 
 	repository.appendLocked(Entry{
 		EntryID: entryID(userID, requestID), RequestID: requestID, UserID: userID, TableID: tableID,
 		Reason: ReasonCashOut, WalletDelta: amount, TableDelta: -amount,
-		WalletBalanceAfter: result.WalletChips, CreatedAt: now,
+		WalletBalanceAfter: result.WalletChips, RevisionAfter: result.Revision, CreatedAt: now,
 	})
 	repository.results[idempotencyKey(userID, requestID)] = result
 	return result, nil

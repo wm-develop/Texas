@@ -45,6 +45,12 @@ func TestRegisterLoginAuthenticateAndRefresh(t *testing.T) {
 	if _, err := service.Authenticate(ctx, registered.AccessToken); err == nil {
 		t.Fatal("rotated access token remained valid")
 	}
+	if err := service.Logout(ctx, refreshed.AccessToken); err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+	if _, err := service.Authenticate(ctx, refreshed.AccessToken); accountErrorCode(err) != "authentication_required" {
+		t.Fatalf("logged out token authenticate error=%v", err)
+	}
 }
 
 func TestRegistrationValidationAndExpiry(t *testing.T) {
@@ -65,6 +71,38 @@ func TestRegistrationValidationAndExpiry(t *testing.T) {
 	if _, err := service.Authenticate(ctx, result.AccessToken); accountErrorCode(err) != "authentication_required" {
 		t.Fatalf("expired authentication error=%v", err)
 	}
+}
+
+func TestRegistrationDoesNotHideRepositoryFailureAsUsernameConflict(t *testing.T) {
+	now := time.Unix(1_000, 0)
+	hasher, err := security.NewPasswordHasher(1_000, cryptorand.Reader)
+	if err != nil {
+		t.Fatalf("NewPasswordHasher: %v", err)
+	}
+	repositoryFailure := errors.New("database unavailable")
+	repository := &failingCreateRepository{
+		MemoryRepository: NewMemoryRepository(),
+		err:              repositoryFailure,
+	}
+	service, err := NewService(repository, hasher, ServiceConfig{
+		AccessTTL: 24 * time.Hour, RefreshTTL: 30 * 24 * time.Hour,
+		Now: func() time.Time { return now }, Random: cryptorand.Reader,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := service.Register(context.Background(), "player_1", "玩家一", "password-123"); !errors.Is(err, repositoryFailure) || accountErrorCode(err) != "" {
+		t.Fatalf("Register error=%v", err)
+	}
+}
+
+type failingCreateRepository struct {
+	*MemoryRepository
+	err error
+}
+
+func (repository *failingCreateRepository) CreateUser(context.Context, User) error {
+	return repository.err
 }
 
 func mustAccountService(t *testing.T, now *time.Time) *Service {
