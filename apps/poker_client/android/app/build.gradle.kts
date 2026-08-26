@@ -35,6 +35,16 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+
+            // Several native Flutter plugins used by the Android client (most
+            // notably the TRTC SDK) register classes dynamically. R8 cannot see
+            // those references and may remove them, which makes the product APK
+            // terminate during startup even though debug/profile builds work.
+            // Keep the Release build AOT-compiled, but disable Java/Kotlin code
+            // and resource shrinking until every plugin supplies verified keep
+            // rules for this Flutter OH toolchain.
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }

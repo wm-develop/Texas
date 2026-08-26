@@ -6,29 +6,70 @@ import 'package:http/testing.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
 
 void main() {
+  test('requests and parses the initial administrator registration', () async {
+    final client = GameApiClient(
+      serverBaseUri: Uri.parse('http://game.test'),
+      httpClient: MockClient((request) async {
+        expect(request.url.path, '/v1/auth/register');
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        expect(body['username'], 'friend_1');
+        expect(body['requestAdmin'], isTrue);
+        return http.Response.bytes(
+          utf8.encode(
+            jsonEncode({
+              'user': {
+                'userId': 'usr_1',
+                'username': 'friend_1',
+                'displayName': '好友一',
+                'role': 'admin',
+                'status': 'active',
+                'createdAt': '2026-08-24T00:00:00Z',
+              },
+              'accessToken': 'access-token',
+              'refreshToken': 'refresh-token',
+              'accessExpiresAt': '2026-08-25T00:00:00Z',
+              'refreshExpiresAt': '2026-09-24T00:00:00Z',
+            }),
+          ),
+          201,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }),
+    );
+
+    final session = await client.register(
+      username: 'friend_1',
+      displayName: '好友一',
+      password: 'password-123',
+      requestAdmin: true,
+    );
+
+    expect(session.user.userId, 'usr_1');
+    expect(session.accessToken, 'access-token');
+    expect(session.user.isAdmin, isTrue);
+  });
+
   test(
-    'parses registration session without exposing transport details',
+    'ordinary registration omits the optional administrator field',
     () async {
       final client = GameApiClient(
         serverBaseUri: Uri.parse('http://game.test'),
         httpClient: MockClient((request) async {
-          expect(request.url.path, '/v1/auth/register');
-          expect(jsonDecode(request.body)['username'], 'friend_1');
-          return http.Response.bytes(
-            utf8.encode(
-              jsonEncode({
-                'user': {
-                  'userId': 'usr_1',
-                  'username': 'friend_1',
-                  'displayName': '好友一',
-                  'createdAt': '2026-08-24T00:00:00Z',
-                },
-                'accessToken': 'access-token',
-                'refreshToken': 'refresh-token',
-                'accessExpiresAt': '2026-08-25T00:00:00Z',
-                'refreshExpiresAt': '2026-09-24T00:00:00Z',
-              }),
-            ),
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          expect(body.containsKey('requestAdmin'), isFalse);
+          return http.Response(
+            jsonEncode({
+              'user': {
+                'userId': 'usr_2',
+                'username': 'friend_2',
+                'displayName': '好友二',
+                'createdAt': '2026-08-24T00:00:00Z',
+              },
+              'accessToken': 'access-token',
+              'refreshToken': 'refresh-token',
+              'accessExpiresAt': '2026-08-25T00:00:00Z',
+              'refreshExpiresAt': '2026-09-24T00:00:00Z',
+            }),
             201,
             headers: {'content-type': 'application/json; charset=utf-8'},
           );
@@ -36,13 +77,12 @@ void main() {
       );
 
       final session = await client.register(
-        username: 'friend_1',
-        displayName: '好友一',
+        username: 'friend_2',
+        displayName: '好友二',
         password: 'password-123',
       );
 
-      expect(session.user.userId, 'usr_1');
-      expect(session.accessToken, 'access-token');
+      expect(session.user.isAdmin, isFalse);
     },
   );
 

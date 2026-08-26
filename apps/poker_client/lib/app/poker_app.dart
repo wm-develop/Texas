@@ -103,6 +103,7 @@ class _PokerAppState extends State<PokerApp> {
     String username,
     String displayName,
     String password,
+    bool requestAdmin,
   ) async {
     late final AuthSession session;
     try {
@@ -110,6 +111,7 @@ class _PokerAppState extends State<PokerApp> {
         username: username,
         displayName: displayName,
         password: password,
+        requestAdmin: requestAdmin,
       );
     } on GameApiTimeoutException catch (timeout) {
       session = await _recoverRegistration(username, password, timeout);

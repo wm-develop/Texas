@@ -3,16 +3,24 @@ class AppUser {
     required this.userId,
     required this.username,
     required this.displayName,
+    this.role = 'player',
+    this.status = 'active',
   });
 
   final String userId;
   final String username;
   final String displayName;
+  final String role;
+  final String status;
+
+  bool get isAdmin => role == 'admin';
 
   factory AppUser.fromJson(Map<String, dynamic> json) => AppUser(
     userId: json['userId'] as String,
     username: json['username'] as String,
     displayName: json['displayName'] as String,
+    role: json['role'] as String? ?? 'player',
+    status: json['status'] as String? ?? 'active',
   );
 }
 

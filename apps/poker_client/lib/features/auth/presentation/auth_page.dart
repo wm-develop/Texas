@@ -10,6 +10,7 @@ class AuthPage extends StatefulWidget {
     String username,
     String displayName,
     String password,
+    bool requestAdmin,
   )
   onRegister;
 
@@ -25,6 +26,9 @@ class _AuthPageState extends State<AuthPage> {
   bool _registering = false;
   bool _submitting = false;
   String? _error;
+  int _adminTapCount = 0;
+  DateTime? _lastAdminTap;
+  bool _requestAdmin = false;
 
   @override
   void dispose() {
@@ -44,121 +48,141 @@ class _AuthPageState extends State<AuthPage> {
             radius: 1.2,
           ),
         ),
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 430),
-              child: Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(28),
-                  child: AutofillGroup(
-                    child: Form(
-                      key: _formKey,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          const Icon(
-                            Icons.style,
-                            size: 44,
-                            color: Color(0xFFD9B85F),
-                          ),
-                          const SizedBox(height: 12),
-                          Text(
-                            '好友德州',
-                            textAlign: TextAlign.center,
-                            style: Theme.of(context).textTheme.headlineMedium,
-                          ),
-                          const SizedBox(height: 4),
-                          const Text(
-                            '只和认识的朋友，快速组织一桌牌局',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(color: Colors.white60),
-                          ),
-                          const SizedBox(height: 24),
-                          SegmentedButton<bool>(
-                            segments: const [
-                              ButtonSegment(value: false, label: Text('登录')),
-                              ButtonSegment(value: true, label: Text('注册')),
-                            ],
-                            selected: {_registering},
-                            onSelectionChanged: _submitting
-                                ? null
-                                : (value) => setState(() {
-                                    _registering = value.first;
-                                    _error = null;
-                                  }),
-                          ),
-                          const SizedBox(height: 20),
-                          TextFormField(
-                            controller: _username,
-                            autofillHints: const [AutofillHints.username],
-                            decoration: const InputDecoration(
-                              labelText: '账号',
-                              hintText: '3～24 位字母、数字或下划线',
-                              border: OutlineInputBorder(),
-                            ),
-                            validator: (value) =>
-                                value == null || value.trim().isEmpty
-                                ? '请输入账号'
-                                : null,
-                          ),
-                          if (_registering) ...[
-                            const SizedBox(height: 14),
-                            TextFormField(
-                              controller: _displayName,
-                              decoration: const InputDecoration(
-                                labelText: '牌桌昵称',
-                                border: OutlineInputBorder(),
-                              ),
-                              validator: (value) =>
-                                  value == null || value.trim().isEmpty
-                                  ? '请输入牌桌昵称'
-                                  : null,
-                            ),
-                          ],
-                          const SizedBox(height: 14),
-                          TextFormField(
-                            controller: _password,
-                            obscureText: true,
-                            autofillHints: const [AutofillHints.password],
-                            decoration: const InputDecoration(
-                              labelText: '密码',
-                              border: OutlineInputBorder(),
-                            ),
-                            validator: (value) =>
-                                value == null || value.isEmpty ? '请输入密码' : null,
-                            onFieldSubmitted: (_) => _submit(),
-                          ),
-                          if (_error != null) ...[
-                            const SizedBox(height: 12),
-                            Text(
-                              _error!,
-                              style: const TextStyle(color: Colors.redAccent),
-                            ),
-                          ],
-                          const SizedBox(height: 20),
-                          FilledButton(
-                            onPressed: _submitting ? null : _submit,
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 11),
-                              child: Text(
-                                _submitting
-                                    ? '请稍候…'
-                                    : (_registering ? '注册并进入' : '登录'),
-                              ),
-                            ),
-                          ),
-                        ],
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final compact = constraints.maxHeight < 560;
+            final horizontal = compact && constraints.maxWidth >= 640;
+            return Center(
+              child: SingleChildScrollView(
+                padding: EdgeInsets.all(compact ? 12 : 24),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: horizontal ? 760 : 430),
+                  child: Card(
+                    child: Padding(
+                      padding: EdgeInsets.all(compact ? 16 : 28),
+                      child: AutofillGroup(
+                        child: Form(
+                          key: _formKey,
+                          child: horizontal
+                              ? Row(
+                                  crossAxisAlignment: CrossAxisAlignment.center,
+                                  children: [
+                                    SizedBox(
+                                      width: 230,
+                                      child: _AuthBranding(
+                                        compact: true,
+                                        onIconTap: _handleAdminTap,
+                                      ),
+                                    ),
+                                    const SizedBox(
+                                      height: 240,
+                                      child: VerticalDivider(),
+                                    ),
+                                    const SizedBox(width: 20),
+                                    Expanded(child: _buildForm(compact: true)),
+                                  ],
+                                )
+                              : Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: [
+                                    _AuthBranding(
+                                      compact: compact,
+                                      onIconTap: _handleAdminTap,
+                                    ),
+                                    SizedBox(height: compact ? 12 : 24),
+                                    _buildForm(compact: compact),
+                                  ],
+                                ),
+                        ),
                       ),
                     ),
                   ),
                 ),
               ),
-            ),
-          ),
+            );
+          },
         ),
       ),
+    );
+  }
+
+  Widget _buildForm({required bool compact}) {
+    final fieldGap = compact ? 8.0 : 14.0;
+    InputDecoration decoration(String label, {String? hint}) => InputDecoration(
+      labelText: label,
+      hintText: hint,
+      border: const OutlineInputBorder(),
+      isDense: compact,
+      contentPadding: EdgeInsets.symmetric(
+        horizontal: 12,
+        vertical: compact ? 11 : 16,
+      ),
+    );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SegmentedButton<bool>(
+          segments: const [
+            ButtonSegment(value: false, label: Text('登录')),
+            ButtonSegment(value: true, label: Text('注册')),
+          ],
+          selected: {_registering},
+          onSelectionChanged: _submitting
+              ? null
+              : (value) => setState(() {
+                  _registering = value.first;
+                  _error = null;
+                  if (!_registering) {
+                    _requestAdmin = false;
+                    _adminTapCount = 0;
+                  }
+                }),
+        ),
+        SizedBox(height: compact ? 10 : 20),
+        TextFormField(
+          controller: _username,
+          autofillHints: const [AutofillHints.username],
+          decoration: decoration(
+            '账号',
+            hint: compact ? null : '3～24 位字母、数字或下划线',
+          ),
+          validator: (value) =>
+              value == null || value.trim().isEmpty ? '请输入账号' : null,
+        ),
+        if (_registering) ...[
+          SizedBox(height: fieldGap),
+          TextFormField(
+            controller: _displayName,
+            decoration: decoration('牌桌昵称'),
+            validator: (value) =>
+                value == null || value.trim().isEmpty ? '请输入牌桌昵称' : null,
+          ),
+        ],
+        SizedBox(height: fieldGap),
+        TextFormField(
+          controller: _password,
+          obscureText: true,
+          autofillHints: const [AutofillHints.password],
+          decoration: decoration('密码'),
+          validator: (value) => value == null || value.isEmpty ? '请输入密码' : null,
+          onFieldSubmitted: (_) => _submit(),
+        ),
+        if (_error != null) ...[
+          SizedBox(height: compact ? 8 : 12),
+          Text(_error!, style: const TextStyle(color: Colors.redAccent)),
+        ],
+        SizedBox(height: compact ? 10 : 20),
+        FilledButton(
+          onPressed: _submitting ? null : _submit,
+          child: Padding(
+            padding: EdgeInsets.symmetric(vertical: compact ? 7 : 11),
+            child: Text(_submitting ? '请稍候…' : (_registering ? '注册并进入' : '登录')),
+          ),
+        ),
+      ],
     );
   }
 
@@ -174,6 +198,7 @@ class _AuthPageState extends State<AuthPage> {
           _username.text.trim(),
           _displayName.text.trim(),
           _password.text,
+          _requestAdmin,
         );
       } else {
         await widget.onLogin(_username.text.trim(), _password.text);
@@ -183,12 +208,80 @@ class _AuthPageState extends State<AuthPage> {
         setState(() => _error = '网络响应较慢，请稍后重试；注册结果会自动核验');
       }
     } on GameApiException catch (error) {
-      if (mounted) setState(() => _error = _messageFor(error.code));
+      if (mounted) {
+        final message = _messageFor(error.code);
+        setState(() => _error = message);
+        if (error.code == 'registration_disabled') {
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(SnackBar(content: Text(message)));
+        }
+      }
     } on Object {
       if (mounted) setState(() => _error = '无法连接游戏服务，请确认服务端已启动');
     } finally {
       if (mounted) setState(() => _submitting = false);
     }
+  }
+
+  void _handleAdminTap() {
+    if (!_registering || _requestAdmin) return;
+    final now = DateTime.now();
+    if (_lastAdminTap == null || now.difference(_lastAdminTap!).inSeconds > 2) {
+      _adminTapCount = 0;
+    }
+    _lastAdminTap = now;
+    _adminTapCount++;
+    if (_adminTapCount < 10) return;
+    setState(() {
+      _requestAdmin = true;
+      _adminTapCount = 0;
+    });
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(const SnackBar(content: Text('管理员注册模式已开启，仅服务器首位管理员有效')));
+  }
+}
+
+class _AuthBranding extends StatelessWidget {
+  const _AuthBranding({required this.compact, required this.onIconTap});
+
+  final bool compact;
+  final VoidCallback onIconTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onIconTap,
+          child: Padding(
+            padding: const EdgeInsets.all(4),
+            child: Icon(
+              Icons.style,
+              size: compact ? 36 : 44,
+              color: const Color(0xFFD9B85F),
+            ),
+          ),
+        ),
+        SizedBox(height: compact ? 6 : 12),
+        Text(
+          '好友德州',
+          textAlign: TextAlign.center,
+          style: compact
+              ? Theme.of(context).textTheme.headlineSmall
+              : Theme.of(context).textTheme.headlineMedium,
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          '只和认识的朋友，快速组织一桌牌局',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.white60),
+        ),
+      ],
+    );
   }
 }
 
@@ -197,5 +290,7 @@ String _messageFor(String code) => switch (code) {
   'username_taken' => '这个账号已被使用',
   'invalid_profile' => '账号或昵称格式不符合要求',
   'invalid_password' => '密码不符合要求',
+  'registration_disabled' => '服务器当前已关闭新用户注册',
+  'admin_already_initialized' => '服务器已经创建管理员，请使用普通注册或联系管理员',
   _ => '操作失败（$code）',
 };

@@ -7,6 +7,27 @@ import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/lobby/presentation/lobby_page.dart';
 
 void main() {
+  testWidgets('uses a compact two-column lobby on a landscape phone', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(900, 430);
+    addTearDown(() {
+      tester.view.resetDevicePixelRatio();
+      tester.view.resetPhysicalSize();
+    });
+
+    await tester.pumpWidget(const MaterialApp(home: _LobbyHarness()));
+    await tester.pumpAndSettle();
+
+    final joinTitle = tester.getTopLeft(find.text('加入朋友的牌桌'));
+    final createTitle = tester.getTopLeft(find.text('创建好友牌桌'));
+    expect((joinTitle.dy - createTitle.dy).abs(), lessThan(4));
+    expect(createTitle.dx, greaterThan(joinTitle.dx));
+    expect(tester.getBottomRight(find.text('创建')).dy, lessThan(430));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('top-up closes its dialog safely and refreshes the balance', (
     tester,
   ) async {

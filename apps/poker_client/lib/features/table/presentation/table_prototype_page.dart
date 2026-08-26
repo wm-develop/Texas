@@ -10,6 +10,7 @@ import 'package:poker_client/core/platform/voice_chat_service.dart';
 import 'package:poker_client/core/platform/voice_chat_service_factory.dart';
 import 'package:poker_client/core/settings/app_settings.dart';
 import 'package:poker_client/core/settings/settings_dialog.dart';
+import 'package:poker_client/features/admin/presentation/admin_page.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
 import 'package:poker_client/features/table/domain/table_seat.dart';
@@ -135,6 +136,7 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
                 chatVisible: _chatVisible,
               );
               final handWidth = math.min(680.0, viewport.tableRect.width);
+              final showSideChat = _chatVisible && viewport.supportsSideChat;
               return Center(
                 child: FittedBox(
                   fit: BoxFit.contain,
@@ -148,8 +150,13 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
                           child: _RoomHeader(
                             room: widget.room,
                             onLeave: _leaveTable,
-                            onSettings: () =>
-                                showAppSettingsDialog(context, widget.settings),
+                            onSettings: () => showAppSettingsDialog(
+                              context,
+                              widget.settings,
+                              onOpenAdmin: widget.session.user.isAdmin
+                                  ? _openAdmin
+                                  : null,
+                            ),
                           ),
                         ),
                         Positioned(
@@ -185,7 +192,7 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
                             actionRemaining: _actionRemaining,
                           ),
                         ),
-                        if (_chatVisible)
+                        if (showSideChat)
                           Positioned(
                             right: 18,
                             top: 86,
@@ -204,7 +211,9 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
                             right: 24,
                             bottom: 118,
                             child: FilledButton.tonalIcon(
-                              onPressed: _toggleChat,
+                              onPressed: viewport.supportsSideChat
+                                  ? _toggleChat
+                                  : _showCompactChat,
                               icon: const Icon(Icons.chat_bubble_outline),
                               label: const Text('文字聊天'),
                             ),
@@ -241,6 +250,10 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
       ),
     );
   }
+
+  Future<void> _openAdmin() => Navigator.of(context).push(
+    MaterialPageRoute<void>(builder: (_) => AdminPage(session: widget.session)),
+  );
 
   Future<void> _setTableSystemUi({required bool immersive}) async {
     try {
@@ -305,6 +318,28 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
   }
 
   void _toggleChat() => setState(() => _chatVisible = !_chatVisible);
+
+  Future<void> _showCompactChat() async {
+    final mediaSize = MediaQuery.sizeOf(context);
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        insetPadding: const EdgeInsets.all(12),
+        backgroundColor: Colors.transparent,
+        child: SizedBox(
+          width: math.min(520, mediaSize.width * 0.72),
+          height: math.min(520, mediaSize.height * 0.88),
+          child: _ChatPanel(
+            client: _gameSocket,
+            currentUserId: widget.session.user.userId,
+            blockedUserIds: _blockedUserIds,
+            onBlockChanged: _setUserBlocked,
+            onClose: () => Navigator.of(dialogContext).pop(),
+          ),
+        ),
+      ),
+    );
+  }
 
   Future<void> _setUserBlocked(String userId, bool blocked) async {
     if (userId == widget.session.user.userId) return;
@@ -603,6 +638,7 @@ class _ConnectionStatusBar extends StatelessWidget {
     };
 
     return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
         Container(
           width: 8,

@@ -3,8 +3,9 @@ import 'package:poker_client/core/settings/app_settings.dart';
 
 Future<void> showAppSettingsDialog(
   BuildContext context,
-  AppSettingsController settings,
-) => showDialog<void>(
+  AppSettingsController settings, {
+  VoidCallback? onOpenAdmin,
+}) => showDialog<void>(
   context: context,
   builder: (context) => AlertDialog(
     title: const Text('声音与语音设置'),
@@ -43,6 +44,20 @@ Future<void> showAppSettingsDialog(
               value: settings.autoJoinVoice,
               onChanged: settings.setAutoJoinVoice,
             ),
+            if (onOpenAdmin != null) ...[
+              const Divider(),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.admin_panel_settings_outlined),
+                title: const Text('打开服务器管理'),
+                subtitle: const Text('管理账号、密码和新用户注册开关'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  onOpenAdmin();
+                },
+              ),
+            ],
           ],
         ),
       ),

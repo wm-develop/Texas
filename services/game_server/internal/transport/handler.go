@@ -40,6 +40,7 @@ func NewHandler(logger *slog.Logger, options Options) http.Handler {
 	mux.HandleFunc("GET /readyz", handleReadiness(options.Readiness))
 	registerAccountRoutes(mux, options.Accounts)
 	registerBankrollRoutes(mux, options.Accounts, options.Bankroll)
+	registerAdminRoutes(mux, options.Accounts, options.Bankroll)
 	registerRoomRoutes(mux, options.Accounts, options.Rooms, options.Tables)
 	registerHistoryRoutes(mux, options.Accounts, options.History)
 	mux.Handle("GET /ws", newWebSocketServer(logger, options))

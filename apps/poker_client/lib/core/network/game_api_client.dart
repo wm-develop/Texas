@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 import 'package:poker_client/core/auth/auth_session.dart';
+import 'package:poker_client/features/admin/domain/managed_user.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_entry.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
@@ -54,9 +55,36 @@ class GameApiClient {
     required String username,
     required String displayName,
     required String password,
+    bool requestAdmin = false,
   }) async => AuthSession.fromJson(
     await _request(
       'v1/auth/register',
+      body: {
+        'username': username,
+        'displayName': displayName,
+        'password': password,
+        if (requestAdmin) 'requestAdmin': true,
+      },
+      expectedStatus: 201,
+    ),
+  );
+
+  Future<List<ManagedUser>> adminUsers(String accessToken) async {
+    final payload = await _get('v1/admin/users', token: accessToken);
+    return (payload['users'] as List<dynamic>? ?? const [])
+        .map((value) => ManagedUser.fromJson(value as Map<String, dynamic>))
+        .toList(growable: false);
+  }
+
+  Future<ManagedUser> adminCreateUser({
+    required String accessToken,
+    required String username,
+    required String displayName,
+    required String password,
+  }) async => ManagedUser.fromJson(
+    await _request(
+      'v1/admin/users',
+      token: accessToken,
       body: {
         'username': username,
         'displayName': displayName,
@@ -65,6 +93,50 @@ class GameApiClient {
       expectedStatus: 201,
     ),
   );
+
+  Future<void> adminSetUserStatus({
+    required String accessToken,
+    required List<String> userIds,
+    required String status,
+  }) async {
+    await _request(
+      'v1/admin/users/status',
+      token: accessToken,
+      body: {'userIds': userIds, 'status': status},
+      expectedStatus: 204,
+    );
+  }
+
+  Future<void> adminResetPassword({
+    required String accessToken,
+    required String userId,
+    required String password,
+  }) async {
+    await _request(
+      'v1/admin/users/$userId/password',
+      token: accessToken,
+      body: {'password': password},
+      expectedStatus: 204,
+    );
+  }
+
+  Future<bool> adminRegistrationEnabled(String accessToken) async =>
+      (await _get(
+            'v1/admin/settings/registration',
+            token: accessToken,
+          ))['enabled']
+          as bool;
+
+  Future<bool> adminSetRegistrationEnabled({
+    required String accessToken,
+    required bool enabled,
+  }) async =>
+      (await _request(
+            'v1/admin/settings/registration',
+            token: accessToken,
+            body: {'enabled': enabled},
+          ))['enabled']
+          as bool;
 
   Future<AuthSession> login({
     required String username,
@@ -208,6 +280,9 @@ class GameApiClient {
           .timeout(requestTimeout);
     } on TimeoutException {
       throw GameApiTimeoutException(path, requestTimeout);
+    }
+    if (response.statusCode == expectedStatus && expectedStatus == 204) {
+      return const {};
     }
     final decoded = _decode(response.bodyBytes);
     if (response.statusCode != expectedStatus) {

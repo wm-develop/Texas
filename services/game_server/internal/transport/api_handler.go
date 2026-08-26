@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"texas/services/game_server/internal/account"
 	"texas/services/game_server/internal/bankroll"
@@ -22,14 +23,18 @@ func registerAccountRoutes(mux *http.ServeMux, accounts *account.Service) {
 			return
 		}
 		var body struct {
-			Username    string `json:"username"`
-			DisplayName string `json:"displayName"`
-			Password    string `json:"password"`
+			Username     string `json:"username"`
+			DisplayName  string `json:"displayName"`
+			Password     string `json:"password"`
+			RequestAdmin bool   `json:"requestAdmin"`
 		}
 		if !decodeJSONBody(writer, request, &body) {
 			return
 		}
-		result, err := accounts.Register(request.Context(), body.Username, body.DisplayName, body.Password)
+		result, err := accounts.RegisterWithOptions(
+			request.Context(), body.Username, body.DisplayName, body.Password,
+			account.RegistrationOptions{RequestInitialAdmin: body.RequestAdmin},
+		)
 		if err != nil {
 			writeAccountError(writer, err)
 			return
@@ -94,6 +99,160 @@ func registerAccountRoutes(mux *http.ServeMux, accounts *account.Service) {
 			return
 		}
 		writeJSON(writer, http.StatusOK, user)
+	})
+}
+
+type managedUserResponse struct {
+	UserID      string         `json:"userId"`
+	Username    string         `json:"username"`
+	DisplayName string         `json:"displayName"`
+	Role        account.Role   `json:"role"`
+	Status      account.Status `json:"status"`
+	WalletChips int64          `json:"walletChips"`
+	TableChips  int64          `json:"tableChips"`
+	TableID     string         `json:"tableId,omitempty"`
+	CreatedAt   time.Time      `json:"createdAt"`
+}
+
+func registerAdminRoutes(mux *http.ServeMux, accounts *account.Service, chips *bankroll.Service) {
+	mux.HandleFunc("GET /v1/admin/users", func(writer http.ResponseWriter, request *http.Request) {
+		actor, ok := authenticateRequest(writer, request, accounts)
+		if !ok {
+			return
+		}
+		users, err := accounts.ListUsers(request.Context(), actor)
+		if err != nil {
+			writeAccountError(writer, err)
+			return
+		}
+		if chips == nil {
+			writeJSONError(writer, http.StatusServiceUnavailable, "service_unavailable")
+			return
+		}
+		managed := make([]managedUserResponse, 0, len(users))
+		for _, user := range users {
+			snapshot, err := chips.Snapshot(request.Context(), user.UserID)
+			if err != nil {
+				writeBankrollError(writer, err)
+				return
+			}
+			managed = append(managed, managedUserResponse{
+				UserID: user.UserID, Username: user.Username, DisplayName: user.DisplayName,
+				Role: user.Role, Status: user.Status, CreatedAt: user.CreatedAt,
+				WalletChips: snapshot.WalletChips, TableChips: snapshot.TableChips,
+				TableID: snapshot.TableID,
+			})
+		}
+		writeJSON(writer, http.StatusOK, map[string]any{"users": managed})
+	})
+
+	mux.HandleFunc("POST /v1/admin/users", func(writer http.ResponseWriter, request *http.Request) {
+		actor, ok := authenticateRequest(writer, request, accounts)
+		if !ok {
+			return
+		}
+		var body struct {
+			Username    string `json:"username"`
+			DisplayName string `json:"displayName"`
+			Password    string `json:"password"`
+		}
+		if !decodeJSONBody(writer, request, &body) {
+			return
+		}
+		user, err := accounts.CreateManagedUser(
+			request.Context(), actor, body.Username, body.DisplayName, body.Password,
+		)
+		if err != nil {
+			writeAccountError(writer, err)
+			return
+		}
+		writeJSON(writer, http.StatusCreated, user)
+	})
+
+	mux.HandleFunc("POST /v1/admin/users/status", func(writer http.ResponseWriter, request *http.Request) {
+		actor, ok := authenticateRequest(writer, request, accounts)
+		if !ok {
+			return
+		}
+		var body struct {
+			UserIDs []string       `json:"userIds"`
+			Status  account.Status `json:"status"`
+		}
+		if !decodeJSONBody(writer, request, &body) {
+			return
+		}
+		if body.Status != account.StatusActive && chips != nil {
+			for _, userID := range body.UserIDs {
+				snapshot, err := chips.Snapshot(request.Context(), userID)
+				if err != nil {
+					writeBankrollError(writer, err)
+					return
+				}
+				if snapshot.TableID != "" {
+					writeJSONError(writer, http.StatusConflict, "user_in_room")
+					return
+				}
+			}
+		}
+		if err := accounts.UpdateManagedStatuses(
+			request.Context(), actor, body.UserIDs, body.Status,
+		); err != nil {
+			writeAccountError(writer, err)
+			return
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("POST /v1/admin/users/{userID}/password", func(writer http.ResponseWriter, request *http.Request) {
+		actor, ok := authenticateRequest(writer, request, accounts)
+		if !ok {
+			return
+		}
+		var body struct {
+			Password string `json:"password"`
+		}
+		if !decodeJSONBody(writer, request, &body) {
+			return
+		}
+		if err := accounts.ResetManagedPassword(
+			request.Context(), actor, request.PathValue("userID"), body.Password,
+		); err != nil {
+			writeAccountError(writer, err)
+			return
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("GET /v1/admin/settings/registration", func(writer http.ResponseWriter, request *http.Request) {
+		actor, ok := authenticateRequest(writer, request, accounts)
+		if !ok {
+			return
+		}
+		settings, err := accounts.RegistrationSettings(request.Context(), actor)
+		if err != nil {
+			writeAccountError(writer, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, settings)
+	})
+
+	mux.HandleFunc("POST /v1/admin/settings/registration", func(writer http.ResponseWriter, request *http.Request) {
+		actor, ok := authenticateRequest(writer, request, accounts)
+		if !ok {
+			return
+		}
+		var body struct {
+			Enabled bool `json:"enabled"`
+		}
+		if !decodeJSONBody(writer, request, &body) {
+			return
+		}
+		settings, err := accounts.SetRegistrationEnabled(request.Context(), actor, body.Enabled)
+		if err != nil {
+			writeAccountError(writer, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, settings)
 	})
 }
 
@@ -388,6 +547,12 @@ func writeAccountError(writer http.ResponseWriter, err error) {
 	switch accountError.Code {
 	case "username_taken":
 		writeJSONError(writer, http.StatusConflict, accountError.Code)
+	case "admin_already_initialized":
+		writeJSONError(writer, http.StatusConflict, accountError.Code)
+	case "registration_disabled", "admin_required", "protected_account":
+		writeJSONError(writer, http.StatusForbidden, accountError.Code)
+	case "user_not_found":
+		writeJSONError(writer, http.StatusNotFound, accountError.Code)
 	case "invalid_credentials", "authentication_required", "invalid_refresh_token":
 		writeJSONError(writer, http.StatusUnauthorized, accountError.Code)
 	default:

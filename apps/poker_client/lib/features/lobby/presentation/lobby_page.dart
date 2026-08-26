@@ -4,6 +4,7 @@ import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
 import 'package:poker_client/core/settings/app_settings.dart';
 import 'package:poker_client/core/settings/settings_dialog.dart';
+import 'package:poker_client/features/admin/presentation/admin_page.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_entry.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/history/domain/recent_hand.dart';
@@ -87,7 +88,11 @@ class _LobbyPageState extends State<LobbyPage> {
           ),
           const SizedBox(width: 8),
           IconButton(
-            onPressed: () => showAppSettingsDialog(context, widget.settings),
+            onPressed: () => showAppSettingsDialog(
+              context,
+              widget.settings,
+              onOpenAdmin: widget.session.user.isAdmin ? _openAdmin : null,
+            ),
             icon: const Icon(Icons.settings_outlined),
             tooltip: '声音与语音设置',
           ),
@@ -113,83 +118,98 @@ class _LobbyPageState extends State<LobbyPage> {
             radius: 1.2,
           ),
         ),
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 1000),
-              child: Column(
-                children: [
-                  if (_error != null)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: Text(
-                        _error!,
-                        style: const TextStyle(color: Colors.redAccent),
-                      ),
-                    ),
-                  LayoutBuilder(
-                    builder: (context, constraints) {
-                      final cards = [_buildJoinCard(), _buildCreateCard()];
-                      if (constraints.maxWidth >= 760) {
-                        return Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(child: cards[0]),
-                            const SizedBox(width: 20),
-                            Expanded(child: cards[1]),
-                          ],
-                        );
-                      }
-                      return Column(
-                        children: [
-                          cards[0],
-                          const SizedBox(height: 20),
-                          cards[1],
-                        ],
-                      );
-                    },
+        child: LayoutBuilder(
+          builder: (context, viewport) {
+            final compactLandscape =
+                viewport.maxHeight <= 600 &&
+                viewport.maxWidth >= viewport.maxHeight * 1.35;
+            return Center(
+              child: SingleChildScrollView(
+                padding: compactLandscape
+                    ? const EdgeInsets.fromLTRB(12, 8, 12, 10)
+                    : const EdgeInsets.all(24),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxWidth: compactLandscape ? 1200 : 1000,
                   ),
-                ],
+                  child: Column(
+                    children: [
+                      if (_error != null)
+                        Padding(
+                          padding: EdgeInsets.only(
+                            bottom: compactLandscape ? 6 : 12,
+                          ),
+                          child: Text(
+                            _error!,
+                            style: const TextStyle(color: Colors.redAccent),
+                          ),
+                        ),
+                      LayoutBuilder(
+                        builder: (context, constraints) {
+                          final cards = [
+                            _buildJoinCard(compact: compactLandscape),
+                            _buildCreateCard(compact: compactLandscape),
+                          ];
+                          if (compactLandscape || constraints.maxWidth >= 760) {
+                            return Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(child: cards[0]),
+                                SizedBox(width: compactLandscape ? 12 : 20),
+                                Expanded(child: cards[1]),
+                              ],
+                            );
+                          }
+                          return Column(
+                            children: [
+                              cards[0],
+                              const SizedBox(height: 20),
+                              cards[1],
+                            ],
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
               ),
-            ),
-          ),
+            );
+          },
         ),
       ),
     );
   }
 
-  Widget _buildJoinCard() => Card(
+  Future<void> _openAdmin() => Navigator.of(context).push(
+    MaterialPageRoute<void>(builder: (_) => AdminPage(session: widget.session)),
+  );
+
+  Widget _buildJoinCard({required bool compact}) => Card(
     child: Padding(
-      padding: const EdgeInsets.all(24),
+      padding: EdgeInsets.all(compact ? 12 : 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Icon(Icons.group_add, size: 42, color: Color(0xFFD9B85F)),
-          const SizedBox(height: 12),
-          Text('加入朋友的牌桌', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 16),
+          _cardTitle(icon: Icons.group_add, title: '加入朋友的牌桌', compact: compact),
+          SizedBox(height: compact ? 6 : 16),
           TextField(
             controller: _roomCode,
             keyboardType: TextInputType.number,
             inputFormatters: [FilteringTextInputFormatter.digitsOnly],
             maxLength: 6,
-            decoration: const InputDecoration(
-              labelText: '6 位房间码',
+            decoration: _fieldDecoration(
+              '6 位房间码',
+              compact: compact,
               counterText: '',
-              border: OutlineInputBorder(),
             ),
           ),
-          const SizedBox(height: 12),
+          SizedBox(height: compact ? 6 : 12),
           TextField(
             controller: _joinPassword,
             obscureText: true,
-            decoration: const InputDecoration(
-              labelText: '房间密码（没有可留空）',
-              border: OutlineInputBorder(),
-            ),
+            decoration: _fieldDecoration('房间密码（没有可留空）', compact: compact),
           ),
-          const SizedBox(height: 18),
+          SizedBox(height: compact ? 6 : 18),
           FilledButton.icon(
             onPressed: _busy ? null : _join,
             icon: const Icon(Icons.login),
@@ -200,26 +220,22 @@ class _LobbyPageState extends State<LobbyPage> {
     ),
   );
 
-  Widget _buildCreateCard() => Card(
+  Widget _buildCreateCard({required bool compact}) => Card(
     child: Padding(
-      padding: const EdgeInsets.all(24),
+      padding: EdgeInsets.all(compact ? 12 : 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Icon(
-            Icons.add_circle_outline,
-            size: 42,
-            color: Color(0xFFD9B85F),
+          _cardTitle(
+            icon: Icons.add_circle_outline,
+            title: '创建好友牌桌',
+            compact: compact,
           ),
-          const SizedBox(height: 12),
-          Text('创建好友牌桌', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 16),
+          SizedBox(height: compact ? 6 : 16),
           DropdownButtonFormField<String>(
             initialValue: _preset,
-            decoration: const InputDecoration(
-              labelText: '牌局预设',
-              border: OutlineInputBorder(),
-            ),
+            isExpanded: true,
+            decoration: _fieldDecoration('牌局预设', compact: compact),
             items: const [
               DropdownMenuItem(
                 value: 'casual',
@@ -236,56 +252,130 @@ class _LobbyPageState extends State<LobbyPage> {
             ],
             onChanged: _busy ? null : (value) => _applyPreset(value!),
           ),
-          const SizedBox(height: 12),
+          SizedBox(height: compact ? 6 : 12),
           Row(
             children: [
-              Expanded(child: _chipField(_smallBlind, '小盲')),
+              Expanded(child: _chipField(_smallBlind, '小盲', compact)),
               const SizedBox(width: 10),
-              Expanded(child: _chipField(_bigBlind, '大盲')),
+              Expanded(child: _chipField(_bigBlind, '大盲', compact)),
             ],
           ),
-          const SizedBox(height: 6),
-          const Text(
-            '最低盲注 10/20，大盲必须是小盲的整数倍',
-            style: TextStyle(color: Colors.white60, fontSize: 12),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(child: _chipField(_maxBuyIn, '最大带入')),
-              const SizedBox(width: 10),
-              Expanded(child: _chipField(_createBuyIn, '我的带入')),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Text('人数上限：${_maxPlayers.round()} 人'),
-          Slider(
-            value: _maxPlayers,
-            min: 2,
-            max: 10,
-            divisions: 8,
-            label: '${_maxPlayers.round()}',
-            onChanged: _busy
-                ? null
-                : (value) => setState(() => _maxPlayers = value),
-          ),
-          TextField(
-            controller: _createPassword,
-            obscureText: true,
-            decoration: const InputDecoration(
-              labelText: '房间密码（可选，至少 4 位）',
-              border: OutlineInputBorder(),
+          if (!compact) ...[
+            const SizedBox(height: 6),
+            const Text(
+              '最低盲注 10/20，大盲必须是小盲的整数倍',
+              style: TextStyle(color: Colors.white60, fontSize: 12),
             ),
+          ],
+          SizedBox(height: compact ? 6 : 12),
+          Row(
+            children: [
+              Expanded(child: _chipField(_maxBuyIn, '最大带入', compact)),
+              const SizedBox(width: 10),
+              Expanded(child: _chipField(_createBuyIn, '我的带入', compact)),
+            ],
           ),
-          const SizedBox(height: 18),
-          FilledButton.icon(
-            onPressed: _busy ? null : _create,
-            icon: const Icon(Icons.add),
-            label: const Text('创建牌桌'),
+          SizedBox(height: compact ? 2 : 10),
+          Row(
+            children: [
+              Text('人数：${_maxPlayers.round()} 人'),
+              Expanded(
+                child: SizedBox(
+                  height: compact ? 36 : null,
+                  child: Slider(
+                    value: _maxPlayers,
+                    min: 2,
+                    max: 10,
+                    divisions: 8,
+                    label: '${_maxPlayers.round()}',
+                    onChanged: _busy
+                        ? null
+                        : (value) => setState(() => _maxPlayers = value),
+                  ),
+                ),
+              ),
+            ],
           ),
+          if (compact)
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _createPassword,
+                    obscureText: true,
+                    decoration: _fieldDecoration('房间密码（可选）', compact: true),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                FilledButton.icon(
+                  onPressed: _busy ? null : _create,
+                  icon: const Icon(Icons.add),
+                  label: const Text('创建'),
+                ),
+              ],
+            )
+          else ...[
+            TextField(
+              controller: _createPassword,
+              obscureText: true,
+              decoration: _fieldDecoration('房间密码（可选，至少 4 位）', compact: false),
+            ),
+            const SizedBox(height: 18),
+            FilledButton.icon(
+              onPressed: _busy ? null : _create,
+              icon: const Icon(Icons.add),
+              label: const Text('创建牌桌'),
+            ),
+          ],
         ],
       ),
     ),
+  );
+
+  Widget _cardTitle({
+    required IconData icon,
+    required String title,
+    required bool compact,
+  }) {
+    final iconWidget = Icon(
+      icon,
+      size: compact ? 28 : 42,
+      color: const Color(0xFFD9B85F),
+    );
+    final titleWidget = Text(
+      title,
+      style: Theme.of(context).textTheme.titleLarge,
+    );
+    if (compact) {
+      return Row(
+        children: [
+          iconWidget,
+          const SizedBox(width: 10),
+          Expanded(child: titleWidget),
+        ],
+      );
+    }
+    return Column(
+      children: [
+        iconWidget,
+        const SizedBox(height: 12),
+        Align(alignment: Alignment.centerLeft, child: titleWidget),
+      ],
+    );
+  }
+
+  InputDecoration _fieldDecoration(
+    String label, {
+    required bool compact,
+    String? counterText,
+  }) => InputDecoration(
+    labelText: label,
+    counterText: counterText,
+    isDense: compact,
+    contentPadding: compact
+        ? const EdgeInsets.symmetric(horizontal: 12, vertical: 8)
+        : null,
+    border: const OutlineInputBorder(),
   );
 
   Future<void> _join() async {
@@ -369,16 +459,16 @@ class _LobbyPageState extends State<LobbyPage> {
     );
   }
 
-  Widget _chipField(TextEditingController controller, String label) =>
-      TextField(
-        controller: controller,
-        keyboardType: TextInputType.number,
-        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-        decoration: InputDecoration(
-          labelText: label,
-          border: const OutlineInputBorder(),
-        ),
-      );
+  Widget _chipField(
+    TextEditingController controller,
+    String label,
+    bool compact,
+  ) => TextField(
+    controller: controller,
+    keyboardType: TextInputType.number,
+    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+    decoration: _fieldDecoration(label, compact: compact),
+  );
 
   void _applyPreset(String value) {
     setState(() {

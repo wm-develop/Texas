@@ -96,6 +96,67 @@ func TestRegistrationDoesNotHideRepositoryFailureAsUsernameConflict(t *testing.T
 	}
 }
 
+func TestInitialAdministratorControlsRegistrationAndAccounts(t *testing.T) {
+	now := time.Unix(2_000, 0)
+	service := mustAccountService(t, &now)
+	ctx := context.Background()
+
+	administrator, err := service.RegisterWithOptions(
+		ctx, "server_admin", "管理员", "password-123",
+		RegistrationOptions{RequestInitialAdmin: true},
+	)
+	if err != nil || administrator.User.Role != RoleAdmin {
+		t.Fatalf("initial administrator=%#v err=%v", administrator.User, err)
+	}
+	if _, err := service.RegisterWithOptions(
+		ctx, "second_admin", "第二管理员", "password-123",
+		RegistrationOptions{RequestInitialAdmin: true},
+	); accountErrorCode(err) != "admin_already_initialized" {
+		t.Fatalf("second administrator error=%v", err)
+	}
+
+	settings, err := service.SetRegistrationEnabled(ctx, administrator.User, false)
+	if err != nil || settings.Enabled {
+		t.Fatalf("disable registration=%#v err=%v", settings, err)
+	}
+	if _, err := service.Register(ctx, "blocked_user", "被阻止", "password-123"); accountErrorCode(err) != "registration_disabled" {
+		t.Fatalf("disabled registration error=%v", err)
+	}
+
+	managed, err := service.CreateManagedUser(
+		ctx, administrator.User, "managed_user", "受管玩家", "password-123",
+	)
+	if err != nil || managed.Role != RolePlayer {
+		t.Fatalf("managed user=%#v err=%v", managed, err)
+	}
+	if err := service.ResetManagedPassword(
+		ctx, administrator.User, managed.UserID, "new-password-456",
+	); err != nil {
+		t.Fatalf("ResetManagedPassword: %v", err)
+	}
+	if _, err := service.Login(ctx, managed.Username, "new-password-456"); err != nil {
+		t.Fatalf("login with reset password: %v", err)
+	}
+	if err := service.UpdateManagedStatuses(
+		ctx, administrator.User, []string{managed.UserID}, StatusSuspended,
+	); err != nil {
+		t.Fatalf("suspend user: %v", err)
+	}
+	if _, err := service.Login(ctx, managed.Username, "new-password-456"); accountErrorCode(err) != "invalid_credentials" {
+		t.Fatalf("suspended login error=%v", err)
+	}
+	if err := service.UpdateManagedStatuses(
+		ctx, administrator.User, []string{managed.UserID}, StatusActive,
+	); err != nil {
+		t.Fatalf("restore user: %v", err)
+	}
+	if err := service.UpdateManagedStatuses(
+		ctx, administrator.User, []string{administrator.User.UserID}, StatusDeleted,
+	); accountErrorCode(err) != "protected_account" {
+		t.Fatalf("administrator self-delete error=%v", err)
+	}
+}
+
 type failingCreateRepository struct {
 	*MemoryRepository
 	err error

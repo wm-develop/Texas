@@ -54,7 +54,7 @@ f0c0a0d33ba94f4d2c5dbc887334ce678b21813504ddb3aafcb06e60a5a667c4
 - Web Release：成功。
 - Windows Release：成功，生成包含 TRTC SDK 的 `poker_client.exe`。
 - HarmonyOS Release：成功，生成包含 TRTC SDK 的 `entry-default-signed.hap`。
-- Android Debug：成功，生成包含 TRTC SDK 的 `app-debug.apk`。
+- Android Release：成功，生成包含 TRTC SDK 的 `app-release.apk`；当前 Flutter OH/插件组合需关闭 R8 代码和资源裁剪，否则产品包会在启动阶段闪退。
 
 ## 真机联调结果
 

@@ -4,19 +4,29 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
-	ErrNotFound = errors.New("not found")
-	ErrConflict = errors.New("repository conflict")
+	ErrNotFound    = errors.New("not found")
+	ErrConflict    = errors.New("repository conflict")
+	ErrAdminExists = errors.New("administrator already exists")
+	ErrProtected   = errors.New("protected account")
 )
 
 type Repository interface {
 	CreateUser(ctx context.Context, user User) error
 	UserByID(ctx context.Context, userID string) (User, error)
 	UserByUsername(ctx context.Context, normalizedUsername string) (User, error)
+	ListUsers(ctx context.Context) ([]User, error)
+	UpdatePassword(ctx context.Context, userID, passwordHash string, now time.Time) error
+	UpdateStatuses(ctx context.Context, actorUserID string, userIDs []string, status Status, now time.Time) error
+	RegistrationEnabled(ctx context.Context) (bool, error)
+	SetRegistrationEnabled(ctx context.Context, actorUserID string, enabled bool, now time.Time) error
+	RecordAudit(ctx context.Context, event AuditEvent) error
 	SaveSession(ctx context.Context, session Session) error
 	SessionByAccessHash(ctx context.Context, tokenHash string) (Session, error)
 	SessionByRefreshHash(ctx context.Context, tokenHash string) (Session, error)
@@ -24,21 +34,24 @@ type Repository interface {
 }
 
 type MemoryRepository struct {
-	mu                 sync.RWMutex
-	usersByID          map[string]User
-	userIDByUsername   map[string]string
-	sessionsByID       map[string]Session
-	sessionIDByAccess  map[string]string
-	sessionIDByRefresh map[string]string
+	mu                  sync.RWMutex
+	usersByID           map[string]User
+	userIDByUsername    map[string]string
+	sessionsByID        map[string]Session
+	sessionIDByAccess   map[string]string
+	sessionIDByRefresh  map[string]string
+	registrationEnabled bool
+	auditEvents         []AuditEvent
 }
 
 func NewMemoryRepository() *MemoryRepository {
 	return &MemoryRepository{
-		usersByID:          make(map[string]User),
-		userIDByUsername:   make(map[string]string),
-		sessionsByID:       make(map[string]Session),
-		sessionIDByAccess:  make(map[string]string),
-		sessionIDByRefresh: make(map[string]string),
+		usersByID:           make(map[string]User),
+		userIDByUsername:    make(map[string]string),
+		sessionsByID:        make(map[string]Session),
+		sessionIDByAccess:   make(map[string]string),
+		sessionIDByRefresh:  make(map[string]string),
+		registrationEnabled: true,
 	}
 }
 
@@ -52,6 +65,19 @@ func (repository *MemoryRepository) CreateUser(_ context.Context, user User) err
 	if _, exists := repository.userIDByUsername[username]; exists {
 		return fmt.Errorf("%w: username already exists", ErrConflict)
 	}
+	if user.Role == RoleAdmin {
+		for _, existing := range repository.usersByID {
+			if existing.Role == RoleAdmin && existing.Status != StatusDeleted {
+				return ErrAdminExists
+			}
+		}
+	}
+	if user.Role == "" {
+		user.Role = RolePlayer
+	}
+	if user.Status == "" {
+		user.Status = StatusActive
+	}
 	repository.usersByID[user.UserID] = user
 	repository.userIDByUsername[username] = user.UserID
 	return nil
@@ -61,7 +87,7 @@ func (repository *MemoryRepository) UserByID(_ context.Context, userID string) (
 	repository.mu.RLock()
 	defer repository.mu.RUnlock()
 	user, exists := repository.usersByID[userID]
-	if !exists {
+	if !exists || user.Status != StatusActive {
 		return User{}, ErrNotFound
 	}
 	return user, nil
@@ -74,7 +100,80 @@ func (repository *MemoryRepository) UserByUsername(_ context.Context, username s
 	if !exists {
 		return User{}, ErrNotFound
 	}
-	return repository.usersByID[userID], nil
+	user := repository.usersByID[userID]
+	if user.Status != StatusActive {
+		return User{}, ErrNotFound
+	}
+	return user, nil
+}
+
+func (repository *MemoryRepository) ListUsers(_ context.Context) ([]User, error) {
+	repository.mu.RLock()
+	defer repository.mu.RUnlock()
+	users := make([]User, 0, len(repository.usersByID))
+	for _, user := range repository.usersByID {
+		users = append(users, user)
+	}
+	sort.Slice(users, func(i, j int) bool {
+		return users[i].CreatedAt.Before(users[j].CreatedAt)
+	})
+	return users, nil
+}
+
+func (repository *MemoryRepository) UpdatePassword(_ context.Context, userID, passwordHash string, _ time.Time) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	user, exists := repository.usersByID[userID]
+	if !exists || user.Status == StatusDeleted {
+		return ErrNotFound
+	}
+	user.PasswordHash = passwordHash
+	repository.usersByID[userID] = user
+	repository.deleteUserSessionsLocked(userID)
+	return nil
+}
+
+func (repository *MemoryRepository) UpdateStatuses(_ context.Context, actorUserID string, userIDs []string, status Status, _ time.Time) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	for _, userID := range userIDs {
+		user, exists := repository.usersByID[userID]
+		if !exists {
+			return ErrNotFound
+		}
+		if userID == actorUserID || user.Role == RoleAdmin {
+			return ErrProtected
+		}
+	}
+	for _, userID := range userIDs {
+		user := repository.usersByID[userID]
+		user.Status = status
+		repository.usersByID[userID] = user
+		if status != StatusActive {
+			repository.deleteUserSessionsLocked(userID)
+		}
+	}
+	return nil
+}
+
+func (repository *MemoryRepository) RegistrationEnabled(_ context.Context) (bool, error) {
+	repository.mu.RLock()
+	defer repository.mu.RUnlock()
+	return repository.registrationEnabled, nil
+}
+
+func (repository *MemoryRepository) SetRegistrationEnabled(_ context.Context, _ string, enabled bool, _ time.Time) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	repository.registrationEnabled = enabled
+	return nil
+}
+
+func (repository *MemoryRepository) RecordAudit(_ context.Context, event AuditEvent) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	repository.auditEvents = append(repository.auditEvents, event)
+	return nil
 }
 
 func (repository *MemoryRepository) SaveSession(_ context.Context, session Session) error {
@@ -121,4 +220,15 @@ func (repository *MemoryRepository) DeleteSession(_ context.Context, sessionID s
 	delete(repository.sessionIDByAccess, session.AccessTokenHash)
 	delete(repository.sessionIDByRefresh, session.RefreshTokenHash)
 	return nil
+}
+
+func (repository *MemoryRepository) deleteUserSessionsLocked(userID string) {
+	for sessionID, session := range repository.sessionsByID {
+		if session.UserID != userID {
+			continue
+		}
+		delete(repository.sessionsByID, sessionID)
+		delete(repository.sessionIDByAccess, session.AccessTokenHash)
+		delete(repository.sessionIDByRefresh, session.RefreshTokenHash)
+	}
 }

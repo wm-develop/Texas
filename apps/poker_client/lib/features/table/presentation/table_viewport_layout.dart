@@ -9,16 +9,20 @@ class TableViewportLayout {
     required this.canvasSize,
     required this.tableRect,
     required this.supportsSideChat,
+    required this.isCompactLandscape,
   });
 
   static const double designHeight = 720;
+  static const double compactDesignHeight = 620;
   static const double minCanvasAspect = 1.45;
   static const double maxCanvasAspect = 2.35;
   static const double maxTableWidth = 1040;
+  static const double compactMaxTableWidth = 1160;
 
   final Size canvasSize;
   final Rect tableRect;
   final bool supportsSideChat;
+  final bool isCompactLandscape;
 
   factory TableViewportLayout.fromSize(
     Size availableSize, {
@@ -28,19 +32,30 @@ class TableViewportLayout {
     final safeHeight = math.max(1.0, availableSize.height);
     final viewportAspect = safeWidth / safeHeight;
     final canvasAspect = viewportAspect.clamp(minCanvasAspect, maxCanvasAspect);
-    final canvasSize = Size(designHeight * canvasAspect, designHeight);
-    final supportsSideChat = canvasSize.width >= 1180;
+    final isCompactLandscape = safeHeight <= 520 && viewportAspect >= 1.7;
+    final canvasHeight = isCompactLandscape
+        ? compactDesignHeight
+        : designHeight;
+    final canvasSize = Size(canvasHeight * canvasAspect, canvasHeight);
+    final supportsSideChat = !isCompactLandscape && canvasSize.width >= 1180;
     final reserveChat = chatVisible && supportsSideChat;
-    final baseLeft = canvasSize.width < 1160 ? 64.0 : 104.0;
+    final baseLeft = isCompactLandscape
+        ? 42.0
+        : canvasSize.width < 1160
+        ? 64.0
+        : 104.0;
     final baseRight = reserveChat ? 264.0 : baseLeft;
-    const top = 62.0;
-    const bottom = 132.0;
-    const tableHeight = designHeight - top - bottom;
+    final top = isCompactLandscape ? 48.0 : 62.0;
+    final bottom = isCompactLandscape ? 106.0 : 132.0;
+    final tableHeight = canvasHeight - top - bottom;
     final availableTableWidth = math.max(
       1.0,
       canvasSize.width - baseLeft - baseRight,
     );
-    final tableWidth = math.min(availableTableWidth, maxTableWidth);
+    final tableWidth = math.min(
+      availableTableWidth,
+      isCompactLandscape ? compactMaxTableWidth : maxTableWidth,
+    );
     final unusedWidth = availableTableWidth - tableWidth;
     final tableRect = Rect.fromLTWH(
       baseLeft + unusedWidth / 2,
@@ -53,6 +68,7 @@ class TableViewportLayout {
       canvasSize: canvasSize,
       tableRect: tableRect,
       supportsSideChat: supportsSideChat,
+      isCompactLandscape: isCompactLandscape,
     );
   }
 }

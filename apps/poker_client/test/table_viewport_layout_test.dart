@@ -29,6 +29,19 @@ void main() {
     expect(layout.tableRect.height, 526);
   });
 
+  test('enlarges content on a logical-size landscape phone', () {
+    final layout = TableViewportLayout.fromSize(
+      const Size(920, 420),
+      chatVisible: true,
+    );
+
+    expect(layout.isCompactLandscape, isTrue);
+    expect(layout.canvasSize.height, TableViewportLayout.compactDesignHeight);
+    expect(layout.supportsSideChat, isFalse);
+    expect(layout.tableRect.width, TableViewportLayout.compactMaxTableWidth);
+    expect(layout.tableRect.height, 466);
+  });
+
   test('centers the table when the side chat is closed', () {
     final layout = TableViewportLayout.fromSize(
       const Size(1600, 720),

@@ -248,6 +248,69 @@ func TestRecentHandsRequiresAuthenticationAndReturnsPersonalHistory(t *testing.T
 	}
 }
 
+func TestAdministratorHTTPFlowEnforcesRolesAndRegistrationSetting(t *testing.T) {
+	accounts, _ := testApplicationServices(t)
+	chips, err := bankroll.NewService(bankroll.NewMemoryRepository(), time.Now)
+	if err != nil {
+		t.Fatalf("bankroll NewService: %v", err)
+	}
+	server := httptest.NewServer(NewHandler(
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Options{Accounts: accounts, Bankroll: chips},
+	))
+	defer server.Close()
+
+	administrator, err := accounts.RegisterWithOptions(
+		context.Background(), "admin_http", "管理员", "password-123",
+		account.RegistrationOptions{RequestInitialAdmin: true},
+	)
+	if err != nil {
+		t.Fatalf("register administrator: %v", err)
+	}
+	player := registerHTTPUser(t, server.URL, "plain_http", "普通玩家")
+
+	forbidden := doJSONRequest(
+		t, http.MethodGet, server.URL+"/v1/admin/users", player.AccessToken, nil,
+	)
+	forbidden.Body.Close()
+	if forbidden.StatusCode != http.StatusForbidden {
+		t.Fatalf("ordinary admin list status=%d", forbidden.StatusCode)
+	}
+
+	listed := doJSONRequest(
+		t, http.MethodGet, server.URL+"/v1/admin/users", administrator.AccessToken, nil,
+	)
+	if listed.StatusCode != http.StatusOK {
+		t.Fatalf("admin list status=%d body=%s", listed.StatusCode, readBody(listed))
+	}
+	var payload struct {
+		Users []managedUserResponse `json:"users"`
+	}
+	if err := json.NewDecoder(listed.Body).Decode(&payload); err != nil || len(payload.Users) != 2 {
+		t.Fatalf("admin users=%#v err=%v", payload.Users, err)
+	}
+	listed.Body.Close()
+
+	disabled := doJSONRequest(
+		t, http.MethodPost, server.URL+"/v1/admin/settings/registration",
+		administrator.AccessToken, map[string]any{"enabled": false},
+	)
+	disabled.Body.Close()
+	if disabled.StatusCode != http.StatusOK {
+		t.Fatalf("disable registration status=%d", disabled.StatusCode)
+	}
+	blocked := doJSONRequest(
+		t, http.MethodPost, server.URL+"/v1/auth/register", "", map[string]any{
+			"username": "blocked_http", "displayName": "禁止注册", "password": "password-123",
+		},
+	)
+	body := readBody(blocked)
+	blocked.Body.Close()
+	if blocked.StatusCode != http.StatusForbidden || !strings.Contains(body, "registration_disabled") {
+		t.Fatalf("blocked registration status=%d body=%s", blocked.StatusCode, body)
+	}
+}
+
 func registerHTTPUser(t *testing.T, baseURL string, username string, displayName string) account.AuthResult {
 	t.Helper()
 	response := doJSONRequest(t, http.MethodPost, baseURL+"/v1/auth/register", "", map[string]any{
