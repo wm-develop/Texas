@@ -12,6 +12,7 @@ void main() {
 
     expect(layout.canvasSize, const Size(1280, 720));
     expect(layout.supportsSideChat, isTrue);
+    expect(layout.seatVerticalRadius, 0.88);
     expect(layout.tableRect, const Rect.fromLTWH(104, 62, 912, 526));
   });
 
@@ -36,6 +37,7 @@ void main() {
     );
 
     expect(layout.isCompactLandscape, isTrue);
+    expect(layout.seatVerticalRadius, 0.70);
     expect(layout.canvasSize.height, TableViewportLayout.compactDesignHeight);
     expect(layout.supportsSideChat, isFalse);
     expect(layout.tableRect.width, TableViewportLayout.compactMaxTableWidth);

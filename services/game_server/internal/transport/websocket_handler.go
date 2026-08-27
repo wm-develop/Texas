@@ -348,7 +348,17 @@ func (client *webSocketClient) submitAction(ctx context.Context, message protoco
 		Action: holdem.ActionType(payload.Action), RaiseTo: payload.RaiseTo,
 	})
 	if err != nil {
-		return client.sendError(message, protocol.TypeTableActionRejected, errorCode(err), revisionFromError(err))
+		code := errorCode(err)
+		if code == "internal_error" {
+			client.server.logger.Error(
+				"table action failed",
+				"error", err,
+				"room_id", client.roomID,
+				"user_id", client.user.UserID,
+				"hand_id", message.HandID,
+			)
+		}
+		return client.sendError(message, protocol.TypeTableActionRejected, code, revisionFromError(err))
 	}
 	if err := client.respond(message, protocol.TypeTableActionAccepted, result); err != nil {
 		return err

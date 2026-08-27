@@ -8,5 +8,14 @@ Future<void> main() async {
     DeviceOrientation.landscapeLeft,
     DeviceOrientation.landscapeRight,
   ]);
+  await _enableImmersiveMode();
   runApp(const PokerApp());
+}
+
+Future<void> _enableImmersiveMode() async {
+  try {
+    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+  } on Object {
+    // Desktop, Web, and some OpenHarmony embeddings can ignore this request.
+  }
 }

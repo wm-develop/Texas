@@ -50,6 +50,26 @@ func TestHeadsUpHandChecksDownAndConservesChips(t *testing.T) {
 	}
 }
 
+func TestHandIDDoesNotRepeatWhenTableRuntimeIsRecreated(t *testing.T) {
+	start := func() string {
+		table := mustTable(t, Config{
+			TableID: "persistent-room", MaxSeats: 2, SmallBlind: 10, BigBlind: 20,
+		})
+		mustAddReady(t, table, "one", 1, 1000)
+		mustAddReady(t, table, "two", 2, 1000)
+		if err := table.StartHand(zeroRandom{}); err != nil {
+			t.Fatalf("StartHand: %v", err)
+		}
+		return table.HandID()
+	}
+
+	first := start()
+	second := start()
+	if first == second {
+		t.Fatalf("recreated table reused hand id %q", first)
+	}
+}
+
 func TestFoldAwardsPotWithoutShowdown(t *testing.T) {
 	table := mustTable(t, Config{MaxSeats: 10, SmallBlind: 5, BigBlind: 10})
 	mustAddReady(t, table, "small", 1, 100)

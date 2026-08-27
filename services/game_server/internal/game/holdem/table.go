@@ -1,10 +1,12 @@
 package holdem
 
 import (
+	cryptorand "crypto/rand"
 	"errors"
 	"fmt"
 	"regexp"
 	"sort"
+	"time"
 
 	"texas/services/game_server/internal/ledger"
 )
@@ -264,7 +266,7 @@ func (table *Table) StartHand(random IntnSource) error {
 	table.deck = deck
 	table.board = nil
 	table.handCounter++
-	table.handID = fmt.Sprintf("%s_hand_%d", table.config.TableID, table.handCounter)
+	table.handID = newHandID(table.config.TableID, table.handCounter)
 	table.actionResults = make(map[string]ActionResult)
 	table.handStartStacks = make(map[string]int64, len(activeSeats))
 	table.lastSettlement = Settlement{}
@@ -309,6 +311,17 @@ func (table *Table) StartHand(random IntnSource) error {
 	table.currentSeat = table.nextActionSeat(table.bigBlindSeat)
 	table.revision++
 	return table.progressWithoutAction()
+}
+
+func newHandID(tableID string, handCounter uint64) string {
+	var random [12]byte
+	if _, err := cryptorand.Read(random[:]); err == nil {
+		return fmt.Sprintf("%s_hand_%x", tableID, random)
+	}
+	// crypto/rand failures are exceptionally rare. Keep a time-based fallback
+	// so recreating an in-memory table after a server restart still cannot reuse
+	// the old `<table>_hand_1` database key.
+	return fmt.Sprintf("%s_hand_%d_%d", tableID, time.Now().UnixNano(), handCounter)
 }
 
 func (table *Table) Phase() Phase        { return table.phase }

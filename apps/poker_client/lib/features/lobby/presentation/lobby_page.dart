@@ -631,18 +631,39 @@ class _ChipAmountDialogState extends State<_ChipAmountDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
     return AlertDialog(
+      scrollable: true,
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: 18,
+        vertical: keyboardVisible ? 8 : 24,
+      ),
+      titlePadding: EdgeInsets.fromLTRB(
+        24,
+        keyboardVisible ? 12 : 20,
+        24,
+        keyboardVisible ? 4 : 12,
+      ),
+      contentPadding: EdgeInsets.fromLTRB(
+        24,
+        keyboardVisible ? 4 : 8,
+        24,
+        keyboardVisible ? 8 : 16,
+      ),
+      actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
       title: Text(widget.title),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(widget.description),
-          const SizedBox(height: 12),
+          SizedBox(height: keyboardVisible ? 8 : 12),
           TextField(
             controller: _controller,
-            autofocus: true,
+            autofocus: false,
             keyboardType: TextInputType.number,
+            textInputAction: TextInputAction.done,
+            scrollPadding: const EdgeInsets.only(bottom: 100),
             inputFormatters: [FilteringTextInputFormatter.digitsOnly],
             decoration: InputDecoration(
               labelText: widget.fieldLabel,

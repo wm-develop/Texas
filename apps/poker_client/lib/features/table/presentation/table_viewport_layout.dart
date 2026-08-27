@@ -24,6 +24,10 @@ class TableViewportLayout {
   final bool supportsSideChat;
   final bool isCompactLandscape;
 
+  /// Pulls the top and bottom seats closer to the felt on short landscape
+  /// screens, leaving a dedicated gap for the local hand panel.
+  double get seatVerticalRadius => isCompactLandscape ? 0.70 : 0.88;
+
   factory TableViewportLayout.fromSize(
     Size availableSize, {
     required bool chatVisible,

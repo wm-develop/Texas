@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
 import 'package:poker_client/core/settings/app_settings.dart';
@@ -19,7 +20,7 @@ class PokerApp extends StatefulWidget {
   State<PokerApp> createState() => _PokerAppState();
 }
 
-class _PokerAppState extends State<PokerApp> {
+class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
   late final GameApiClient _api;
   late final AppSettingsController _settings;
   AuthSession? _session;
@@ -30,16 +31,44 @@ class _PokerAppState extends State<PokerApp> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    unawaited(_enableImmersiveMode());
+    unawaited(
+      SystemChrome.setSystemUIChangeCallback((systemBarsVisible) async {
+        if (!systemBarsVisible) return;
+        // Android temporarily prevents UI changes after the keyboard closes.
+        // Reapply after that guard interval so the whole app stays immersive.
+        await Future<void>.delayed(const Duration(milliseconds: 1100));
+        if (mounted) await _enableImmersiveMode();
+      }),
+    );
     _api = GameApiClient();
     _settings = AppSettingsController()..load();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_enableImmersiveMode());
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    unawaited(SystemChrome.setSystemUIChangeCallback(null));
     _presenceTimer?.cancel();
     _api.close();
     _settings.dispose();
     super.dispose();
+  }
+
+  Future<void> _enableImmersiveMode() async {
+    try {
+      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    } on Object {
+      // This is a mobile presentation preference; unsupported targets ignore it.
+    }
   }
 
   @override

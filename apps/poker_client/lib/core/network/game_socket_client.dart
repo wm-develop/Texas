@@ -294,11 +294,10 @@ class GameSocketClient extends ChangeNotifier {
             if (type == 'table.action.rejected') {
               _actionPending = false;
               _pendingRevision = null;
-            }
-            if (type == 'table.action.rejected' &&
-                (_errorMessage == 'stale_revision' ||
-                    _errorMessage == 'stale_hand')) {
-              requestSnapshot(reason: 'stale_action');
+              // A rejection can arrive after the server has already advanced
+              // its in-memory state but failed a later persistence step. Always
+              // resync so the action bar cannot remain on an obsolete revision.
+              requestSnapshot(reason: 'action_rejected');
             }
           }
       }

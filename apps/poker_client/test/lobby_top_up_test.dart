@@ -49,6 +49,40 @@ void main() {
     expect(find.text('充值成功，增加 1000 筹码'), findsOneWidget);
   });
 
+  testWidgets('chip amount dialog keeps its field and action above keyboard', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(900, 430);
+    addTearDown(() {
+      tester.view.resetDevicePixelRatio();
+      tester.view.resetPhysicalSize();
+      tester.view.resetViewInsets();
+    });
+
+    await tester.pumpWidget(const MaterialApp(home: _LobbyHarness()));
+    await tester.tap(find.text('总筹码 0'));
+    await tester.pumpAndSettle();
+
+    final field = find.descendant(
+      of: find.byType(AlertDialog),
+      matching: find.byType(TextField),
+    );
+    await tester.tap(field);
+    tester.view.viewInsets = const FakeViewPadding(bottom: 220);
+    await tester.pumpAndSettle();
+
+    final visibleBottom =
+        tester.view.physicalSize.height - tester.view.viewInsets.bottom;
+    expect(field.hitTestable(), findsOneWidget);
+    expect(find.text('确认充值').hitTestable(), findsOneWidget);
+    expect(
+      tester.getBottomRight(find.text('确认充值')).dy,
+      lessThanOrEqualTo(visibleBottom),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('shows auditable entertainment chip entries', (tester) async {
     await tester.pumpWidget(
       MaterialApp(

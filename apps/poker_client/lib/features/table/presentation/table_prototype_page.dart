@@ -15,6 +15,7 @@ import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
 import 'package:poker_client/features/table/domain/table_seat.dart';
 import 'package:poker_client/features/table/domain/table_snapshot.dart';
+import 'package:poker_client/features/table/presentation/responsive_action_strip.dart';
 import 'package:poker_client/features/table/presentation/table_viewport_layout.dart';
 
 class TablePrototypePage extends StatefulWidget {
@@ -73,7 +74,6 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
   @override
   void initState() {
     super.initState();
-    unawaited(_setTableSystemUi(immersive: true));
     _gameSocket = GameSocketClient(
       accessToken: widget.session.accessToken,
       roomId: widget.room.roomId,
@@ -108,7 +108,6 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
 
   @override
   void dispose() {
-    unawaited(_setTableSystemUi(immersive: false));
     _gameSocket
       ..removeListener(_refresh)
       ..dispose();
@@ -190,7 +189,9 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
                           rect: viewport.tableRect,
                           child: _PokerTable(
                             seats: _tableSeats,
-                            alignments: _seatAlignments,
+                            alignments: _seatAlignments(
+                              verticalRadius: viewport.seatVerticalRadius,
+                            ),
                             snapshot: _gameSocket.snapshot,
                             actionRemaining: _actionRemaining,
                           ),
@@ -257,17 +258,6 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
   Future<void> _openAdmin() => Navigator.of(context).push(
     MaterialPageRoute<void>(builder: (_) => AdminPage(session: widget.session)),
   );
-
-  Future<void> _setTableSystemUi({required bool immersive}) async {
-    try {
-      await SystemChrome.setEnabledSystemUIMode(
-        immersive ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
-      );
-    } on Object {
-      // Desktop, Web, and some OpenHarmony embeddings do not implement every
-      // system UI mode. The responsive layout still works without it.
-    }
-  }
 
   Future<void> _setVoiceJoined(bool value) async {
     if (_voiceOperationInProgress) return;
@@ -551,7 +541,7 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
     });
   }
 
-  List<Alignment> get _seatAlignments {
+  List<Alignment> _seatAlignments({required double verticalRadius}) {
     final seats = _tableSeats;
     final currentIndex = seats.indexWhere((seat) => seat.isCurrentUser);
     final anchor = currentIndex < 0 ? 0 : currentIndex;
@@ -559,7 +549,10 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
       final relativeIndex = (index - anchor) % widget.room.maxPlayers;
       final angle =
           math.pi / 2 + (math.pi * 2 * relativeIndex / widget.room.maxPlayers);
-      return Alignment(math.cos(angle) * 0.94, math.sin(angle) * 0.88);
+      return Alignment(
+        math.cos(angle) * 0.94,
+        math.sin(angle) * verticalRadius,
+      );
     });
   }
 
@@ -841,7 +834,8 @@ class _PokerTable extends StatelessWidget {
               child: _BetChip(amount: seats[index].streetBet),
             ),
         for (var index = 0; index < seats.length; index++)
-          if (seats[index].revealedCards.isNotEmpty)
+          if (seats[index].revealedCards.isNotEmpty &&
+              !seats[index].isCurrentUser)
             Align(
               alignment: Alignment(
                 alignments[index].x * 0.66,
@@ -1556,7 +1550,26 @@ class _RebuyAmountDialogState extends State<_RebuyAmountDialog> {
   Widget build(BuildContext context) {
     final sliderMaximum = widget.available > 0 ? widget.available : 1;
     final sliderValue = _amount.clamp(0, sliderMaximum).toDouble();
+    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
     return AlertDialog(
+      scrollable: true,
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: 18,
+        vertical: keyboardVisible ? 8 : 24,
+      ),
+      titlePadding: EdgeInsets.fromLTRB(
+        24,
+        keyboardVisible ? 12 : 20,
+        24,
+        keyboardVisible ? 4 : 12,
+      ),
+      contentPadding: EdgeInsets.fromLTRB(
+        24,
+        keyboardVisible ? 4 : 8,
+        24,
+        keyboardVisible ? 8 : 16,
+      ),
+      actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
       title: Text(widget.automatic ? '筹码已用完，请补码' : '补码'),
       content: SizedBox(
         width: 440,
@@ -1586,6 +1599,8 @@ class _RebuyAmountDialogState extends State<_RebuyAmountDialog> {
             TextField(
               controller: _controller,
               keyboardType: TextInputType.number,
+              textInputAction: TextInputAction.done,
+              scrollPadding: const EdgeInsets.only(bottom: 100),
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               decoration: InputDecoration(
                 labelText: '补码数量',
@@ -1726,85 +1741,72 @@ class _ActionBar extends StatelessWidget {
             )
           else
             Expanded(
-              child: LayoutBuilder(
-                builder: (context, constraints) => SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(minWidth: constraints.maxWidth),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        OutlinedButton(
-                          onPressed: options!.canFold && !client.actionPending
-                              ? () => client.submitAction('fold')
-                              : null,
-                          child: const Text('弃牌'),
-                        ),
-                        const SizedBox(width: 7),
-                        if (options.canCheck || options.canCall) ...[
-                          FilledButton.tonal(
-                            onPressed: client.actionPending
-                                ? null
-                                : options.canCheck
-                                ? () => client.submitAction('check')
-                                : () => client.submitAction('call'),
-                            child: Text(
-                              options.canCheck ? '过牌' : '跟注 ${options.toCall}',
-                            ),
-                          ),
-                          const SizedBox(width: 7),
-                        ],
-                        for (final suggestion in current!.suggestions) ...[
-                          FilledButton.tonal(
-                            onPressed: client.actionPending
-                                ? null
-                                : () => client.submitAction(
-                                    suggestion.action,
-                                    raiseTo: suggestion.action == 'all_in'
-                                        ? null
-                                        : suggestion.raiseTo,
-                                  ),
-                            child: Text(
-                              _suggestionButtonLabel(
-                                suggestion,
-                                ownSeat?.streetBet ?? 0,
-                              ),
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(
-                                fontSize: 11,
-                                height: 1.05,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 7),
-                        ],
-                        if (options.canBet || options.canRaise)
-                          OutlinedButton.icon(
-                            onPressed: client.actionPending
-                                ? null
-                                : () => showDialog<void>(
-                                    context: context,
-                                    builder: (context) => _BetAmountDialog(
-                                      client: client,
-                                      options: options,
-                                      suggestions: current.suggestions,
-                                      streetBet: ownSeat?.streetBet ?? 0,
-                                      smallBlind: smallBlind,
-                                      onSubmit: (action, raiseTo) =>
-                                          client.submitAction(
-                                            action,
-                                            raiseTo: raiseTo,
-                                          ),
-                                    ),
-                                  ),
-                            icon: const Icon(Icons.tune, size: 18),
-                            label: const Text('自定义'),
-                          ),
-                      ],
-                    ),
+              child: ResponsiveActionStrip(
+                leadingActions: [
+                  OutlinedButton(
+                    key: const ValueKey('bet-fold-action'),
+                    onPressed: options!.canFold && !client.actionPending
+                        ? () => client.submitAction('fold')
+                        : null,
+                    child: const Text('弃牌'),
                   ),
-                ),
+                  if (options.canCheck || options.canCall)
+                    FilledButton.tonal(
+                      key: const ValueKey('bet-check-call-action'),
+                      onPressed: client.actionPending
+                          ? null
+                          : options.canCheck
+                          ? () => client.submitAction('check')
+                          : () => client.submitAction('call'),
+                      child: Text(
+                        options.canCheck ? '过牌' : '跟注 ${options.toCall}',
+                      ),
+                    ),
+                ],
+                presetActions: [
+                  for (final suggestion in current!.suggestions)
+                    FilledButton.tonal(
+                      key: ValueKey(
+                        'bet-suggestion-${suggestion.label}-${suggestion.raiseTo}',
+                      ),
+                      onPressed: client.actionPending
+                          ? null
+                          : () => client.submitAction(
+                              suggestion.action,
+                              raiseTo: suggestion.action == 'all_in'
+                                  ? null
+                                  : suggestion.raiseTo,
+                            ),
+                      child: Text(
+                        _suggestionButtonLabel(
+                          suggestion,
+                          ownSeat?.streetBet ?? 0,
+                        ),
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 11, height: 1.05),
+                      ),
+                    ),
+                ],
+                trailingAction: options.canBet || options.canRaise
+                    ? OutlinedButton.icon(
+                        key: const ValueKey('bet-custom-action'),
+                        onPressed: client.actionPending
+                            ? null
+                            : () => showDialog<void>(
+                                context: context,
+                                builder: (context) => _BetAmountDialog(
+                                  client: client,
+                                  options: options,
+                                  streetBet: ownSeat?.streetBet ?? 0,
+                                  smallBlind: smallBlind,
+                                  onSubmit: (action, raiseTo) => client
+                                      .submitAction(action, raiseTo: raiseTo),
+                                ),
+                              ),
+                        icon: const Icon(Icons.tune, size: 18),
+                        label: const Text('自定义'),
+                      )
+                    : null,
               ),
             ),
         ],
@@ -1817,7 +1819,6 @@ class _BetAmountDialog extends StatefulWidget {
   const _BetAmountDialog({
     required this.client,
     required this.options,
-    required this.suggestions,
     required this.streetBet,
     required this.smallBlind,
     required this.onSubmit,
@@ -1825,7 +1826,6 @@ class _BetAmountDialog extends StatefulWidget {
 
   final GameSocketClient client;
   final TableActionOptions options;
-  final List<BetSuggestion> suggestions;
   final int streetBet;
   final int smallBlind;
   final void Function(String action, int raiseTo) onSubmit;
@@ -1875,46 +1875,62 @@ class _BetAmountDialogState extends State<_BetAmountDialog> {
     final ownSeat = widget.client.snapshot?.seats
         .where((seat) => seat.userId == widget.client.userId)
         .firstOrNull;
+    final remainingSeconds = _remainingSeconds(remaining);
+    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
     return AlertDialog(
-      title: Text('$actionLabel额度'),
+      scrollable: true,
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: 16,
+        vertical: keyboardVisible ? 8 : 20,
+      ),
+      titlePadding: EdgeInsets.fromLTRB(
+        24,
+        keyboardVisible ? 10 : 18,
+        16,
+        keyboardVisible ? 2 : 8,
+      ),
+      contentPadding: EdgeInsets.fromLTRB(
+        24,
+        keyboardVisible ? 4 : 8,
+        24,
+        keyboardVisible ? 6 : 12,
+      ),
+      actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+      title: Row(
+        children: [
+          Text('$actionLabel额度'),
+          const Spacer(),
+          Icon(
+            Icons.timer_outlined,
+            size: 19,
+            color: remainingSeconds <= 5 ? Colors.redAccent : Colors.white70,
+          ),
+          const SizedBox(width: 5),
+          Text(
+            '剩余 $remainingSeconds 秒',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              color: remainingSeconds <= 5 ? Colors.redAccent : Colors.white70,
+            ),
+          ),
+          const SizedBox(width: 8),
+          OutlinedButton(
+            onPressed:
+                (ownSeat?.timeExtensions ?? 0) > 0 &&
+                    current?.userId == widget.client.userId
+                ? widget.client.useTimeExtension
+                : null,
+            child: Text('加时 +30秒 ×${ownSeat?.timeExtensions ?? 0}'),
+          ),
+        ],
+      ),
       content: SizedBox(
         width: 520,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-              decoration: BoxDecoration(
-                color: const Color(0xFF172D28),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                  color: _remainingSeconds(remaining) <= 5
-                      ? Colors.redAccent
-                      : const Color(0xFFFFA94D),
-                ),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.timer_outlined, size: 20),
-                  const SizedBox(width: 7),
-                  Text(
-                    '剩余 ${_remainingSeconds(remaining)} 秒',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  const Spacer(),
-                  OutlinedButton(
-                    onPressed:
-                        (ownSeat?.timeExtensions ?? 0) > 0 &&
-                            current?.userId == widget.client.userId
-                        ? widget.client.useTimeExtension
-                        : null,
-                    child: Text('加时 +30秒 ×${ownSeat?.timeExtensions ?? 0}'),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
             Text(
               '允许范围：${options.minRaiseTo} ～ ${options.maxRaiseTo} · '
               '最小单位：小盲 $_unit',
@@ -1934,6 +1950,8 @@ class _BetAmountDialogState extends State<_BetAmountDialog> {
             TextField(
               controller: _controller,
               keyboardType: TextInputType.number,
+              textInputAction: TextInputAction.done,
+              scrollPadding: const EdgeInsets.only(bottom: 100),
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               decoration: InputDecoration(
                 labelText: '$actionLabel至',
@@ -1950,26 +1968,7 @@ class _BetAmountDialogState extends State<_BetAmountDialog> {
                 }
               },
             ),
-            const SizedBox(height: 14),
-            Wrap(
-              spacing: 7,
-              runSpacing: 7,
-              children: [
-                for (final suggestion in widget.suggestions)
-                  ActionChip(
-                    label: Text(_suggestionLabel(suggestion.label)),
-                    onPressed: () {
-                      if (suggestion.action == 'all_in') {
-                        Navigator.of(context).pop();
-                        widget.onSubmit('all_in', suggestion.raiseTo);
-                      } else {
-                        _setAmount(suggestion.raiseTo);
-                      }
-                    },
-                  ),
-              ],
-            ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 10),
             Text(
               '$actionLabel至 $_amount · 本次还需投入 ${math.max(0, _amount - widget.streetBet)}',
               style: const TextStyle(
