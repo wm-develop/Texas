@@ -131,6 +131,9 @@ class _LobbyHarnessState extends State<_LobbyHarness> {
       },
       onLoadBankrollEntries: () async => widget.entries,
       onPreviewRoom: (_) => Future.error(UnimplementedError()),
+      onUpdateUsername: (username) async =>
+          AppUser(userId: 'user_1', username: username, displayName: '好友一'),
+      onChangePassword: (_, _) => Future.error(UnimplementedError()),
       settings: _settings,
       onLogout: () {},
     );

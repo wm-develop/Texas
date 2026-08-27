@@ -39,6 +39,20 @@ class AuthSession {
   final DateTime accessExpiresAt;
   final DateTime refreshExpiresAt;
 
+  AuthSession copyWith({
+    AppUser? user,
+    String? accessToken,
+    String? refreshToken,
+    DateTime? accessExpiresAt,
+    DateTime? refreshExpiresAt,
+  }) => AuthSession(
+    user: user ?? this.user,
+    accessToken: accessToken ?? this.accessToken,
+    refreshToken: refreshToken ?? this.refreshToken,
+    accessExpiresAt: accessExpiresAt ?? this.accessExpiresAt,
+    refreshExpiresAt: refreshExpiresAt ?? this.refreshExpiresAt,
+  );
+
   factory AuthSession.fromJson(Map<String, dynamic> json) => AuthSession(
     user: AppUser.fromJson(json['user'] as Map<String, dynamic>),
     accessToken: json['accessToken'] as String,

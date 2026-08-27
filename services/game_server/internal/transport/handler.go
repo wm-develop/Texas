@@ -36,14 +36,19 @@ type Options struct {
 
 func NewHandler(logger *slog.Logger, options Options) http.Handler {
 	mux := http.NewServeMux()
+	presence := newPresenceTracker()
+	webSockets := newWebSocketServer(logger, options, presence)
 	mux.HandleFunc("GET /healthz", handleHealth)
 	mux.HandleFunc("GET /readyz", handleReadiness(options.Readiness))
-	registerAccountRoutes(mux, options.Accounts)
+	registerAccountRoutes(mux, options.Accounts, presence)
 	registerBankrollRoutes(mux, options.Accounts, options.Bankroll)
-	registerAdminRoutes(mux, options.Accounts, options.Bankroll)
+	registerAdminRoutes(
+		mux, options.Accounts, options.Bankroll, options.Rooms, options.Tables,
+		presence, webSockets.disconnectUsers,
+	)
 	registerRoomRoutes(mux, options.Accounts, options.Rooms, options.Tables)
 	registerHistoryRoutes(mux, options.Accounts, options.History)
-	mux.Handle("GET /ws", newWebSocketServer(logger, options))
+	mux.Handle("GET /ws", webSockets)
 	mux.Handle("POST /v1/trtc/credentials", trtcCredentialsHandler(options))
 	return securityHeaders(configuredCORS(mux, options.AllowedOrigins))
 }

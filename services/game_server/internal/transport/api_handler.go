@@ -16,7 +16,11 @@ import (
 	"texas/services/game_server/internal/room"
 )
 
-func registerAccountRoutes(mux *http.ServeMux, accounts *account.Service) {
+func registerAccountRoutes(
+	mux *http.ServeMux,
+	accounts *account.Service,
+	presence *presenceTracker,
+) {
 	mux.HandleFunc("POST /v1/auth/register", func(writer http.ResponseWriter, request *http.Request) {
 		if accounts == nil {
 			writeJSONError(writer, http.StatusServiceUnavailable, "service_unavailable")
@@ -39,6 +43,7 @@ func registerAccountRoutes(mux *http.ServeMux, accounts *account.Service) {
 			writeAccountError(writer, err)
 			return
 		}
+		presence.touch(result.User.UserID)
 		writeJSON(writer, http.StatusCreated, result)
 	})
 
@@ -59,6 +64,7 @@ func registerAccountRoutes(mux *http.ServeMux, accounts *account.Service) {
 			writeAccountError(writer, err)
 			return
 		}
+		presence.touch(result.User.UserID)
 		writeJSON(writer, http.StatusOK, result)
 	})
 
@@ -78,6 +84,7 @@ func registerAccountRoutes(mux *http.ServeMux, accounts *account.Service) {
 			writeAccountError(writer, err)
 			return
 		}
+		presence.touch(result.User.UserID)
 		writeJSON(writer, http.StatusOK, result)
 	})
 
@@ -100,6 +107,58 @@ func registerAccountRoutes(mux *http.ServeMux, accounts *account.Service) {
 		}
 		writeJSON(writer, http.StatusOK, user)
 	})
+
+	mux.HandleFunc("POST /v1/users/me/heartbeat", func(writer http.ResponseWriter, request *http.Request) {
+		user, ok := authenticateRequest(writer, request, accounts)
+		if !ok {
+			return
+		}
+		presence.touch(user.UserID)
+		writer.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("POST /v1/users/me/username", func(writer http.ResponseWriter, request *http.Request) {
+		user, ok := authenticateRequest(writer, request, accounts)
+		if !ok {
+			return
+		}
+		var body struct {
+			Username string `json:"username"`
+		}
+		if !decodeJSONBody(writer, request, &body) {
+			return
+		}
+		updated, err := accounts.UpdateOwnUsername(request.Context(), user, body.Username)
+		if err != nil {
+			writeAccountError(writer, err)
+			return
+		}
+		presence.touch(user.UserID)
+		writeJSON(writer, http.StatusOK, updated)
+	})
+
+	mux.HandleFunc("POST /v1/users/me/password", func(writer http.ResponseWriter, request *http.Request) {
+		user, ok := authenticateRequest(writer, request, accounts)
+		if !ok {
+			return
+		}
+		var body struct {
+			CurrentPassword string `json:"currentPassword"`
+			NewPassword     string `json:"newPassword"`
+		}
+		if !decodeJSONBody(writer, request, &body) {
+			return
+		}
+		result, err := accounts.ChangeOwnPassword(
+			request.Context(), user, body.CurrentPassword, body.NewPassword,
+		)
+		if err != nil {
+			writeAccountError(writer, err)
+			return
+		}
+		presence.touch(user.UserID)
+		writeJSON(writer, http.StatusOK, result)
+	})
 }
 
 type managedUserResponse struct {
@@ -111,10 +170,20 @@ type managedUserResponse struct {
 	WalletChips int64          `json:"walletChips"`
 	TableChips  int64          `json:"tableChips"`
 	TableID     string         `json:"tableId,omitempty"`
+	RoomCode    string         `json:"roomCode,omitempty"`
+	Online      bool           `json:"online"`
 	CreatedAt   time.Time      `json:"createdAt"`
 }
 
-func registerAdminRoutes(mux *http.ServeMux, accounts *account.Service, chips *bankroll.Service) {
+func registerAdminRoutes(
+	mux *http.ServeMux,
+	accounts *account.Service,
+	chips *bankroll.Service,
+	rooms *room.Service,
+	tables *tablemanager.Manager,
+	presence *presenceTracker,
+	disconnectUsers func(roomID string, userIDs []string),
+) {
 	mux.HandleFunc("GET /v1/admin/users", func(writer http.ResponseWriter, request *http.Request) {
 		actor, ok := authenticateRequest(writer, request, accounts)
 		if !ok {
@@ -136,11 +205,19 @@ func registerAdminRoutes(mux *http.ServeMux, accounts *account.Service, chips *b
 				writeBankrollError(writer, err)
 				return
 			}
+			roomCode := ""
+			if snapshot.TableID != "" && rooms != nil {
+				current, currentErr := rooms.Current(request.Context(), user.UserID)
+				if currentErr == nil {
+					roomCode = current.Code
+				}
+			}
 			managed = append(managed, managedUserResponse{
 				UserID: user.UserID, Username: user.Username, DisplayName: user.DisplayName,
 				Role: user.Role, Status: user.Status, CreatedAt: user.CreatedAt,
 				WalletChips: snapshot.WalletChips, TableChips: snapshot.TableChips,
-				TableID: snapshot.TableID,
+				TableID: snapshot.TableID, RoomCode: roomCode,
+				Online: presence.online(user.UserID),
 			})
 		}
 		writeJSON(writer, http.StatusOK, map[string]any{"users": managed})
@@ -221,6 +298,117 @@ func registerAdminRoutes(mux *http.ServeMux, accounts *account.Service, chips *b
 			return
 		}
 		writer.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("POST /v1/admin/users/{userID}/username", func(writer http.ResponseWriter, request *http.Request) {
+		actor, ok := authenticateRequest(writer, request, accounts)
+		if !ok {
+			return
+		}
+		var body struct {
+			Username string `json:"username"`
+		}
+		if !decodeJSONBody(writer, request, &body) {
+			return
+		}
+		updated, err := accounts.UpdateManagedUsername(
+			request.Context(), actor, request.PathValue("userID"), body.Username,
+		)
+		if err != nil {
+			writeAccountError(writer, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, updated)
+	})
+
+	mux.HandleFunc("POST /v1/admin/users/{userID}/wallet", func(writer http.ResponseWriter, request *http.Request) {
+		actor, ok := authenticateRequest(writer, request, accounts)
+		if !ok {
+			return
+		}
+		if err := accounts.AuthorizeAdmin(actor); err != nil {
+			writeAccountError(writer, err)
+			return
+		}
+		if chips == nil {
+			writeJSONError(writer, http.StatusServiceUnavailable, "service_unavailable")
+			return
+		}
+		if _, err := accounts.ManagedUser(
+			request.Context(), actor, request.PathValue("userID"),
+		); err != nil {
+			writeAccountError(writer, err)
+			return
+		}
+		var body struct {
+			RequestID string `json:"requestId"`
+			Chips     int64  `json:"chips"`
+		}
+		if !decodeJSONBody(writer, request, &body) {
+			return
+		}
+		snapshot, err := chips.SetWallet(
+			request.Context(), request.PathValue("userID"), body.RequestID, body.Chips,
+		)
+		if err != nil {
+			writeBankrollError(writer, err)
+			return
+		}
+		if err := accounts.RecordManagedWalletChange(
+			request.Context(), actor, request.PathValue("userID"), snapshot.WalletChips,
+		); err != nil {
+			writeAccountError(writer, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, snapshot)
+	})
+
+	mux.HandleFunc("POST /v1/admin/users/{userID}/leave-room", func(writer http.ResponseWriter, request *http.Request) {
+		actor, ok := authenticateRequest(writer, request, accounts)
+		if !ok {
+			return
+		}
+		if err := accounts.AuthorizeAdmin(actor); err != nil {
+			writeAccountError(writer, err)
+			return
+		}
+		if rooms == nil {
+			writeJSONError(writer, http.StatusServiceUnavailable, "service_unavailable")
+			return
+		}
+		targetUserID := request.PathValue("userID")
+		current, err := rooms.Current(request.Context(), targetUserID)
+		if err != nil {
+			writeRoomError(writer, err)
+			return
+		}
+		var closed bool
+		if tables == nil {
+			closed, err = rooms.Leave(request.Context(), targetUserID)
+		} else {
+			closed, err = tables.Leave(request.Context(), targetUserID)
+		}
+		if err != nil {
+			writeLeaveError(writer, err)
+			return
+		}
+		if disconnectUsers != nil {
+			userIDs := []string{targetUserID}
+			if closed {
+				userIDs = make([]string, 0, len(current.Members))
+				for _, member := range current.Members {
+					userIDs = append(userIDs, member.UserID)
+				}
+			}
+			disconnectUsers(current.RoomID, userIDs)
+		}
+		if err := accounts.RecordManagedRoomRemoval(
+			request.Context(), actor, targetUserID, current.RoomID, current.Code,
+		); err != nil {
+			writeAccountError(writer, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, map[string]bool{"closed": closed})
 	})
 
 	mux.HandleFunc("GET /v1/admin/settings/registration", func(writer http.ResponseWriter, request *http.Request) {
@@ -553,7 +741,7 @@ func writeAccountError(writer http.ResponseWriter, err error) {
 		writeJSONError(writer, http.StatusForbidden, accountError.Code)
 	case "user_not_found":
 		writeJSONError(writer, http.StatusNotFound, accountError.Code)
-	case "invalid_credentials", "authentication_required", "invalid_refresh_token":
+	case "invalid_credentials", "invalid_current_password", "authentication_required", "invalid_refresh_token":
 		writeJSONError(writer, http.StatusUnauthorized, accountError.Code)
 	default:
 		writeJSONError(writer, http.StatusBadRequest, accountError.Code)
@@ -585,10 +773,22 @@ func writeBankrollError(writer http.ResponseWriter, err error) {
 		return
 	}
 	switch bankrollError.Code {
-	case "insufficient_wallet_chips", "maximum_buy_in_exceeded":
+	case "insufficient_wallet_chips", "maximum_buy_in_exceeded", "user_in_room":
 		writeJSONError(writer, http.StatusConflict, bankrollError.Code)
 	default:
 		writeJSONError(writer, http.StatusBadRequest, bankrollError.Code)
+	}
+}
+
+func writeLeaveError(writer http.ResponseWriter, err error) {
+	code := errorCode(err)
+	switch code {
+	case "hand_in_progress", "user_in_room":
+		writeJSONError(writer, http.StatusConflict, code)
+	case "room_not_found":
+		writeJSONError(writer, http.StatusNotFound, code)
+	default:
+		writeJSONError(writer, http.StatusBadRequest, code)
 	}
 }
 

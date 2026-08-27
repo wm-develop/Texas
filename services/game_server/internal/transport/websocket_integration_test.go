@@ -169,6 +169,30 @@ func TestWebSocketFriendTableFlowAndHoleCardPrivacy(t *testing.T) {
 	if ownerSettled.Settlement == nil || guestSettled.Settlement == nil {
 		t.Fatal("settlement missing from personalized snapshots")
 	}
+	winnerConnection := ownerConnection
+	if actorConnection == ownerConnection {
+		winnerConnection = guestConnection
+	}
+	writeTestEnvelope(t, ctx, actorConnection, protocol.Envelope{
+		Version: 1, Type: string(protocol.TypeTableHoleCardsReveal), RequestID: "reveal-folded",
+		TableID: created.RoomID, Payload: json.RawMessage(`{}`),
+	})
+	readUntilType(t, ctx, actorConnection, protocol.TypeTableHoleCardsRevealed)
+	ownerRevealed := readSnapshotInPhase(t, ctx, ownerConnection, "WAITING_NEXT_HAND")
+	guestRevealed := readSnapshotInPhase(t, ctx, guestConnection, "WAITING_NEXT_HAND")
+	if len(ownerRevealed.VoluntaryReveals) != 1 || len(guestRevealed.VoluntaryReveals) != 1 {
+		t.Fatalf("folded voluntary reveal owner=%#v guest=%#v", ownerRevealed.VoluntaryReveals, guestRevealed.VoluntaryReveals)
+	}
+	writeTestEnvelope(t, ctx, winnerConnection, protocol.Envelope{
+		Version: 1, Type: string(protocol.TypeTableHoleCardsReveal), RequestID: "reveal-winner",
+		TableID: created.RoomID, Payload: json.RawMessage(`{}`),
+	})
+	readUntilType(t, ctx, winnerConnection, protocol.TypeTableHoleCardsRevealed)
+	ownerRevealed = readSnapshotInPhase(t, ctx, ownerConnection, "WAITING_NEXT_HAND")
+	guestRevealed = readSnapshotInPhase(t, ctx, guestConnection, "WAITING_NEXT_HAND")
+	if len(ownerRevealed.VoluntaryReveals) != 2 || len(guestRevealed.VoluntaryReveals) != 2 {
+		t.Fatalf("winner voluntary reveal owner=%#v guest=%#v", ownerRevealed.VoluntaryReveals, guestRevealed.VoluntaryReveals)
+	}
 
 	writeTestEnvelope(t, ctx, ownerConnection, protocol.Envelope{
 		Version: 1, Type: string(protocol.TypeTableChatSend), RequestID: "chat-1",

@@ -22,6 +22,7 @@ type Repository interface {
 	UserByID(ctx context.Context, userID string) (User, error)
 	UserByUsername(ctx context.Context, normalizedUsername string) (User, error)
 	ListUsers(ctx context.Context) ([]User, error)
+	UpdateUsername(ctx context.Context, userID, username string, now time.Time) error
 	UpdatePassword(ctx context.Context, userID, passwordHash string, now time.Time) error
 	UpdateStatuses(ctx context.Context, actorUserID string, userIDs []string, status Status, now time.Time) error
 	RegistrationEnabled(ctx context.Context) (bool, error)
@@ -118,6 +119,28 @@ func (repository *MemoryRepository) ListUsers(_ context.Context) ([]User, error)
 		return users[i].CreatedAt.Before(users[j].CreatedAt)
 	})
 	return users, nil
+}
+
+func (repository *MemoryRepository) UpdateUsername(
+	_ context.Context,
+	userID, username string,
+	_ time.Time,
+) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	user, exists := repository.usersByID[userID]
+	if !exists || user.Status == StatusDeleted {
+		return ErrNotFound
+	}
+	normalized := strings.ToLower(username)
+	if existingID, exists := repository.userIDByUsername[normalized]; exists && existingID != userID {
+		return ErrConflict
+	}
+	delete(repository.userIDByUsername, strings.ToLower(user.Username))
+	user.Username = username
+	repository.usersByID[userID] = user
+	repository.userIDByUsername[normalized] = userID
+	return nil
 }
 
 func (repository *MemoryRepository) UpdatePassword(_ context.Context, userID, passwordHash string, _ time.Time) error {

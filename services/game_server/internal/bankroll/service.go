@@ -42,6 +42,17 @@ func (service *Service) TopUp(ctx context.Context, userID, requestID string, amo
 	return service.repository.TopUp(ctx, userID, requestID, amount, service.now())
 }
 
+func (service *Service) SetWallet(
+	ctx context.Context,
+	userID, requestID string,
+	amount int64,
+) (Snapshot, error) {
+	if userID == "" || !ValidRequestID(requestID) || amount < 0 || amount > maximumChipAmount {
+		return Snapshot{}, Error{Code: "invalid_chip_amount"}
+	}
+	return service.repository.SetWallet(ctx, userID, requestID, amount, service.now())
+}
+
 func (service *Service) BuyIn(ctx context.Context, userID, tableID, requestID string, amount, maximum int64) (Snapshot, error) {
 	return service.transfer(ctx, userID, tableID, requestID, amount, maximum, ReasonBuyIn)
 }

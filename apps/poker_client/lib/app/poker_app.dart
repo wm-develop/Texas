@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
@@ -23,6 +25,7 @@ class _PokerAppState extends State<PokerApp> {
   AuthSession? _session;
   FriendRoom? _room;
   BankrollSnapshot? _bankroll;
+  Timer? _presenceTimer;
 
   @override
   void initState() {
@@ -33,6 +36,7 @@ class _PokerAppState extends State<PokerApp> {
 
   @override
   void dispose() {
+    _presenceTimer?.cancel();
     _api.close();
     _settings.dispose();
     super.dispose();
@@ -77,11 +81,10 @@ class _PokerAppState extends State<PokerApp> {
         onTopUp: _topUp,
         onLoadBankrollEntries: _loadBankrollEntries,
         onPreviewRoom: _previewRoom,
+        onUpdateUsername: _updateUsername,
+        onChangePassword: _changePassword,
         settings: _settings,
-        onLogout: () => setState(() {
-          _session = null;
-          _bankroll = null;
-        }),
+        onLogout: _logout,
       );
     }
     return TablePrototypePage(
@@ -89,6 +92,7 @@ class _PokerAppState extends State<PokerApp> {
       room: room,
       settings: _settings,
       onLeave: _leaveRoom,
+      onRemoved: _removedFromRoom,
       loadBankroll: () => _api.bankroll(_session!.accessToken),
     );
   }
@@ -226,6 +230,73 @@ class _PokerAppState extends State<PokerApp> {
       _session = session;
       _bankroll = chips;
       _room = room;
+    });
+    _startPresenceHeartbeat();
+  }
+
+  Future<AppUser> _updateUsername(String username) async {
+    final session = _session!;
+    final user = await _api.updateUsername(
+      accessToken: session.accessToken,
+      username: username,
+    );
+    if (mounted) setState(() => _session = session.copyWith(user: user));
+    return user;
+  }
+
+  Future<AuthSession> _changePassword(
+    String currentPassword,
+    String newPassword,
+  ) async {
+    final updated = await _api.changePassword(
+      accessToken: _session!.accessToken,
+      currentPassword: currentPassword,
+      newPassword: newPassword,
+    );
+    if (mounted) setState(() => _session = updated);
+    _startPresenceHeartbeat();
+    return updated;
+  }
+
+  Future<void> _removedFromRoom() async {
+    if (!mounted || _room == null) return;
+    setState(() => _room = null);
+    try {
+      final chips = await _api.bankroll(_session!.accessToken);
+      if (mounted) setState(() => _bankroll = chips);
+    } on Object {
+      // The lobby remains usable and refreshes the wallet on the next action.
+    }
+  }
+
+  void _startPresenceHeartbeat() {
+    _presenceTimer?.cancel();
+    final token = _session?.accessToken;
+    if (token == null) return;
+    unawaited(_sendPresenceHeartbeat(token));
+    _presenceTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      final currentToken = _session?.accessToken;
+      if (currentToken != null) {
+        unawaited(_sendPresenceHeartbeat(currentToken));
+      }
+    });
+  }
+
+  Future<void> _sendPresenceHeartbeat(String token) async {
+    try {
+      await _api.heartbeat(token);
+    } on Object {
+      // Presence is best effort. A transient network failure must not interrupt
+      // the lobby or surface as an unhandled asynchronous exception.
+    }
+  }
+
+  void _logout() {
+    _presenceTimer?.cancel();
+    setState(() {
+      _session = null;
+      _bankroll = null;
+      _room = null;
     });
   }
 

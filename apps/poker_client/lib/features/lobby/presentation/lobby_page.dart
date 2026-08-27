@@ -10,6 +10,7 @@ import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/history/domain/recent_hand.dart';
 import 'package:poker_client/features/history/presentation/recent_hands_page.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
+import 'package:poker_client/features/profile/presentation/profile_page.dart';
 
 class LobbyPage extends StatefulWidget {
   const LobbyPage({
@@ -21,6 +22,8 @@ class LobbyPage extends StatefulWidget {
     required this.onTopUp,
     required this.onLoadBankrollEntries,
     required this.onPreviewRoom,
+    required this.onUpdateUsername,
+    required this.onChangePassword,
     required this.settings,
     required this.onLogout,
     super.key,
@@ -35,6 +38,9 @@ class LobbyPage extends StatefulWidget {
   final Future<BankrollSnapshot> Function(int amount) onTopUp;
   final Future<List<BankrollEntry>> Function() onLoadBankrollEntries;
   final Future<RoomPreview> Function(String code) onPreviewRoom;
+  final Future<AppUser> Function(String username) onUpdateUsername;
+  final Future<AuthSession> Function(String currentPassword, String newPassword)
+  onChangePassword;
   final AppSettingsController settings;
   final VoidCallback onLogout;
 
@@ -101,7 +107,11 @@ class _LobbyPageState extends State<LobbyPage> {
             icon: const Icon(Icons.history),
             tooltip: '最近牌局',
           ),
-          Center(child: Text(widget.session.user.displayName)),
+          TextButton.icon(
+            onPressed: _busy ? null : _openProfile,
+            icon: const Icon(Icons.account_circle_outlined),
+            label: Text(widget.session.user.username),
+          ),
           const SizedBox(width: 8),
           IconButton(
             onPressed: _busy ? null : widget.onLogout,
@@ -182,6 +192,16 @@ class _LobbyPageState extends State<LobbyPage> {
 
   Future<void> _openAdmin() => Navigator.of(context).push(
     MaterialPageRoute<void>(builder: (_) => AdminPage(session: widget.session)),
+  );
+
+  Future<void> _openProfile() => Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      builder: (_) => ProfilePage(
+        session: widget.session,
+        onUpdateUsername: widget.onUpdateUsername,
+        onChangePassword: widget.onChangePassword,
+      ),
+    ),
   );
 
   Widget _buildJoinCard({required bool compact}) => Card(

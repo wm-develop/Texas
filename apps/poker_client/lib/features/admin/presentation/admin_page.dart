@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
@@ -16,6 +18,7 @@ class _AdminPageState extends State<AdminPage> {
   late final GameApiClient _api;
   final _search = TextEditingController();
   final Set<String> _selected = {};
+  Timer? _refreshTimer;
   List<ManagedUser> _users = const [];
   bool _registrationEnabled = true;
   bool _loading = true;
@@ -27,10 +30,14 @@ class _AdminPageState extends State<AdminPage> {
     super.initState();
     _api = GameApiClient();
     _load();
+    _refreshTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (!_busy) unawaited(_load(silent: true));
+    });
   }
 
   @override
   void dispose() {
+    _refreshTimer?.cancel();
     _api.close();
     _search.dispose();
     super.dispose();
@@ -43,7 +50,8 @@ class _AdminPageState extends State<AdminPage> {
         .where(
           (user) =>
               user.username.toLowerCase().contains(query) ||
-              user.displayName.toLowerCase().contains(query),
+              user.displayName.toLowerCase().contains(query) ||
+              user.roomCode.contains(query),
         )
         .toList(growable: false);
   }
@@ -127,7 +135,10 @@ class _AdminPageState extends State<AdminPage> {
             label: Text(_registrationEnabled ? '允许新用户注册' : '已关闭新用户注册'),
             onSelected: _busy ? null : _setRegistrationEnabled,
           ),
-          Text('共 ${_users.length} 个账号 · 已选择 ${_selected.length} 个'),
+          Text(
+            '共 ${_users.length} 个账号 · 在线 ${_users.where((user) => user.online).length} 个'
+            ' · 已选择 ${_selected.length} 个',
+          ),
           if (_selected.isNotEmpty) ...[
             OutlinedButton.icon(
               onPressed: _busy ? null : () => _changeStatus('active'),
@@ -219,6 +230,9 @@ class _AdminPageState extends State<AdminPage> {
                           style: const TextStyle(fontWeight: FontWeight.w700),
                         ),
                       ),
+                      const SizedBox(width: 6),
+                      _onlineChip(user.online),
+                      const SizedBox(width: 6),
                       _statusChip(user),
                     ],
                   ),
@@ -231,16 +245,28 @@ class _AdminPageState extends State<AdminPage> {
                     spacing: 12,
                     runSpacing: 4,
                     children: [
-                      _metric(Icons.toll, '总筹码 ${user.walletChips}'),
+                      _metric(
+                        Icons.toll,
+                        '总筹码 ${user.walletChips + user.tableChips}',
+                      ),
+                      _metric(
+                        Icons.account_balance_wallet_outlined,
+                        '钱包 ${user.walletChips}',
+                      ),
                       if (user.isInRoom)
                         _metric(Icons.casino_outlined, '牌桌 ${user.tableChips}'),
+                      if (user.isInRoom)
+                        _metric(
+                          Icons.meeting_room_outlined,
+                          '房间 ${user.roomCode}',
+                        ),
                     ],
                   ),
                   if (user.isInRoom)
                     const Padding(
                       padding: EdgeInsets.only(top: 4),
                       child: Text(
-                        '当前正在牌桌中，离桌前不可停用或删除',
+                        '当前正在牌桌中，离桌前不可修改筹码、停用或删除',
                         style: TextStyle(
                           color: Colors.orangeAccent,
                           fontSize: 12,
@@ -250,12 +276,40 @@ class _AdminPageState extends State<AdminPage> {
                 ],
               ),
             ),
-            IconButton(
-              onPressed: !selectable || _busy
-                  ? null
-                  : () => _resetPassword(user),
-              icon: const Icon(Icons.password),
-              tooltip: '重置密码',
+            PopupMenuButton<String>(
+              enabled: !_busy,
+              tooltip: '账号操作',
+              onSelected: (value) => switch (value) {
+                'edit' => _editUser(user),
+                'password' => _resetPassword(user),
+                'leave' => _removeFromRoom(user),
+                _ => null,
+              },
+              itemBuilder: (context) => [
+                const PopupMenuItem(
+                  value: 'edit',
+                  child: ListTile(
+                    leading: Icon(Icons.edit_outlined),
+                    title: Text('修改用户名和筹码'),
+                  ),
+                ),
+                if (selectable)
+                  const PopupMenuItem(
+                    value: 'password',
+                    child: ListTile(
+                      leading: Icon(Icons.password),
+                      title: Text('重置密码'),
+                    ),
+                  ),
+                if (user.isInRoom)
+                  const PopupMenuItem(
+                    value: 'leave',
+                    child: ListTile(
+                      leading: Icon(Icons.person_remove_outlined),
+                      title: Text('请出当前房间'),
+                    ),
+                  ),
+              ],
             ),
           ],
         ),
@@ -272,16 +326,37 @@ class _AdminPageState extends State<AdminPage> {
     return Text(label, style: TextStyle(color: color, fontSize: 12));
   }
 
+  Widget _onlineChip(bool online) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Icon(
+        Icons.circle,
+        size: 9,
+        color: online ? Colors.greenAccent : Colors.white38,
+      ),
+      const SizedBox(width: 3),
+      Text(
+        online ? '在线' : '离线',
+        style: TextStyle(
+          color: online ? Colors.greenAccent : Colors.white54,
+          fontSize: 12,
+        ),
+      ),
+    ],
+  );
+
   Widget _metric(IconData icon, String label) => Row(
     mainAxisSize: MainAxisSize.min,
     children: [Icon(icon, size: 16), const SizedBox(width: 4), Text(label)],
   );
 
-  Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+  Future<void> _load({bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
     try {
       final results = await Future.wait([
         _api.adminUsers(widget.session.accessToken),
@@ -296,9 +371,9 @@ class _AdminPageState extends State<AdminPage> {
         );
       });
     } on Object catch (error) {
-      if (mounted) setState(() => _error = _message(error));
+      if (!silent && mounted) setState(() => _error = _message(error));
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (!silent && mounted) setState(() => _loading = false);
     }
   }
 
@@ -347,13 +422,13 @@ class _AdminPageState extends State<AdminPage> {
   }
 
   Future<void> _resetPassword(ManagedUser user) async {
-    final controller = TextEditingController();
+    var value = '';
     final password = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
         title: Text('重置 ${user.username} 的密码'),
-        content: TextField(
-          controller: controller,
+        content: TextFormField(
+          onChanged: (next) => value = next,
           obscureText: true,
           autofocus: true,
           decoration: const InputDecoration(
@@ -368,13 +443,12 @@ class _AdminPageState extends State<AdminPage> {
             child: const Text('取消'),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text),
+            onPressed: () => Navigator.pop(context, value),
             child: const Text('确认重置'),
           ),
         ],
       ),
     );
-    controller.dispose();
     if (password == null) return;
     await _run(() async {
       await _api.adminResetPassword(
@@ -386,16 +460,130 @@ class _AdminPageState extends State<AdminPage> {
     });
   }
 
+  Future<void> _editUser(ManagedUser user) async {
+    var username = user.username;
+    var chips = user.walletChips.toString();
+    final values = await showDialog<List<String>>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('修改 ${user.username}'),
+        content: SizedBox(
+          width: 440,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                initialValue: username,
+                onChanged: (value) => username = value,
+                enabled: !user.isAdmin,
+                autofocus: true,
+                decoration: InputDecoration(
+                  labelText: '登录用户名',
+                  helperText: user.isAdmin
+                      ? '当前管理员请从大厅右上角的个人信息中修改用户名'
+                      : '3～24 位，只能使用英文字母、数字和下划线',
+                  border: const OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 14),
+              TextFormField(
+                initialValue: chips,
+                onChanged: (value) => chips = value,
+                enabled: !user.isInRoom,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  labelText: '钱包筹码量',
+                  helperText: user.isInRoom
+                      ? '玩家仍在房间 ${user.roomCode}，请先将其请出牌桌'
+                      : '填写调整后的准确数量，可以增加或减少',
+                  border: const OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.pop(context, [username.trim(), chips.trim()]),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (values == null) return;
+    final walletChips = int.tryParse(values[1]);
+    if (!user.isInRoom && (walletChips == null || walletChips < 0)) {
+      setState(() => _error = '筹码量必须是大于或等于 0 的整数');
+      return;
+    }
+    await _run(() async {
+      if (!user.isAdmin && values[0] != user.username) {
+        await _api.adminUpdateUsername(
+          accessToken: widget.session.accessToken,
+          userId: user.userId,
+          username: values[0],
+        );
+      }
+      if (!user.isInRoom && walletChips != user.walletChips) {
+        await _api.adminSetWallet(
+          accessToken: widget.session.accessToken,
+          userId: user.userId,
+          chips: walletChips!,
+          requestId: 'admin-wallet-${DateTime.now().microsecondsSinceEpoch}',
+        );
+      }
+      await _load();
+      _showMessage('账号资料已更新');
+    });
+  }
+
+  Future<void> _removeFromRoom(ManagedUser user) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('将 ${user.username} 请出房间 ${user.roomCode}？'),
+        content: const Text(
+          '玩家的牌桌筹码会返还钱包。如果该玩家是房主，房主身份会顺延给最早加入的其他玩家。'
+          '正在进行的一手牌必须先正常结算。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('确认请出'),
+          ),
+        ],
+      ),
+    );
+    if (!(confirmed ?? false)) return;
+    await _run(() async {
+      final closed = await _api.adminLeaveRoom(
+        accessToken: widget.session.accessToken,
+        userId: user.userId,
+      );
+      await _load();
+      _showMessage(closed ? '玩家已被请出，房间已无成员并关闭' : '玩家已被请出房间');
+    });
+  }
+
   Future<void> _showCreateUsersDialog() async {
-    final controller = TextEditingController();
+    var value = '';
     final lines = await showDialog<List<String>>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('新增账号（支持批量）'),
         content: SizedBox(
           width: 520,
-          child: TextField(
-            controller: controller,
+          child: TextFormField(
+            onChanged: (next) => value = next,
             minLines: 4,
             maxLines: 10,
             autofocus: true,
@@ -415,7 +603,7 @@ class _AdminPageState extends State<AdminPage> {
           FilledButton(
             onPressed: () => Navigator.pop(
               context,
-              controller.text
+              value
                   .split(RegExp(r'[\r\n]+'))
                   .where((line) => line.trim().isNotEmpty)
                   .toList(),
@@ -425,7 +613,6 @@ class _AdminPageState extends State<AdminPage> {
         ],
       ),
     );
-    controller.dispose();
     if (lines == null || lines.isEmpty) return;
     await _run(() async {
       var created = 0;
@@ -479,6 +666,9 @@ class _AdminPageState extends State<AdminPage> {
         'invalid_password' => '密码必须为 8～128 位',
         'protected_account' => '不能修改管理员账号或当前登录账号',
         'user_in_room' => '所选账号仍在牌桌中，请先让该玩家离桌',
+        'hand_in_progress' => '本手牌正在进行，请在结算后再次执行请出操作',
+        'room_not_found' => '玩家当前不在任何房间中，请刷新列表',
+        'invalid_chip_amount' => '筹码量不正确',
         'admin_required' => '当前账号没有管理员权限',
         _ => '管理操作失败（${error.code}）',
       };

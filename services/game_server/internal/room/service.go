@@ -435,12 +435,22 @@ func (service *Service) Leave(ctx context.Context, userID string) (closed bool, 
 	if err != nil {
 		return false, Error{Code: "room_not_found"}
 	}
-	if value.OwnerUserID == userID {
-		return true, service.repository.Delete(ctx, value.RoomID)
-	}
 	for index, member := range value.Members {
 		if member.UserID == userID {
 			value.Members = append(value.Members[:index], value.Members[index+1:]...)
+			if len(value.Members) == 0 {
+				return true, service.repository.Delete(ctx, value.RoomID)
+			}
+			if value.OwnerUserID == userID {
+				newOwner := value.Members[0]
+				for _, candidate := range value.Members[1:] {
+					if candidate.JoinedAt.Before(newOwner.JoinedAt) ||
+						(candidate.JoinedAt.Equal(newOwner.JoinedAt) && candidate.Seat < newOwner.Seat) {
+						newOwner = candidate
+					}
+				}
+				value.OwnerUserID = newOwner.UserID
+			}
 			value.Revision++
 			return false, service.repository.Save(ctx, value)
 		}

@@ -8,6 +8,7 @@ void main() {
       final snapshot = TableSnapshot.fromJson({
         'roomId': 'table_1',
         'roomCode': '123456',
+        'ownerUserId': 'user_1',
         'tableRevision': 12,
         'phase': 'WAITING_NEXT_HAND',
         'handId': 'hand_1',
@@ -56,6 +57,16 @@ void main() {
         },
         'totalPot': 400,
         'maxBuyIn': 5000,
+        'canShowHoleCards': true,
+        'autoReadyDeadline': 2000000,
+        'autoReadyCancelled': false,
+        'voluntaryReveals': [
+          {
+            'playerId': 'user_2',
+            'holeCards': ['2c', '3c'],
+            'category': 'voluntary',
+          },
+        ],
         'settlement': {
           'handId': 'hand_1',
           'potAwards': [
@@ -81,6 +92,10 @@ void main() {
 
       expect(snapshot.seats.single.position, 'BTN');
       expect(snapshot.maxBuyIn, 5000);
+      expect(snapshot.ownerUserId, 'user_1');
+      expect(snapshot.canShowHoleCards, isTrue);
+      expect(snapshot.autoReadyDeadline, isNotNull);
+      expect(snapshot.voluntaryReveals.single.userId, 'user_2');
       expect(snapshot.seats.single.lastActionTo, 100);
       expect(snapshot.seats.single.timeExtensions, 2);
       expect(snapshot.currentAction!.options.minRaiseTo, 120);

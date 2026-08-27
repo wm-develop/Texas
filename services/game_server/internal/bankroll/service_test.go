@@ -90,6 +90,28 @@ func TestSettlementConservesTableChipsAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestAdministratorWalletSetIsExactIdempotentAndBlockedAtTable(t *testing.T) {
+	service, err := NewService(NewMemoryRepository(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	first, err := service.SetWallet(ctx, "u1", "admin-set-1", 4321)
+	if err != nil || first.WalletChips != 4321 {
+		t.Fatalf("SetWallet first=%#v err=%v", first, err)
+	}
+	duplicate, err := service.SetWallet(ctx, "u1", "admin-set-1", 9999)
+	if err != nil || duplicate != first {
+		t.Fatalf("SetWallet duplicate=%#v err=%v", duplicate, err)
+	}
+	if _, err := service.BuyIn(ctx, "u1", "table1", "buy-admin-test", 1000, 5000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SetWallet(ctx, "u1", "admin-set-2", 8000); !IsErrorCode(err, "user_in_room") {
+		t.Fatalf("SetWallet while at table error=%v", err)
+	}
+}
+
 func (repository *MemoryRepository) snapshotForTest(userID, tableID string) Snapshot {
 	repository.mu.Lock()
 	defer repository.mu.Unlock()

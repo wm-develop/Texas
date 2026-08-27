@@ -115,6 +115,13 @@ class GameSocketClient extends ChangeNotifier {
     _send('table.ready.set', payload: {'ready': ready});
   }
 
+  void showHoleCards() {
+    if (_recoveringSequenceGap || !(_snapshot?.canShowHoleCards ?? false)) {
+      return;
+    }
+    _send('table.hole_cards.reveal', payload: const {});
+  }
+
   void submitAction(String action, {int? raiseTo}) {
     final snapshot = _snapshot;
     if (snapshot == null || snapshot.handId.isEmpty || actionPending) return;

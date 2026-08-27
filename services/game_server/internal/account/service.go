@@ -189,6 +189,141 @@ func (service *Service) ListUsers(ctx context.Context, actor User) ([]User, erro
 	return service.repository.ListUsers(ctx)
 }
 
+func (service *Service) ManagedUser(ctx context.Context, actor User, userID string) (User, error) {
+	if err := requireAdmin(actor); err != nil {
+		return User{}, err
+	}
+	user, err := service.repository.UserByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return User{}, Error{Code: "user_not_found"}
+		}
+		return User{}, err
+	}
+	return user, nil
+}
+
+func (service *Service) UpdateOwnUsername(
+	ctx context.Context,
+	actor User,
+	username string,
+) (User, error) {
+	return service.updateUsername(ctx, actor, actor.UserID, username, "user.username_changed")
+}
+
+func (service *Service) UpdateManagedUsername(
+	ctx context.Context,
+	actor User,
+	userID, username string,
+) (User, error) {
+	if err := requireAdmin(actor); err != nil {
+		return User{}, err
+	}
+	return service.updateUsername(ctx, actor, userID, username, "admin.username_changed")
+}
+
+func (service *Service) updateUsername(
+	ctx context.Context,
+	actor User,
+	userID, username, eventType string,
+) (User, error) {
+	username = strings.TrimSpace(username)
+	if !validUsername.MatchString(username) {
+		return User{}, Error{Code: "invalid_profile"}
+	}
+	previous, err := service.repository.UserByID(ctx, userID)
+	if err != nil {
+		return User{}, Error{Code: "user_not_found"}
+	}
+	if err := service.repository.UpdateUsername(ctx, userID, username, service.config.Now()); err != nil {
+		if errors.Is(err, ErrConflict) {
+			return User{}, Error{Code: "username_taken"}
+		}
+		if errors.Is(err, ErrNotFound) {
+			return User{}, Error{Code: "user_not_found"}
+		}
+		return User{}, err
+	}
+	updated, err := service.repository.UserByID(ctx, userID)
+	if err != nil {
+		return User{}, err
+	}
+	if err := service.recordAudit(ctx, actor.UserID, eventType, map[string]any{
+		"targetUserId": userID,
+		"oldUsername":  previous.Username,
+		"newUsername":  updated.Username,
+	}); err != nil {
+		return User{}, err
+	}
+	return updated, nil
+}
+
+func (service *Service) ChangeOwnPassword(
+	ctx context.Context,
+	actor User,
+	currentPassword, newPassword string,
+) (AuthResult, error) {
+	current, err := service.repository.UserByID(ctx, actor.UserID)
+	if err != nil || !service.passwords.Verify(currentPassword, current.PasswordHash) {
+		return AuthResult{}, Error{Code: "invalid_current_password"}
+	}
+	passwordHash, err := service.passwords.Hash(newPassword)
+	if err != nil {
+		return AuthResult{}, Error{Code: "invalid_password"}
+	}
+	if err := service.repository.UpdatePassword(
+		ctx, actor.UserID, passwordHash, service.config.Now(),
+	); err != nil {
+		return AuthResult{}, err
+	}
+	updated, err := service.repository.UserByID(ctx, actor.UserID)
+	if err != nil {
+		return AuthResult{}, err
+	}
+	result, err := service.createSession(ctx, updated)
+	if err != nil {
+		return AuthResult{}, err
+	}
+	_ = service.recordAudit(ctx, actor.UserID, "user.password_changed", map[string]any{
+		"targetUserId": actor.UserID,
+	})
+	return result, nil
+}
+
+func (service *Service) AuthorizeAdmin(actor User) error {
+	return requireAdmin(actor)
+}
+
+func (service *Service) RecordManagedWalletChange(
+	ctx context.Context,
+	actor User,
+	userID string,
+	chips int64,
+) error {
+	if err := requireAdmin(actor); err != nil {
+		return err
+	}
+	return service.recordAudit(ctx, actor.UserID, "admin.wallet_changed", map[string]any{
+		"targetUserId": userID,
+		"walletChips":  chips,
+	})
+}
+
+func (service *Service) RecordManagedRoomRemoval(
+	ctx context.Context,
+	actor User,
+	userID, roomID, roomCode string,
+) error {
+	if err := requireAdmin(actor); err != nil {
+		return err
+	}
+	return service.recordAudit(ctx, actor.UserID, "admin.user_removed_from_room", map[string]any{
+		"targetUserId": userID,
+		"roomId":       roomID,
+		"roomCode":     roomCode,
+	})
+}
+
 func (service *Service) CreateManagedUser(
 	ctx context.Context,
 	actor User,

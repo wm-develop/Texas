@@ -17,6 +17,7 @@ const (
 	ReasonRebuy        Reason = "rebuy"
 	ReasonSettlement   Reason = "hand_settlement"
 	ReasonCashOut      Reason = "cash_out"
+	ReasonAdminAdjust  Reason = "admin_adjustment"
 )
 
 type Snapshot struct {
@@ -45,6 +46,7 @@ type Entry struct {
 type Repository interface {
 	Snapshot(ctx context.Context, userID string) (Snapshot, error)
 	TopUp(ctx context.Context, userID, requestID string, amount int64, now time.Time) (Snapshot, error)
+	SetWallet(ctx context.Context, userID, requestID string, amount int64, now time.Time) (Snapshot, error)
 	TransferToTable(ctx context.Context, userID, tableID, requestID string, amount, maximum int64, reason Reason, now time.Time) (Snapshot, error)
 	ApplySettlement(ctx context.Context, tableID, handID string, balances map[string]int64, maximum int64, now time.Time) error
 	CashOut(ctx context.Context, userID, tableID, requestID string, now time.Time) (Snapshot, error)
@@ -99,6 +101,37 @@ func (repository *MemoryRepository) TopUp(_ context.Context, userID, requestID s
 	repository.appendLocked(Entry{
 		EntryID: entryID(userID, requestID), RequestID: requestID, UserID: userID,
 		Reason: ReasonVirtualTopUp, WalletDelta: amount,
+		WalletBalanceAfter: result.WalletChips, RevisionAfter: result.Revision, CreatedAt: now,
+	})
+	repository.results[idempotencyKey(userID, requestID)] = result
+	return result, nil
+}
+
+func (repository *MemoryRepository) SetWallet(
+	_ context.Context,
+	userID, requestID string,
+	amount int64,
+	now time.Time,
+) (Snapshot, error) {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	if previous, ok := repository.results[idempotencyKey(userID, requestID)]; ok {
+		return previous, nil
+	}
+	state := repository.accountLocked(userID)
+	if len(state.tables) != 0 {
+		return Snapshot{}, Error{Code: "user_in_room"}
+	}
+	if amount < 0 || amount > maximumChipAmount {
+		return Snapshot{}, Error{Code: "invalid_chip_amount"}
+	}
+	delta := amount - state.wallet
+	state.wallet = amount
+	state.revision++
+	result := repository.snapshotLocked(userID, "")
+	repository.appendLocked(Entry{
+		EntryID: entryID(userID, requestID), RequestID: requestID, UserID: userID,
+		Reason: ReasonAdminAdjust, WalletDelta: delta,
 		WalletBalanceAfter: result.WalletChips, RevisionAfter: result.Revision, CreatedAt: now,
 	})
 	repository.results[idempotencyKey(userID, requestID)] = result
@@ -236,6 +269,12 @@ func (repository *MemoryRepository) accountLocked(userID string) *accountState {
 
 func (repository *MemoryRepository) snapshotLocked(userID, tableID string) Snapshot {
 	state := repository.accountLocked(userID)
+	if tableID == "" {
+		for activeTableID := range state.tables {
+			tableID = activeTableID
+			break
+		}
+	}
 	return Snapshot{UserID: userID, WalletChips: state.wallet, TableID: tableID, TableChips: state.tables[tableID], Revision: state.revision}
 }
 

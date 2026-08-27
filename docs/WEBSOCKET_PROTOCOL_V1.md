@@ -59,6 +59,7 @@
 | `table.leave` | 请求离桌 | `reason` |
 | `table.ready.set` | 设置下一手准备状态 | `ready` |
 | `table.rebuy` | 两手之间从账户钱包补充牌桌筹码 | `amount` |
+| `table.hole_cards.reveal` | 符合条件时主动公开自己的底牌 | 空对象 |
 | `table.snapshot.request` | 主动请求完整快照 | `lastSequence?`, `reason` |
 | `table.action.submit` | 提交牌局动作 | `actionId`, `action`, `raiseTo?` |
 | `table.chat.send` | 发送文字、快捷语或表情 | `clientMessageId`, `kind`, `content` |
@@ -142,6 +143,8 @@
 | `table.showdown` | 可公开玩家的牌和最佳牌型 |
 | `table.pots.updated` | 主池和边池变化 |
 | `table.hand.settled` | 各底池赢家、分配和结算后筹码 |
+| `table.hole_cards.revealed` | 主动公开底牌请求已接受 |
+| `table.hole_cards.reveal.rejected` | 当前玩家或牌局阶段不允许主动公开底牌 |
 | `table.rebuy.accepted` | 补码已完成；随后广播最新私人快照 |
 | `table.rebuy.rejected` | 补码未执行，包含稳定错误码 |
 
@@ -186,11 +189,15 @@
 `table.snapshot` 至少包含：
 
 - `tableId`、`sequence`、`tableRevision`、`phase`、`serverTime`。
-- 房间规则、按钮座位、小盲和大盲座位，以及 `maxBuyIn`。
+- 房间规则、`ownerUserId`、按钮座位、小盲和大盲座位，以及 `maxBuyIn`。
 - 座位、玩家公开资料、筹码、连接和准备状态。
 - 当前 `handId`、公共牌、各玩家本轮投入和本手总投入。
 - 主池、边池、当前行动座位、截止时间和合法动作。
 - 仅对接收者可见的本人底牌。
+- 已主动公开的底牌 `voluntaryReveals`，以及当前接收者的 `canShowHoleCards` 权限。
+- 两手之间的 `autoReadyDeadline` 和当前接收者的 `autoReadyCancelled` 状态。
+
+房主离桌后，服务端按成员加入时间、再按座位号将 `ownerUserId` 转移给最早加入的剩余成员；最后一名成员离桌才发送 `table.closed`。主动亮牌仅允许已弃牌玩家，或因其他玩家全部弃牌而获得本手胜利的玩家使用；公开状态持续到下一手开始。每手结算后，服务端设置 10 秒自动准备期限；客户端发送 `table.ready.set {"ready": false}` 可取消本轮自动准备，再发送 `ready: true` 可恢复准备。
 
 快照不得包含牌堆顺序、其他玩家未公开底牌、服务端随机数状态、TRTC 密钥或其他用户的鉴权信息。
 
@@ -215,6 +222,7 @@
 | `insufficient_wallet_chips` | 账户娱乐筹码不足 |
 | `maximum_buy_in_exceeded` | 本次补码会超过房间最大带入 |
 | `rebuy_required` | 牌桌筹码为零，完成补码前不能准备下一手 |
+| `hole_cards_not_revealable` | 当前玩家、手牌或牌局阶段不允许主动公开底牌 |
 | `chat_muted` | 玩家被禁言 |
 | `content_rejected` | 聊天内容不符合规则 |
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	cryptorand "crypto/rand"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -290,6 +291,46 @@ func TestAdministratorHTTPFlowEnforcesRolesAndRegistrationSetting(t *testing.T) 
 		t.Fatalf("admin users=%#v err=%v", payload.Users, err)
 	}
 	listed.Body.Close()
+	var listedPlayer managedUserResponse
+	for _, user := range payload.Users {
+		if user.UserID == player.User.UserID {
+			listedPlayer = user
+		}
+	}
+	if !listedPlayer.Online {
+		t.Fatalf("registered player should be online: %#v", listedPlayer)
+	}
+
+	renamed := doJSONRequest(
+		t, http.MethodPost,
+		server.URL+"/v1/admin/users/"+player.User.UserID+"/username",
+		administrator.AccessToken, map[string]any{"username": "renamed_http"},
+	)
+	if renamed.StatusCode != http.StatusOK {
+		t.Fatalf("rename status=%d body=%s", renamed.StatusCode, readBody(renamed))
+	}
+	renamed.Body.Close()
+	if _, err := accounts.Login(context.Background(), "renamed_http", "password-123"); err != nil {
+		t.Fatalf("login after administrator rename: %v", err)
+	}
+
+	wallet := doJSONRequest(
+		t, http.MethodPost,
+		server.URL+"/v1/admin/users/"+player.User.UserID+"/wallet",
+		administrator.AccessToken,
+		map[string]any{"requestId": "admin-wallet-http", "chips": 4321},
+	)
+	if wallet.StatusCode != http.StatusOK {
+		t.Fatalf("wallet status=%d body=%s", wallet.StatusCode, readBody(wallet))
+	}
+	var walletSnapshot bankroll.Snapshot
+	if err := json.NewDecoder(wallet.Body).Decode(&walletSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	wallet.Body.Close()
+	if walletSnapshot.WalletChips != 4321 {
+		t.Fatalf("wallet snapshot=%#v", walletSnapshot)
+	}
 
 	disabled := doJSONRequest(
 		t, http.MethodPost, server.URL+"/v1/admin/settings/registration",
@@ -308,6 +349,164 @@ func TestAdministratorHTTPFlowEnforcesRolesAndRegistrationSetting(t *testing.T) 
 	blocked.Body.Close()
 	if blocked.StatusCode != http.StatusForbidden || !strings.Contains(body, "registration_disabled") {
 		t.Fatalf("blocked registration status=%d body=%s", blocked.StatusCode, body)
+	}
+}
+
+func TestPersonalProfileHTTPFlowChangesUsernameAndPassword(t *testing.T) {
+	accounts, _ := testApplicationServices(t)
+	server := httptest.NewServer(NewHandler(testLogger(), Options{Accounts: accounts}))
+	defer server.Close()
+	player := registerHTTPUser(t, server.URL, "profile_old", "好友")
+
+	rename := doJSONRequest(
+		t, http.MethodPost, server.URL+"/v1/users/me/username", player.AccessToken,
+		map[string]any{"username": "profile_new"},
+	)
+	if rename.StatusCode != http.StatusOK {
+		t.Fatalf("rename status=%d body=%s", rename.StatusCode, readBody(rename))
+	}
+	rename.Body.Close()
+
+	wrong := doJSONRequest(
+		t, http.MethodPost, server.URL+"/v1/users/me/password", player.AccessToken,
+		map[string]any{"currentPassword": "wrong-password", "newPassword": "new-password-456"},
+	)
+	wrongBody := readBody(wrong)
+	wrong.Body.Close()
+	if wrong.StatusCode != http.StatusUnauthorized || !strings.Contains(wrongBody, "invalid_current_password") {
+		t.Fatalf("wrong password status=%d body=%s", wrong.StatusCode, wrongBody)
+	}
+
+	change := doJSONRequest(
+		t, http.MethodPost, server.URL+"/v1/users/me/password", player.AccessToken,
+		map[string]any{"currentPassword": "password-123", "newPassword": "new-password-456"},
+	)
+	if change.StatusCode != http.StatusOK {
+		t.Fatalf("change password status=%d body=%s", change.StatusCode, readBody(change))
+	}
+	var changed account.AuthResult
+	if err := json.NewDecoder(change.Body).Decode(&changed); err != nil {
+		t.Fatal(err)
+	}
+	change.Body.Close()
+	if changed.AccessToken == "" || changed.AccessToken == player.AccessToken {
+		t.Fatalf("changed session=%#v", changed)
+	}
+	if _, err := accounts.Authenticate(context.Background(), player.AccessToken); err == nil {
+		t.Fatal("old access token remained valid after password change")
+	}
+	if _, err := accounts.Login(context.Background(), "profile_new", "new-password-456"); err != nil {
+		t.Fatalf("login with updated profile: %v", err)
+	}
+}
+
+func TestAdministratorCanSeeRoomAndRemovePlayer(t *testing.T) {
+	accounts, _ := testApplicationServices(t)
+	chips, err := bankroll.NewService(bankroll.NewMemoryRepository(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasher, err := security.NewPasswordHasher(1_000, cryptorand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rooms, err := room.NewService(room.NewMemoryRepository(), hasher, room.ServiceConfig{Bankroll: chips})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tables, err := tablemanager.NewWithConfig(rooms, transportZeroRandom{}, tablemanager.ManagerConfig{Bankroll: chips})
+	if err != nil {
+		t.Fatal(err)
+	}
+	administrator, err := accounts.RegisterWithOptions(
+		context.Background(), "kick_admin", "管理员", "password-123",
+		account.RegistrationOptions{RequestInitialAdmin: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(NewHandler(testLogger(), Options{
+		Accounts: accounts, Bankroll: chips, Rooms: rooms, Tables: tables,
+	}))
+	defer server.Close()
+	owner := registerHTTPUser(t, server.URL, "kick_owner", "房主")
+	guest := registerHTTPUser(t, server.URL, "kick_guest", "好友")
+	for _, player := range []account.AuthResult{owner, guest} {
+		response := doJSONRequest(
+			t, http.MethodPost, server.URL+"/v1/bankroll/top-ups", player.AccessToken,
+			map[string]any{"requestId": "kick-topup-" + player.User.UserID, "amount": 5000},
+		)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("top-up status=%d body=%s", response.StatusCode, readBody(response))
+		}
+		response.Body.Close()
+	}
+	create := doJSONRequest(
+		t, http.MethodPost, server.URL+"/v1/rooms", owner.AccessToken,
+		map[string]any{
+			"preset": "standard", "maxPlayers": 6, "smallBlind": 10, "bigBlind": 20,
+			"maxBuyIn": 3000, "buyIn": 2000, "requestId": "kick-create-room",
+		},
+	)
+	if create.StatusCode != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", create.StatusCode, readBody(create))
+	}
+	var created room.Room
+	if err := json.NewDecoder(create.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	create.Body.Close()
+	join := doJSONRequest(
+		t, http.MethodPost, server.URL+"/v1/rooms/join", guest.AccessToken,
+		map[string]any{
+			"code": created.Code, "buyIn": 1000, "requestId": "kick-join-room",
+		},
+	)
+	if join.StatusCode != http.StatusOK {
+		t.Fatalf("join status=%d body=%s", join.StatusCode, readBody(join))
+	}
+	join.Body.Close()
+
+	listed := doJSONRequest(
+		t, http.MethodGet, server.URL+"/v1/admin/users", administrator.AccessToken, nil,
+	)
+	var payload struct {
+		Users []managedUserResponse `json:"users"`
+	}
+	if err := json.NewDecoder(listed.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	listed.Body.Close()
+	var listedGuest managedUserResponse
+	for _, user := range payload.Users {
+		if user.UserID == guest.User.UserID {
+			listedGuest = user
+		}
+	}
+	if listedGuest.RoomCode != created.Code || listedGuest.TableChips != 1000 {
+		t.Fatalf("listed guest=%#v", listedGuest)
+	}
+
+	kick := doJSONRequest(
+		t, http.MethodPost,
+		server.URL+"/v1/admin/users/"+guest.User.UserID+"/leave-room",
+		administrator.AccessToken, map[string]any{},
+	)
+	if kick.StatusCode != http.StatusOK {
+		t.Fatalf("kick status=%d body=%s", kick.StatusCode, readBody(kick))
+	}
+	kick.Body.Close()
+	if _, err := rooms.Current(context.Background(), guest.User.UserID); err == nil {
+		t.Fatal("guest still has a current room")
+	} else {
+		var roomError room.Error
+		if !errors.As(err, &roomError) || roomError.Code != "room_not_found" {
+			t.Fatalf("guest current room error=%v", err)
+		}
+	}
+	snapshot, err := chips.Snapshot(context.Background(), guest.User.UserID)
+	if err != nil || snapshot.WalletChips != 5000 || snapshot.TableChips != 0 {
+		t.Fatalf("guest bankroll=%#v err=%v", snapshot, err)
 	}
 }
 

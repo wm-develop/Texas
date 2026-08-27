@@ -100,6 +100,78 @@ func (repository *PostgresRepository) TopUp(
 	return result, nil
 }
 
+func (repository *PostgresRepository) SetWallet(
+	ctx context.Context,
+	userID, requestID string,
+	amount int64,
+	now time.Time,
+) (Snapshot, error) {
+	transaction, err := repository.database.BeginTx(ctx, nil)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("begin wallet adjustment: %w", err)
+	}
+	wallet, revision, err := lockWallet(ctx, transaction, userID)
+	if err != nil {
+		_ = transaction.Rollback()
+		return Snapshot{}, err
+	}
+	if previous, found, err := entrySnapshot(ctx, transaction, userID, requestID); err != nil {
+		_ = transaction.Rollback()
+		return Snapshot{}, err
+	} else if found {
+		if err := transaction.Commit(); err != nil {
+			return Snapshot{}, fmt.Errorf("commit repeated wallet adjustment: %w", err)
+		}
+		return previous, nil
+	}
+	var inRoom bool
+	if err := transaction.QueryRowContext(
+		ctx,
+		`SELECT EXISTS (
+            SELECT 1 FROM room_members m
+            JOIN rooms r ON r.room_id = m.room_id
+            WHERE m.user_id = $1 AND r.status <> 'closed'
+         )`,
+		userID,
+	).Scan(&inRoom); err != nil {
+		_ = transaction.Rollback()
+		return Snapshot{}, fmt.Errorf("check wallet room membership: %w", err)
+	}
+	if inRoom {
+		_ = transaction.Rollback()
+		return Snapshot{}, Error{Code: "user_in_room"}
+	}
+	if amount < 0 || amount > maximumChipAmount {
+		_ = transaction.Rollback()
+		return Snapshot{}, Error{Code: "invalid_chip_amount"}
+	}
+	delta := amount - wallet
+	revision++
+	if _, err := transaction.ExecContext(
+		ctx,
+		`UPDATE account_wallets
+         SET wallet_chips = $2, revision = $3, updated_at = $4
+         WHERE user_id = $1`,
+		userID, amount, revision, now,
+	); err != nil {
+		_ = transaction.Rollback()
+		return Snapshot{}, fmt.Errorf("update adjusted wallet: %w", err)
+	}
+	result := Snapshot{UserID: userID, WalletChips: amount, Revision: revision}
+	if err := insertEntry(ctx, transaction, Entry{
+		EntryID: entryID(userID, requestID), RequestID: requestID, UserID: userID,
+		Reason: ReasonAdminAdjust, WalletDelta: delta,
+		WalletBalanceAfter: amount, RevisionAfter: revision, CreatedAt: now,
+	}); err != nil {
+		_ = transaction.Rollback()
+		return Snapshot{}, err
+	}
+	if err := transaction.Commit(); err != nil {
+		return Snapshot{}, fmt.Errorf("commit wallet adjustment: %w", err)
+	}
+	return result, nil
+}
+
 func (repository *PostgresRepository) TransferToTable(
 	ctx context.Context,
 	userID, tableID, requestID string,

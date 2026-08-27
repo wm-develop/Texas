@@ -10,7 +10,7 @@ import (
 	"texas/services/game_server/internal/security"
 )
 
-func TestCreateJoinReadyVoiceAndOwnerClose(t *testing.T) {
+func TestCreateJoinReadyVoiceAndOwnerTransfer(t *testing.T) {
 	service := mustRoomService(t)
 	ctx := context.Background()
 	owner := Participant{UserID: "owner", DisplayName: "房主"}
@@ -45,11 +45,45 @@ func TestCreateJoinReadyVoiceAndOwnerClose(t *testing.T) {
 		t.Fatalf("CanJoinVoice allowed=%v error=%v", allowed, err)
 	}
 	closed, err := service.Leave(ctx, "owner")
-	if err != nil || !closed {
+	if err != nil || closed {
 		t.Fatalf("owner Leave closed=%v error=%v", closed, err)
 	}
-	if _, err := service.Current(ctx, "guest"); roomErrorCode(err) != "room_not_found" {
-		t.Fatalf("closed room remained: %v", err)
+	transferred, err := service.Current(ctx, "guest")
+	if err != nil || transferred.OwnerUserID != "guest" || len(transferred.Members) != 1 {
+		t.Fatalf("transferred room=%#v error=%v", transferred, err)
+	}
+	closed, err = service.Leave(ctx, "guest")
+	if err != nil || !closed {
+		t.Fatalf("final owner Leave closed=%v error=%v", closed, err)
+	}
+}
+
+func TestOwnerTransfersByJoinOrder(t *testing.T) {
+	service := mustRoomService(t)
+	ctx := context.Background()
+	created, err := service.Create(ctx, Participant{UserID: "owner", DisplayName: "房主"}, PresetCasual, 4, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Join(ctx, Participant{UserID: "second", DisplayName: "第二位"}, created.Code, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Join(ctx, Participant{UserID: "third", DisplayName: "第三位"}, created.Code, ""); err != nil {
+		t.Fatal(err)
+	}
+	if closed, err := service.Leave(ctx, "owner"); err != nil || closed {
+		t.Fatalf("owner leave closed=%v err=%v", closed, err)
+	}
+	current, err := service.Current(ctx, "second")
+	if err != nil || current.OwnerUserID != "second" {
+		t.Fatalf("first transfer room=%#v err=%v", current, err)
+	}
+	if closed, err := service.Leave(ctx, "second"); err != nil || closed {
+		t.Fatalf("second leave closed=%v err=%v", closed, err)
+	}
+	current, err = service.Current(ctx, "third")
+	if err != nil || current.OwnerUserID != "third" {
+		t.Fatalf("second transfer room=%#v err=%v", current, err)
 	}
 }
 

@@ -5,6 +5,7 @@ class TableSeat {
     required this.chips,
     this.isCurrentUser = false,
     this.isDealer = false,
+    this.isOwner = false,
     this.isSpeaking = false,
     this.isEmpty = false,
     this.isReady = false,
@@ -28,6 +29,7 @@ class TableSeat {
   final int chips;
   final bool isCurrentUser;
   final bool isDealer;
+  final bool isOwner;
   final bool isSpeaking;
   final bool isEmpty;
   final bool isReady;

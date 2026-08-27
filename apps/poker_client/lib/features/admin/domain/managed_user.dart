@@ -8,6 +8,8 @@ class ManagedUser {
     required this.walletChips,
     required this.tableChips,
     required this.tableId,
+    required this.roomCode,
+    required this.online,
     required this.createdAt,
   });
 
@@ -19,6 +21,8 @@ class ManagedUser {
   final int walletChips;
   final int tableChips;
   final String tableId;
+  final String roomCode;
+  final bool online;
   final DateTime createdAt;
 
   bool get isAdmin => role == 'admin';
@@ -34,6 +38,8 @@ class ManagedUser {
     walletChips: (json['walletChips'] as num?)?.toInt() ?? 0,
     tableChips: (json['tableChips'] as num?)?.toInt() ?? 0,
     tableId: json['tableId'] as String? ?? '',
+    roomCode: json['roomCode'] as String? ?? '',
+    online: json['online'] as bool? ?? false,
     createdAt: DateTime.parse(json['createdAt'] as String),
   );
 }

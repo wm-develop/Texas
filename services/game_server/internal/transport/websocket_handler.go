@@ -34,6 +34,7 @@ type webSocketServer struct {
 	requestMu      sync.Mutex
 	userLocks      map[string]*sync.Mutex
 	originPatterns []string
+	presence       *presenceTracker
 }
 
 type webSocketClient struct {
@@ -52,7 +53,11 @@ type tableHub struct {
 	voice     map[string]map[string]protocol.VoiceMemberState
 }
 
-func newWebSocketServer(logger *slog.Logger, options Options) http.Handler {
+func newWebSocketServer(
+	logger *slog.Logger,
+	options Options,
+	presence *presenceTracker,
+) *webSocketServer {
 	server := &webSocketServer{
 		logger: logger, accounts: options.Accounts, rooms: options.Rooms,
 		tables: options.Tables, chat: options.Chat,
@@ -64,6 +69,7 @@ func newWebSocketServer(logger *slog.Logger, options Options) http.Handler {
 		requests:       protocol.NewRequestCache(256),
 		userLocks:      make(map[string]*sync.Mutex),
 		originPatterns: webSocketOriginPatterns(options.AllowedOrigins),
+		presence:       presence,
 	}
 	if server.tables != nil {
 		server.tables.SetSnapshotListener(func(roomID string) {
@@ -72,7 +78,11 @@ func newWebSocketServer(logger *slog.Logger, options Options) http.Handler {
 			_ = server.hub.broadcastSnapshots(ctx, server.tables, roomID, nil)
 		})
 	}
-	return http.HandlerFunc(server.serveHTTP)
+	return server
+}
+
+func (server *webSocketServer) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	server.serveHTTP(writer, request)
 }
 
 func (server *webSocketServer) serveHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -127,6 +137,7 @@ func (client *webSocketClient) route(ctx context.Context, message protocol.Envel
 	}
 	switch protocol.MessageType(message.Type) {
 	case protocol.TypeSystemPing:
+		client.server.presence.touch(client.user.UserID)
 		return client.write(protocol.NewResponse(string(protocol.TypeSystemPong), message.RequestID, nil))
 	case protocol.TypeSessionAuthenticate:
 		return client.authenticate(ctx, message)
@@ -156,6 +167,8 @@ func (client *webSocketClient) route(ctx context.Context, message protocol.Envel
 		return client.recoverEvents(ctx, message)
 	case protocol.TypeTableActionSubmit:
 		return client.submitAction(ctx, message)
+	case protocol.TypeTableHoleCardsReveal:
+		return client.showHoleCards(ctx, message)
 	case protocol.TypeTableTimeExtensionUse:
 		return client.useTimeExtension(ctx, message)
 	case protocol.TypeTableRebuy:
@@ -226,9 +239,23 @@ func (client *webSocketClient) authenticate(ctx context.Context, message protoco
 		client.leave(ctx)
 	}
 	client.user = user
+	client.server.presence.touch(user.UserID)
 	return client.write(response(message, protocol.TypeSessionAuthenticated, map[string]any{
 		"user": user, "deviceId": payload.DeviceID,
 	}))
+}
+
+func (server *webSocketServer) disconnectUsers(roomID string, userIDs []string) {
+	targets := make(map[string]struct{}, len(userIDs))
+	for _, userID := range userIDs {
+		targets[userID] = struct{}{}
+	}
+	for _, client := range server.hub.clientsFor(roomID) {
+		if _, exists := targets[client.user.UserID]; !exists {
+			continue
+		}
+		_ = client.connection.Close(websocket.StatusPolicyViolation, "removed_by_administrator")
+	}
 }
 
 func (client *webSocketClient) join(ctx context.Context, message protocol.Envelope) error {
@@ -324,6 +351,20 @@ func (client *webSocketClient) submitAction(ctx context.Context, message protoco
 		return client.sendError(message, protocol.TypeTableActionRejected, errorCode(err), revisionFromError(err))
 	}
 	if err := client.respond(message, protocol.TypeTableActionAccepted, result); err != nil {
+		return err
+	}
+	return client.server.hub.broadcastSnapshots(ctx, client.server.tables, client.roomID, &snapshot)
+}
+
+func (client *webSocketClient) showHoleCards(ctx context.Context, message protocol.Envelope) error {
+	if client.roomID == "" {
+		return client.sendError(message, protocol.TypeTableHoleCardsRevealReject, "table_not_joined", 0)
+	}
+	snapshot, err := client.server.tables.ShowHoleCards(ctx, client.user.UserID, client.roomID)
+	if err != nil {
+		return client.sendError(message, protocol.TypeTableHoleCardsRevealReject, errorCode(err), 0)
+	}
+	if err := client.respond(message, protocol.TypeTableHoleCardsRevealed, map[string]bool{"revealed": true}); err != nil {
 		return err
 	}
 	return client.server.hub.broadcastSnapshots(ctx, client.server.tables, client.roomID, &snapshot)
@@ -676,6 +717,7 @@ func isIdempotentRequest(messageType protocol.MessageType) bool {
 	case protocol.TypeTableLeave,
 		protocol.TypeTableReadySet,
 		protocol.TypeTableActionSubmit,
+		protocol.TypeTableHoleCardsReveal,
 		protocol.TypeTableTimeExtensionUse,
 		protocol.TypeTableRebuy,
 		protocol.TypeTableVoiceStateSet,

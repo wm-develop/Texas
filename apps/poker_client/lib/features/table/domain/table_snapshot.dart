@@ -226,6 +226,7 @@ class TableSnapshot {
   const TableSnapshot({
     required this.roomId,
     required this.roomCode,
+    required this.ownerUserId,
     required this.tableRevision,
     required this.phase,
     required this.handId,
@@ -237,10 +238,15 @@ class TableSnapshot {
     required this.totalPot,
     required this.maxBuyIn,
     required this.settlement,
+    required this.voluntaryReveals,
+    required this.canShowHoleCards,
+    required this.autoReadyDeadline,
+    required this.autoReadyCancelled,
   });
 
   final String roomId;
   final String roomCode;
+  final String ownerUserId;
   final int tableRevision;
   final String phase;
   final String handId;
@@ -252,11 +258,16 @@ class TableSnapshot {
   final int totalPot;
   final int maxBuyIn;
   final TableSettlement? settlement;
+  final List<RevealedHand> voluntaryReveals;
+  final bool canShowHoleCards;
+  final DateTime? autoReadyDeadline;
+  final bool autoReadyCancelled;
   bool get hasSettlement => settlement != null;
 
   factory TableSnapshot.fromJson(Map<String, dynamic> json) => TableSnapshot(
     roomId: json['roomId'] as String,
     roomCode: json['roomCode'] as String,
+    ownerUserId: json['ownerUserId'] as String? ?? '',
     tableRevision: json['tableRevision'] as int,
     phase: json['phase'] as String,
     handId: json['handId'] as String? ?? '',
@@ -278,6 +289,14 @@ class TableSnapshot {
     settlement: json['settlement'] == null
         ? null
         : TableSettlement.fromJson(json['settlement'] as Map<String, dynamic>),
+    voluntaryReveals: (json['voluntaryReveals'] as List<dynamic>? ?? const [])
+        .map((value) => RevealedHand.fromJson(value as Map<String, dynamic>))
+        .toList(growable: false),
+    canShowHoleCards: json['canShowHoleCards'] as bool? ?? false,
+    autoReadyDeadline: (json['autoReadyDeadline'] as int? ?? 0) == 0
+        ? null
+        : DateTime.fromMillisecondsSinceEpoch(json['autoReadyDeadline'] as int),
+    autoReadyCancelled: json['autoReadyCancelled'] as bool? ?? false,
   );
 }
 

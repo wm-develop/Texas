@@ -157,6 +157,73 @@ func TestInitialAdministratorControlsRegistrationAndAccounts(t *testing.T) {
 	}
 }
 
+func TestUserCanChangeOwnUsernameAndPassword(t *testing.T) {
+	now := time.Unix(3_000, 0)
+	service := mustAccountService(t, &now)
+	ctx := context.Background()
+
+	registered, err := service.Register(ctx, "old_login", "好友", "password-123")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	updated, err := service.UpdateOwnUsername(ctx, registered.User, "new_login")
+	if err != nil || updated.Username != "new_login" {
+		t.Fatalf("UpdateOwnUsername user=%#v err=%v", updated, err)
+	}
+	if _, err := service.Login(ctx, "old_login", "password-123"); accountErrorCode(err) != "invalid_credentials" {
+		t.Fatalf("old username login error=%v", err)
+	}
+	if _, err := service.Login(ctx, "new_login", "password-123"); err != nil {
+		t.Fatalf("new username login: %v", err)
+	}
+
+	if _, err := service.ChangeOwnPassword(
+		ctx, updated, "wrong-password", "new-password-456",
+	); accountErrorCode(err) != "invalid_current_password" {
+		t.Fatalf("wrong current password error=%v", err)
+	}
+	changed, err := service.ChangeOwnPassword(
+		ctx, updated, "password-123", "new-password-456",
+	)
+	if err != nil || changed.AccessToken == "" || changed.RefreshToken == "" {
+		t.Fatalf("ChangeOwnPassword result=%#v err=%v", changed, err)
+	}
+	if _, err := service.Authenticate(ctx, registered.AccessToken); accountErrorCode(err) != "authentication_required" {
+		t.Fatalf("old session authentication error=%v", err)
+	}
+	if _, err := service.Login(ctx, "new_login", "password-123"); accountErrorCode(err) != "invalid_credentials" {
+		t.Fatalf("old password login error=%v", err)
+	}
+	if _, err := service.Login(ctx, "new_login", "new-password-456"); err != nil {
+		t.Fatalf("new password login: %v", err)
+	}
+}
+
+func TestAdministratorCanChangeManagedUsername(t *testing.T) {
+	now := time.Unix(4_000, 0)
+	service := mustAccountService(t, &now)
+	ctx := context.Background()
+	administrator, err := service.RegisterWithOptions(
+		ctx, "admin_user", "管理员", "password-123",
+		RegistrationOptions{RequestInitialAdmin: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	managed, err := service.CreateManagedUser(
+		ctx, administrator.User, "managed_old", "好友", "password-123",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := service.UpdateManagedUsername(
+		ctx, administrator.User, managed.UserID, "managed_new",
+	)
+	if err != nil || updated.Username != "managed_new" {
+		t.Fatalf("UpdateManagedUsername user=%#v err=%v", updated, err)
+	}
+}
+
 type failingCreateRepository struct {
 	*MemoryRepository
 	err error

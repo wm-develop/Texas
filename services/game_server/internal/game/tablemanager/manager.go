@@ -29,23 +29,29 @@ type Manager struct {
 }
 
 type runtime struct {
-	mu              sync.Mutex
-	engine          *holdem.Table
-	roomID          string
-	actionSeconds   int
-	deadline        time.Time
-	timer           ScheduledTimer
-	timerGeneration uint64
-	timeExtensions  map[string]int
-	handStartedAt   time.Time
-	persistedHandID string
-	actions         []history.Action
+	mu                       sync.Mutex
+	engine                   *holdem.Table
+	roomID                   string
+	actionSeconds            int
+	deadline                 time.Time
+	timer                    ScheduledTimer
+	timerGeneration          uint64
+	readyTimer               ScheduledTimer
+	readyTimerGeneration     uint64
+	autoReadyDeadline        time.Time
+	autoReadyCancelled       map[string]bool
+	voluntarilyRevealedHands map[string]holdem.RevealedHand
+	timeExtensions           map[string]int
+	handStartedAt            time.Time
+	persistedHandID          string
+	actions                  []history.Action
 }
 
 const (
 	timeExtensionsPerHand = 2
 	timeExtensionDuration = 30 * time.Second
 	headsUpActionDuration = 60 * time.Second
+	autoReadyDelay        = 10 * time.Second
 )
 
 type ScheduledTimer interface {
@@ -94,22 +100,27 @@ type ActionSnapshot struct {
 }
 
 type Snapshot struct {
-	RoomID         string             `json:"roomId"`
-	RoomCode       string             `json:"roomCode"`
-	RoomRevision   uint64             `json:"roomRevision"`
-	TableRevision  uint64             `json:"tableRevision"`
-	Phase          holdem.Phase       `json:"phase"`
-	HandID         string             `json:"handId,omitempty"`
-	DealerSeat     int                `json:"dealerSeat,omitempty"`
-	SmallBlindSeat int                `json:"smallBlindSeat,omitempty"`
-	BigBlindSeat   int                `json:"bigBlindSeat,omitempty"`
-	Board          []string           `json:"board"`
-	HoleCards      []string           `json:"holeCards,omitempty"`
-	Seats          []SeatSnapshot     `json:"seats"`
-	CurrentAction  *ActionSnapshot    `json:"currentAction,omitempty"`
-	TotalPot       int64              `json:"totalPot"`
-	Settlement     *holdem.Settlement `json:"settlement,omitempty"`
-	MaxBuyIn       int64              `json:"maxBuyIn"`
+	RoomID             string                `json:"roomId"`
+	RoomCode           string                `json:"roomCode"`
+	OwnerUserID        string                `json:"ownerUserId"`
+	RoomRevision       uint64                `json:"roomRevision"`
+	TableRevision      uint64                `json:"tableRevision"`
+	Phase              holdem.Phase          `json:"phase"`
+	HandID             string                `json:"handId,omitempty"`
+	DealerSeat         int                   `json:"dealerSeat,omitempty"`
+	SmallBlindSeat     int                   `json:"smallBlindSeat,omitempty"`
+	BigBlindSeat       int                   `json:"bigBlindSeat,omitempty"`
+	Board              []string              `json:"board"`
+	HoleCards          []string              `json:"holeCards,omitempty"`
+	Seats              []SeatSnapshot        `json:"seats"`
+	CurrentAction      *ActionSnapshot       `json:"currentAction,omitempty"`
+	TotalPot           int64                 `json:"totalPot"`
+	Settlement         *holdem.Settlement    `json:"settlement,omitempty"`
+	VoluntaryReveals   []holdem.RevealedHand `json:"voluntaryReveals,omitempty"`
+	CanShowHoleCards   bool                  `json:"canShowHoleCards"`
+	AutoReadyDeadline  int64                 `json:"autoReadyDeadline,omitempty"`
+	AutoReadyCancelled bool                  `json:"autoReadyCancelled"`
+	MaxBuyIn           int64                 `json:"maxBuyIn"`
 }
 
 func New(rooms *room.Service, random holdem.IntnSource) (*Manager, error) {
@@ -165,7 +176,7 @@ func (manager *Manager) Join(ctx context.Context, userID string, roomID string) 
 	if err := runtime.engine.SetConnected(userID, true); err != nil {
 		return Snapshot{}, err
 	}
-	return snapshotFor(runtime.engine, roomValue, userID, runtime.deadline, runtime.timeExtensions)
+	return snapshotForRuntime(runtime, roomValue, userID)
 }
 
 func (manager *Manager) Disconnect(ctx context.Context, userID string, roomID string) {
@@ -181,6 +192,9 @@ func (manager *Manager) Disconnect(ctx context.Context, userID string, roomID st
 	defer runtime.mu.Unlock()
 	_ = runtime.engine.SetConnected(userID, false)
 	if runtime.engine.Phase() == holdem.PhaseWaiting || runtime.engine.Phase() == holdem.PhaseWaitingNextHand {
+		if !runtime.autoReadyDeadline.IsZero() {
+			runtime.autoReadyCancelled[userID] = true
+		}
 		if updated, readyErr := manager.rooms.SetReady(ctx, userID, false); readyErr == nil {
 			roomValue = updated
 			_ = runtime.engine.SetReady(userID, false)
@@ -203,8 +217,17 @@ func (manager *Manager) SetReady(ctx context.Context, userID string, ready bool)
 	if err := syncMembers(runtime.engine, roomValue); err != nil {
 		return Snapshot{}, err
 	}
+	if !runtime.autoReadyDeadline.IsZero() {
+		if ready {
+			delete(runtime.autoReadyCancelled, userID)
+		} else {
+			runtime.autoReadyCancelled[userID] = true
+		}
+	}
 	if allReady(roomValue.Members) &&
 		(runtime.engine.Phase() == holdem.PhaseWaiting || runtime.engine.Phase() == holdem.PhaseWaitingNextHand) {
+		manager.clearAutoReadyLocked(runtime)
+		runtime.voluntarilyRevealedHands = make(map[string]holdem.RevealedHand)
 		runtime.handStartedAt = manager.now()
 		runtime.actions = nil
 		runtime.persistedHandID = ""
@@ -225,11 +248,12 @@ func (manager *Manager) SetReady(ctx context.Context, userID string, ready bool)
 			if err != nil {
 				return Snapshot{}, err
 			}
+			manager.scheduleAutoReadyLocked(runtime)
 		} else {
 			manager.refreshDeadlineLocked(runtime)
 		}
 	}
-	return snapshotFor(runtime.engine, roomValue, userID, runtime.deadline, runtime.timeExtensions)
+	return snapshotForRuntime(runtime, roomValue, userID)
 }
 
 func (manager *Manager) SubmitAction(
@@ -270,11 +294,12 @@ func (manager *Manager) SubmitAction(
 		if err != nil {
 			return holdem.ActionResult{}, Snapshot{}, err
 		}
+		manager.scheduleAutoReadyLocked(runtime)
 	}
 	if runtime.engine.Revision() != previousRevision {
 		manager.refreshDeadlineLocked(runtime)
 	}
-	snapshot, err := snapshotFor(runtime.engine, roomValue, userID, runtime.deadline, runtime.timeExtensions)
+	snapshot, err := snapshotForRuntime(runtime, roomValue, userID)
 	return result, snapshot, err
 }
 
@@ -292,7 +317,33 @@ func (manager *Manager) Snapshot(ctx context.Context, userID string, roomID stri
 	if err := syncMembers(runtime.engine, roomValue); err != nil {
 		return Snapshot{}, err
 	}
-	return snapshotFor(runtime.engine, roomValue, userID, runtime.deadline, runtime.timeExtensions)
+	return snapshotForRuntime(runtime, roomValue, userID)
+}
+
+func (manager *Manager) ShowHoleCards(ctx context.Context, userID string, roomID string) (Snapshot, error) {
+	roomValue, err := manager.rooms.GetForMember(ctx, userID, roomID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	runtime := manager.existingRuntime(roomID)
+	if runtime == nil {
+		return Snapshot{}, room.Error{Code: "table_not_started"}
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if _, exists := runtime.voluntarilyRevealedHands[userID]; exists {
+		return snapshotForRuntime(runtime, roomValue, userID)
+	}
+	player, eligible := voluntaryRevealPlayer(runtime.engine, userID)
+	if !eligible {
+		return Snapshot{}, holdem.RuleError{Code: "hole_cards_not_revealable"}
+	}
+	runtime.voluntarilyRevealedHands[userID] = holdem.RevealedHand{
+		PlayerID:  userID,
+		HoleCards: []string{player.HoleCards[0].String(), player.HoleCards[1].String()},
+		Category:  "voluntary",
+	}
+	return snapshotForRuntime(runtime, roomValue, userID)
 }
 
 func (manager *Manager) UseTimeExtension(ctx context.Context, userID string, roomID string) (Snapshot, error) {
@@ -317,9 +368,7 @@ func (manager *Manager) UseTimeExtension(ctx context.Context, userID string, roo
 	}
 	runtime.timeExtensions[userID]--
 	manager.scheduleDeadlineLocked(runtime, runtime.deadline.Add(timeExtensionDuration))
-	return snapshotFor(
-		runtime.engine, roomValue, userID, runtime.deadline, runtime.timeExtensions,
-	)
+	return snapshotForRuntime(runtime, roomValue, userID)
 }
 
 func (manager *Manager) Rebuy(
@@ -368,7 +417,7 @@ func (manager *Manager) Rebuy(
 	}
 	delta := position.TableChips - current
 	if delta == 0 {
-		return snapshotFor(runtime.engine, roomValue, userID, runtime.deadline, runtime.timeExtensions)
+		return snapshotForRuntime(runtime, roomValue, userID)
 	}
 	if delta != amount {
 		return Snapshot{}, room.Error{Code: "table_balance_mismatch"}
@@ -380,11 +429,12 @@ func (manager *Manager) Rebuy(
 	if err != nil {
 		return Snapshot{}, err
 	}
-	return snapshotFor(runtime.engine, roomValue, userID, runtime.deadline, runtime.timeExtensions)
+	return snapshotForRuntime(runtime, roomValue, userID)
 }
 
 // Leave returns the player's table balance to their wallet before removing the
-// room membership. Closing a room cashes out every member. A player cannot
+// room membership. The room owner transfers to the earliest remaining member;
+// the room closes only when its final member leaves. A player cannot
 // cash out while a hand is active because their chips may still be committed.
 func (manager *Manager) Leave(ctx context.Context, userID string) (bool, error) {
 	roomValue, err := manager.rooms.Current(ctx, userID)
@@ -399,19 +449,10 @@ func (manager *Manager) Leave(ctx context.Context, userID string) (bool, error) 
 			return false, holdem.RuleError{Code: "hand_in_progress"}
 		}
 	}
-	targets := []string{userID}
-	if roomValue.OwnerUserID == userID {
-		targets = make([]string, 0, len(roomValue.Members))
-		for _, member := range roomValue.Members {
-			targets = append(targets, member.UserID)
-		}
-	}
 	if manager.bankroll != nil {
-		for _, targetUserID := range targets {
-			requestID := "cashout:" + roomValue.RoomID + ":" + targetUserID
-			if _, err := manager.bankroll.CashOut(ctx, targetUserID, roomValue.RoomID, requestID); err != nil {
-				return false, err
-			}
+		requestID := "cashout:" + roomValue.RoomID + ":" + userID
+		if _, err := manager.bankroll.CashOut(ctx, userID, roomValue.RoomID, requestID); err != nil {
+			return false, err
 		}
 	}
 	closed, err := manager.rooms.Leave(ctx, userID)
@@ -419,14 +460,15 @@ func (manager *Manager) Leave(ctx context.Context, userID string) (bool, error) 
 		return false, err
 	}
 	if runtime != nil {
-		for _, targetUserID := range targets {
-			_ = runtime.engine.RequestLeave(targetUserID)
-		}
+		_ = runtime.engine.RequestLeave(userID)
 		if closed && runtime.timer != nil {
 			runtime.timer.Stop()
 		}
 	}
 	if closed {
+		if runtime != nil && runtime.readyTimer != nil {
+			runtime.readyTimer.Stop()
+		}
 		manager.mu.Lock()
 		delete(manager.tables, roomValue.RoomID)
 		manager.mu.Unlock()
@@ -449,7 +491,8 @@ func (manager *Manager) runtimeFor(roomValue room.Room) (*runtime, error) {
 	}
 	created := &runtime{
 		engine: engine, roomID: roomValue.RoomID, actionSeconds: roomValue.Rules.ActionSeconds,
-		timeExtensions: make(map[string]int),
+		timeExtensions: make(map[string]int), autoReadyCancelled: make(map[string]bool),
+		voluntarilyRevealedHands: make(map[string]holdem.RevealedHand),
 	}
 	manager.tables[roomValue.RoomID] = created
 	return created, nil
@@ -490,6 +533,75 @@ func (manager *Manager) scheduleDeadlineLocked(runtime *runtime, deadline time.T
 	})
 }
 
+func (manager *Manager) scheduleAutoReadyLocked(runtime *runtime) {
+	if runtime.readyTimer != nil {
+		runtime.readyTimer.Stop()
+	}
+	runtime.readyTimerGeneration++
+	runtime.autoReadyDeadline = manager.now().Add(autoReadyDelay)
+	runtime.autoReadyCancelled = make(map[string]bool)
+	generation := runtime.readyTimerGeneration
+	runtime.readyTimer = manager.afterFunc(autoReadyDelay, func() {
+		manager.handleAutoReady(runtime.roomID, generation)
+	})
+}
+
+func (manager *Manager) clearAutoReadyLocked(runtime *runtime) {
+	if runtime.readyTimer != nil {
+		runtime.readyTimer.Stop()
+		runtime.readyTimer = nil
+	}
+	runtime.readyTimerGeneration++
+	runtime.autoReadyDeadline = time.Time{}
+	runtime.autoReadyCancelled = make(map[string]bool)
+}
+
+func (manager *Manager) handleAutoReady(roomID string, generation uint64) {
+	runtime := manager.existingRuntime(roomID)
+	if runtime == nil {
+		return
+	}
+	runtime.mu.Lock()
+	if generation != runtime.readyTimerGeneration ||
+		runtime.engine.Phase() != holdem.PhaseWaitingNextHand ||
+		manager.now().Before(runtime.autoReadyDeadline) {
+		runtime.mu.Unlock()
+		return
+	}
+	connected := make(map[string]bool)
+	for _, player := range runtime.engine.Players() {
+		connected[player.PlayerID] = player.Connected
+	}
+	cancelled := make(map[string]bool, len(runtime.autoReadyCancelled))
+	for userID, value := range runtime.autoReadyCancelled {
+		cancelled[userID] = value
+	}
+	runtime.readyTimer = nil
+	runtime.autoReadyDeadline = time.Time{}
+	runtime.mu.Unlock()
+
+	var roomValue room.Room
+	for userID := range connected {
+		value, err := manager.rooms.GetForMember(context.Background(), userID, roomID)
+		if err == nil {
+			roomValue = value
+			break
+		}
+	}
+	if roomValue.RoomID == "" {
+		return
+	}
+	for _, member := range roomValue.Members {
+		if member.Stack <= 0 || !connected[member.UserID] || cancelled[member.UserID] {
+			continue
+		}
+		if _, err := manager.SetReady(context.Background(), member.UserID, true); err != nil {
+			return
+		}
+	}
+	manager.notifySnapshot(roomID)
+}
+
 func (manager *Manager) handleTimeout(roomID string, generation uint64) {
 	runtime := manager.existingRuntime(roomID)
 	if runtime == nil {
@@ -525,6 +637,9 @@ func (manager *Manager) handleTimeout(roomID string, generation uint64) {
 			err = manager.persistSettlementLocked(runtime, roomValue)
 			if err == nil {
 				roomValue, err = manager.resetReadyLocked(context.Background(), runtime, roomValue)
+				if err == nil {
+					manager.scheduleAutoReadyLocked(runtime)
+				}
 			}
 		}
 	}
@@ -648,6 +763,61 @@ func syncMembers(engine *holdem.Table, roomValue room.Room) error {
 		}
 	}
 	return nil
+}
+
+func snapshotForRuntime(runtime *runtime, roomValue room.Room, recipientUserID string) (Snapshot, error) {
+	result, err := snapshotFor(
+		runtime.engine, roomValue, recipientUserID, runtime.deadline, runtime.timeExtensions,
+	)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	result.OwnerUserID = roomValue.OwnerUserID
+	result.CanShowHoleCards = canVoluntarilyReveal(runtime.engine, recipientUserID) &&
+		runtime.voluntarilyRevealedHands[recipientUserID].PlayerID == ""
+	if !runtime.autoReadyDeadline.IsZero() {
+		result.AutoReadyDeadline = runtime.autoReadyDeadline.UnixMilli()
+		result.AutoReadyCancelled = runtime.autoReadyCancelled[recipientUserID]
+	}
+	userIDs := make([]string, 0, len(runtime.voluntarilyRevealedHands))
+	for userID := range runtime.voluntarilyRevealedHands {
+		userIDs = append(userIDs, userID)
+	}
+	sort.Strings(userIDs)
+	for _, userID := range userIDs {
+		hand := runtime.voluntarilyRevealedHands[userID]
+		hand.HoleCards = append([]string(nil), hand.HoleCards...)
+		result.VoluntaryReveals = append(result.VoluntaryReveals, hand)
+	}
+	return result, nil
+}
+
+func voluntaryRevealPlayer(engine *holdem.Table, userID string) (holdem.Player, bool) {
+	for _, player := range engine.Players() {
+		if player.PlayerID != userID || !player.Participating || engine.HandID() == "" {
+			continue
+		}
+		if player.Folded {
+			return player, true
+		}
+		settlement := engine.LastSettlement()
+		if engine.Phase() == holdem.PhaseWaitingNextHand && !settlement.Showdown &&
+			settlement.HandID == engine.HandID() {
+			for _, award := range settlement.PotAwards {
+				for _, winnerID := range award.WinnerPlayerIDs {
+					if winnerID == userID {
+						return player, true
+					}
+				}
+			}
+		}
+	}
+	return holdem.Player{}, false
+}
+
+func canVoluntarilyReveal(engine *holdem.Table, userID string) bool {
+	_, eligible := voluntaryRevealPlayer(engine, userID)
+	return eligible
 }
 
 func snapshotFor(

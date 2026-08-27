@@ -18,7 +18,7 @@ func TestEmbeddedMigrationCatalogIsOrderedAndReversible(t *testing.T) {
 		t.Fatalf("NewMigrator: %v", err)
 	}
 	versions := migrator.Versions()
-	if len(versions) != 2 || versions[0] != 1 || versions[1] != 2 {
+	if len(versions) != 3 || versions[0] != 1 || versions[1] != 2 || versions[2] != 3 {
 		t.Fatalf("versions=%v", versions)
 	}
 }

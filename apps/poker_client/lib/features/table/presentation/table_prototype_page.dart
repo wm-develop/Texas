@@ -23,6 +23,7 @@ class TablePrototypePage extends StatefulWidget {
     required this.room,
     required this.settings,
     required this.onLeave,
+    required this.onRemoved,
     required this.loadBankroll,
     super.key,
   });
@@ -31,6 +32,7 @@ class TablePrototypePage extends StatefulWidget {
   final FriendRoom room;
   final AppSettingsController settings;
   final Future<void> Function() onLeave;
+  final Future<void> Function() onRemoved;
   final Future<BankrollSnapshot> Function() loadBankroll;
 
   @override
@@ -62,6 +64,7 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
   bool _autoJoinAttempted = false;
   bool _rebuyDialogOpen = false;
   String? _autoRebuyHandId;
+  bool _removedFromRoomHandled = false;
 
   bool get _voiceJoined =>
       _voiceState == VoiceConnectionState.connected ||
@@ -362,6 +365,13 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
     if (!mounted) return;
     setState(() {});
     final error = _gameSocket.errorMessage;
+    if (!_removedFromRoomHandled &&
+        (error == 'permission_denied' || error == 'room_not_found')) {
+      _removedFromRoomHandled = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(widget.onRemoved());
+      });
+    }
     if (_lastGameSocketStatus != _gameSocket.status) {
       _lastGameSocketStatus = _gameSocket.status;
       if (_gameSocket.status == GameSocketStatus.joined && _voiceJoined) {
@@ -511,15 +521,17 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
           isEmpty: true,
         );
       }
-      final revealed = snapshot?.settlement?.revealedHands
-          .where((hand) => hand.userId == value.userId)
-          .firstOrNull;
+      final revealed = [
+        ...?snapshot?.settlement?.revealedHands,
+        ...?snapshot?.voluntaryReveals,
+      ].where((hand) => hand.userId == value.userId).firstOrNull;
       return TableSeat(
         number: seatNumber,
         displayName: value.displayName,
         chips: value.stack,
         isCurrentUser: value.userId == widget.session.user.userId,
         isDealer: snapshot?.dealerSeat == seatNumber,
+        isOwner: snapshot?.ownerUserId == value.userId,
         isSpeaking: _speakingUserIds.contains(value.userId),
         isReady: value.ready,
         isConnected: value.connected,
@@ -1050,6 +1062,18 @@ class _SeatCard extends StatelessWidget {
                           style: TextStyle(color: Color(0xFFF4D477)),
                         ),
                       ),
+                    if (seat.isOwner)
+                      const Padding(
+                        padding: EdgeInsets.only(left: 4),
+                        child: Tooltip(
+                          message: '房主',
+                          child: Icon(
+                            Icons.workspace_premium,
+                            color: Color(0xFFF6D986),
+                            size: 17,
+                          ),
+                        ),
+                      ),
                     if (seat.isSpeaking)
                       const Padding(
                         padding: EdgeInsets.only(left: 3),
@@ -1476,6 +1500,14 @@ class _HandCardsPanel extends StatelessWidget {
             icon: const Icon(Icons.timer_outlined, size: 17),
             label: Text('加时 +30秒 ×${ownSeat?.timeExtensions ?? 0}'),
           ),
+          if (snapshot?.canShowHoleCards ?? false) ...[
+            const SizedBox(width: 10),
+            FilledButton.tonalIcon(
+              onPressed: client.showHoleCards,
+              icon: const Icon(Icons.visibility_outlined, size: 17),
+              label: const Text('展示手牌'),
+            ),
+          ],
         ],
       ),
     );
@@ -1611,6 +1643,11 @@ class _ActionBar extends StatelessWidget {
         snapshot == null ||
         snapshot.phase == 'WAITING' ||
         snapshot.phase == 'WAITING_NEXT_HAND';
+    final autoReadyRemaining = snapshot?.autoReadyDeadline?.difference(
+      client.serverNow,
+    );
+    final autoReadyPending =
+        autoReadyRemaining != null && autoReadyRemaining > Duration.zero;
     return Container(
       height: 70,
       padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -1638,14 +1675,32 @@ class _ActionBar extends StatelessWidget {
                     onPressed:
                         client.status == GameSocketStatus.joined &&
                             (ownSeat?.stack ?? 0) > 0
-                        ? () => client.setReady(!(ownSeat?.ready ?? false))
+                        ? () {
+                            if (ownSeat?.ready == true) {
+                              client.setReady(false);
+                            } else if (autoReadyPending &&
+                                !(snapshot?.autoReadyCancelled ?? false)) {
+                              client.setReady(false);
+                            } else {
+                              client.setReady(true);
+                            }
+                          }
                         : null,
                     icon: Icon(
-                      ownSeat?.ready == true
+                      ownSeat?.ready == true ||
+                              (autoReadyPending &&
+                                  !(snapshot?.autoReadyCancelled ?? false))
                           ? Icons.pause_circle
                           : Icons.play_circle,
                     ),
-                    label: Text(ownSeat?.ready == true ? '取消准备' : '准备开始'),
+                    label: Text(
+                      ownSeat?.ready == true
+                          ? '取消准备'
+                          : autoReadyPending &&
+                                !(snapshot?.autoReadyCancelled ?? false)
+                          ? '取消自动准备（${_remainingSeconds(autoReadyRemaining)}秒）'
+                          : '准备开始',
+                    ),
                   ),
                   const SizedBox(width: 12),
                   OutlinedButton.icon(
@@ -2027,6 +2082,7 @@ String _suggestionButtonLabel(BetSuggestion suggestion, int streetBet) {
 }
 
 String _handCategoryLabel(String category) => switch (category) {
+  'voluntary' => '主动亮牌',
   'high_card' => '高牌',
   'one_pair' => '一对',
   'two_pair' => '两对',

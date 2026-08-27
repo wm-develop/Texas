@@ -119,6 +119,155 @@ func TestManagerStartsRealHandAndProducesPrivateSnapshots(t *testing.T) {
 	}
 }
 
+func TestFoldedPlayerAndFoldWinnerCanRevealUntilNextHand(t *testing.T) {
+	ctx := context.Background()
+	rooms := testRoomService(t)
+	created, err := rooms.Create(ctx, room.Participant{UserID: "owner", DisplayName: "房主"}, room.PresetStandard, 2, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rooms.Join(ctx, room.Participant{UserID: "guest", DisplayName: "好友"}, created.Code, ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(5_000, 0)
+	manager, err := NewWithConfig(rooms, zeroRandom{}, ManagerConfig{
+		Now: func() time.Time { return now },
+		AfterFunc: func(_ time.Duration, _ func()) ScheduledTimer {
+			return &fakeScheduledTimer{}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, userID := range []string{"owner", "guest"} {
+		if _, err := manager.Join(ctx, userID, created.RoomID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := manager.SetReady(ctx, userID, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	started, err := manager.Snapshot(ctx, "owner", created.RoomID)
+	if err != nil || started.CurrentAction == nil {
+		t.Fatalf("started=%#v err=%v", started, err)
+	}
+	foldedUserID := started.CurrentAction.UserID
+	winnerUserID := "owner"
+	if foldedUserID == winnerUserID {
+		winnerUserID = "guest"
+	}
+	_, settled, err := manager.SubmitAction(ctx, foldedUserID, created.RoomID, holdem.ActionRequest{
+		ActionID: "fold-for-voluntary-reveal", HandID: started.HandID,
+		TableRevision: started.TableRevision, Action: holdem.ActionFold,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !settled.CanShowHoleCards || settled.AutoReadyDeadline != now.Add(autoReadyDelay).UnixMilli() ||
+		settled.OwnerUserID != "owner" {
+		t.Fatalf("folded settlement snapshot=%#v", settled)
+	}
+	winnerSnapshot, err := manager.Snapshot(ctx, winnerUserID, created.RoomID)
+	if err != nil || !winnerSnapshot.CanShowHoleCards {
+		t.Fatalf("winner snapshot=%#v err=%v", winnerSnapshot, err)
+	}
+	if _, err := manager.ShowHoleCards(ctx, foldedUserID, created.RoomID); err != nil {
+		t.Fatalf("folded reveal: %v", err)
+	}
+	afterWinnerReveal, err := manager.ShowHoleCards(ctx, winnerUserID, created.RoomID)
+	if err != nil || len(afterWinnerReveal.VoluntaryReveals) != 2 || afterWinnerReveal.CanShowHoleCards {
+		t.Fatalf("voluntary reveals=%#v err=%v", afterWinnerReveal, err)
+	}
+	if _, err := manager.SetReady(ctx, foldedUserID, true); err != nil {
+		t.Fatal(err)
+	}
+	nextHand, err := manager.SetReady(ctx, winnerUserID, true)
+	if err != nil || nextHand.Phase != holdem.PhasePreflop || len(nextHand.VoluntaryReveals) != 0 || nextHand.CanShowHoleCards {
+		t.Fatalf("next hand snapshot=%#v err=%v", nextHand, err)
+	}
+}
+
+func TestSettlementAutomaticallyReadiesAfterTenSecondsAndSupportsCancellation(t *testing.T) {
+	ctx := context.Background()
+	rooms := testRoomService(t)
+	created, err := rooms.Create(ctx, room.Participant{UserID: "owner", DisplayName: "房主"}, room.PresetStandard, 2, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rooms.Join(ctx, room.Participant{UserID: "guest", DisplayName: "好友"}, created.Code, ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(6_000, 0)
+	scheduled := make(map[time.Duration]func())
+	manager, err := NewWithConfig(rooms, zeroRandom{}, ManagerConfig{
+		Now: func() time.Time { return now },
+		AfterFunc: func(duration time.Duration, callback func()) ScheduledTimer {
+			scheduled[duration] = callback
+			return &fakeScheduledTimer{}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, userID := range []string{"owner", "guest"} {
+		if _, err := manager.Join(ctx, userID, created.RoomID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := manager.SetReady(ctx, userID, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	started, _ := manager.Snapshot(ctx, "owner", created.RoomID)
+	actor := started.CurrentAction.UserID
+	_, _, err = manager.SubmitAction(ctx, actor, created.RoomID, holdem.ActionRequest{
+		ActionID: "fold-before-auto-ready", HandID: started.HandID,
+		TableRevision: started.TableRevision, Action: holdem.ActionFold,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled, err := manager.SetReady(ctx, actor, false)
+	if err != nil || !cancelled.AutoReadyCancelled || cancelled.AutoReadyDeadline == 0 {
+		t.Fatalf("cancelled snapshot=%#v err=%v", cancelled, err)
+	}
+	autoReady := scheduled[autoReadyDelay]
+	if autoReady == nil {
+		t.Fatal("auto-ready callback was not scheduled")
+	}
+	now = now.Add(autoReadyDelay)
+	autoReady()
+	afterDeadline, err := manager.Snapshot(ctx, actor, created.RoomID)
+	if err != nil || afterDeadline.Phase != holdem.PhaseWaitingNextHand {
+		t.Fatalf("after deadline=%#v err=%v", afterDeadline, err)
+	}
+	for _, seat := range afterDeadline.Seats {
+		if seat.UserID == actor && seat.Ready {
+			t.Fatal("cancelled player was automatically readied")
+		}
+		if seat.UserID != actor && !seat.Ready {
+			t.Fatal("non-cancelled player was not automatically readied")
+		}
+	}
+	startedAgain, err := manager.SetReady(ctx, actor, true)
+	if err != nil || startedAgain.Phase != holdem.PhasePreflop {
+		t.Fatalf("manual ready after cancellation=%#v err=%v", startedAgain, err)
+	}
+	_, _, err = manager.SubmitAction(ctx, startedAgain.CurrentAction.UserID, created.RoomID, holdem.ActionRequest{
+		ActionID: "fold-before-full-auto-ready", HandID: startedAgain.HandID,
+		TableRevision: startedAgain.TableRevision, Action: holdem.ActionFold,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	autoReady = scheduled[autoReadyDelay]
+	now = now.Add(autoReadyDelay)
+	autoReady()
+	fullyAutomatic, err := manager.Snapshot(ctx, "owner", created.RoomID)
+	if err != nil || fullyAutomatic.Phase != holdem.PhasePreflop || fullyAutomatic.AutoReadyDeadline != 0 {
+		t.Fatalf("fully automatic next hand=%#v err=%v", fullyAutomatic, err)
+	}
+}
+
 func TestManagerRejectsNonMember(t *testing.T) {
 	ctx := context.Background()
 	rooms := testRoomService(t)
@@ -467,6 +616,50 @@ func TestConfiguredBuyInRebuyIsIdempotentAndLeaveCashesOut(t *testing.T) {
 	}
 	if guestWallet.WalletChips != 5_000 || guestWallet.TableChips != 0 {
 		t.Fatalf("guest cash-out=%#v", guestWallet)
+	}
+}
+
+func TestOwnerLeaveCashesOutOnlyOwnerAndTransfersRoom(t *testing.T) {
+	ctx := context.Background()
+	chips, _ := bankroll.NewService(bankroll.NewMemoryRepository(), time.Now)
+	for _, userID := range []string{"owner", "guest"} {
+		if _, err := chips.TopUp(ctx, userID, "owner-transfer-topup-"+userID, 5000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hasher, _ := security.NewPasswordHasher(1_000, cryptorand.Reader)
+	rooms, _ := room.NewService(room.NewMemoryRepository(), hasher, room.ServiceConfig{Bankroll: chips})
+	created, err := rooms.CreateConfigured(ctx, room.Participant{UserID: "owner", DisplayName: "房主"}, room.CreateOptions{
+		Preset: room.PresetStandard, MaxPlayers: 2, SmallBlind: 10, BigBlind: 20,
+		MaxBuyIn: 2000, BuyIn: 1000, RequestID: "owner-transfer-create",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rooms.JoinWithBuyIn(ctx, room.Participant{UserID: "guest", DisplayName: "好友"}, room.JoinOptions{
+		Code: created.Code, BuyIn: 1000, RequestID: "owner-transfer-join",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager, _ := NewWithConfig(rooms, zeroRandom{}, ManagerConfig{Bankroll: chips})
+	for _, userID := range []string{"owner", "guest"} {
+		if _, err := manager.Join(ctx, userID, created.RoomID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	closed, err := manager.Leave(ctx, "owner")
+	if err != nil || closed {
+		t.Fatalf("owner leave closed=%v err=%v", closed, err)
+	}
+	current, err := rooms.Current(ctx, "guest")
+	if err != nil || current.OwnerUserID != "guest" {
+		t.Fatalf("transferred room=%#v err=%v", current, err)
+	}
+	ownerChips, _ := chips.Snapshot(ctx, "owner")
+	guestChips, _ := chips.Snapshot(ctx, "guest")
+	if ownerChips.WalletChips != 5000 || ownerChips.TableChips != 0 ||
+		guestChips.WalletChips != 4000 || guestChips.TableChips != 1000 {
+		t.Fatalf("owner=%#v guest=%#v", ownerChips, guestChips)
 	}
 }
 

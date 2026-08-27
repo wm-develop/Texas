@@ -120,6 +120,43 @@ class GameApiClient {
     );
   }
 
+  Future<AppUser> adminUpdateUsername({
+    required String accessToken,
+    required String userId,
+    required String username,
+  }) async => AppUser.fromJson(
+    await _request(
+      'v1/admin/users/$userId/username',
+      token: accessToken,
+      body: {'username': username},
+    ),
+  );
+
+  Future<BankrollSnapshot> adminSetWallet({
+    required String accessToken,
+    required String userId,
+    required int chips,
+    required String requestId,
+  }) async => BankrollSnapshot.fromJson(
+    await _request(
+      'v1/admin/users/$userId/wallet',
+      token: accessToken,
+      body: {'chips': chips, 'requestId': requestId},
+    ),
+  );
+
+  Future<bool> adminLeaveRoom({
+    required String accessToken,
+    required String userId,
+  }) async =>
+      (await _request(
+            'v1/admin/users/$userId/leave-room',
+            token: accessToken,
+            body: const {},
+          ))['closed']
+          as bool? ??
+      false;
+
   Future<bool> adminRegistrationEnabled(String accessToken) async =>
       (await _get(
             'v1/admin/settings/registration',
@@ -145,6 +182,38 @@ class GameApiClient {
     await _request(
       'v1/auth/login',
       body: {'username': username, 'password': password},
+    ),
+  );
+
+  Future<void> heartbeat(String accessToken) async {
+    await _request(
+      'v1/users/me/heartbeat',
+      token: accessToken,
+      body: const {},
+      expectedStatus: 204,
+    );
+  }
+
+  Future<AppUser> updateUsername({
+    required String accessToken,
+    required String username,
+  }) async => AppUser.fromJson(
+    await _request(
+      'v1/users/me/username',
+      token: accessToken,
+      body: {'username': username},
+    ),
+  );
+
+  Future<AuthSession> changePassword({
+    required String accessToken,
+    required String currentPassword,
+    required String newPassword,
+  }) async => AuthSession.fromJson(
+    await _request(
+      'v1/users/me/password',
+      token: accessToken,
+      body: {'currentPassword': currentPassword, 'newPassword': newPassword},
     ),
   );
 

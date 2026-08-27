@@ -304,6 +304,111 @@ void main() {
     expect(await client.currentRoom('access-token'), isNull);
   });
 
+  test('parses administrator presence and current room details', () async {
+    final client = GameApiClient(
+      serverBaseUri: Uri.parse('http://game.test'),
+      httpClient: MockClient((request) async {
+        expect(request.method, 'GET');
+        expect(request.url.path, '/v1/admin/users');
+        expect(request.headers['authorization'], 'Bearer admin-token');
+        return http.Response.bytes(
+          utf8.encode(
+            jsonEncode({
+              'users': [
+                {
+                  'userId': 'usr_1',
+                  'username': 'friend_1',
+                  'displayName': '好友一',
+                  'role': 'player',
+                  'status': 'active',
+                  'walletChips': 3000,
+                  'tableChips': 2000,
+                  'tableId': 'table_1',
+                  'roomCode': '654321',
+                  'online': true,
+                  'createdAt': '2026-08-24T00:00:00Z',
+                },
+              ],
+            }),
+          ),
+          200,
+        );
+      }),
+    );
+
+    final users = await client.adminUsers('admin-token');
+
+    expect(users.single.online, isTrue);
+    expect(users.single.roomCode, '654321');
+    expect(users.single.isInRoom, isTrue);
+  });
+
+  test('sends personal profile changes and receives a fresh session', () async {
+    var requestNumber = 0;
+    final client = GameApiClient(
+      serverBaseUri: Uri.parse('http://game.test'),
+      httpClient: MockClient((request) async {
+        requestNumber++;
+        expect(request.headers['authorization'], 'Bearer access-token');
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        if (requestNumber == 1) {
+          expect(request.url.path, '/v1/users/me/username');
+          expect(body, {'username': 'new_login'});
+          return http.Response.bytes(
+            utf8.encode(
+              jsonEncode({
+                'userId': 'usr_1',
+                'username': 'new_login',
+                'displayName': '好友一',
+                'role': 'player',
+                'status': 'active',
+                'createdAt': '2026-08-24T00:00:00Z',
+              }),
+            ),
+            200,
+          );
+        }
+        expect(request.url.path, '/v1/users/me/password');
+        expect(body, {
+          'currentPassword': 'password-123',
+          'newPassword': 'new-password-456',
+        });
+        return http.Response.bytes(
+          utf8.encode(
+            jsonEncode({
+              'user': {
+                'userId': 'usr_1',
+                'username': 'new_login',
+                'displayName': '好友一',
+                'role': 'player',
+                'status': 'active',
+                'createdAt': '2026-08-24T00:00:00Z',
+              },
+              'accessToken': 'fresh-access-token',
+              'refreshToken': 'fresh-refresh-token',
+              'accessExpiresAt': '2026-08-25T00:00:00Z',
+              'refreshExpiresAt': '2026-09-24T00:00:00Z',
+            }),
+          ),
+          200,
+        );
+      }),
+    );
+
+    final user = await client.updateUsername(
+      accessToken: 'access-token',
+      username: 'new_login',
+    );
+    final session = await client.changePassword(
+      accessToken: 'access-token',
+      currentPassword: 'password-123',
+      newPassword: 'new-password-456',
+    );
+
+    expect(user.username, 'new_login');
+    expect(session.accessToken, 'fresh-access-token');
+  });
+
   test('reports slow network timeouts separately from server errors', () async {
     final client = GameApiClient(
       serverBaseUri: Uri.parse('http://game.test'),
