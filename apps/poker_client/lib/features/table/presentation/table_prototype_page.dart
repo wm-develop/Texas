@@ -98,7 +98,10 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
       if (mounted) setState(() => _speakingUserIds = userIds);
     });
     _tableClock = Timer.periodic(const Duration(milliseconds: 200), (_) {
-      if (mounted && _gameSocket.snapshot?.currentAction?.deadline != null) {
+      final snapshot = _gameSocket.snapshot;
+      if (mounted &&
+          (snapshot?.currentAction?.deadline != null ||
+              snapshot?.autoReadyDeadline != null)) {
         setState(() {});
       }
     });

@@ -12,6 +12,7 @@ import (
 	"texas/services/game_server/internal/bankroll"
 	"texas/services/game_server/internal/chat"
 	"texas/services/game_server/internal/game/holdem"
+	"texas/services/game_server/internal/game/tablemanager"
 	"texas/services/game_server/internal/history"
 	"texas/services/game_server/internal/ledger"
 	"texas/services/game_server/internal/postgres"
@@ -110,6 +111,48 @@ func TestPostgresPhase3PersistenceFlow(t *testing.T) {
 	if err != nil || ownerPosition.TableChips != 1_500 {
 		t.Fatalf("Rebuy position=%#v err=%v", ownerPosition, err)
 	}
+	ledgerStore, _ := ledger.NewPostgresStore(database)
+	historyStore, _ := history.NewPostgresStore(database)
+	tables, err := tablemanager.NewWithConfig(rooms, postgresZeroRandom{}, tablemanager.ManagerConfig{
+		Now: func() time.Time { return now }, Ledger: ledgerStore,
+		History: historyStore, Bankroll: chips,
+	})
+	if err != nil {
+		t.Fatalf("table manager: %v", err)
+	}
+	if _, err := tables.Join(ctx, "owner", created.RoomID); err != nil {
+		t.Fatalf("owner table join: %v", err)
+	}
+	if _, err := tables.Join(ctx, "guest", created.RoomID); err != nil {
+		t.Fatalf("guest table join: %v", err)
+	}
+	if _, err := tables.SetReady(ctx, "owner", true); err != nil {
+		t.Fatalf("owner ready: %v", err)
+	}
+	started, err := tables.SetReady(ctx, "guest", true)
+	if err != nil || started.CurrentAction == nil {
+		t.Fatalf("guest ready snapshot=%#v err=%v", started, err)
+	}
+	actor := started.CurrentAction.UserID
+	actorSnapshot, err := tables.Snapshot(ctx, actor, created.RoomID)
+	if err != nil {
+		t.Fatalf("actor snapshot: %v", err)
+	}
+	_, folded, err := tables.SubmitAction(ctx, actor, created.RoomID, holdem.ActionRequest{
+		ActionID: "postgres-preflop-fold", HandID: actorSnapshot.HandID,
+		TableRevision: actorSnapshot.TableRevision, Action: holdem.ActionFold,
+	})
+	if err != nil {
+		t.Fatalf("preflop fold settlement: %v", err)
+	}
+	if folded.Settlement == nil || folded.Phase != holdem.PhaseWaitingNextHand {
+		t.Fatalf("preflop fold snapshot=%#v", folded)
+	}
+	if persisted, found := historyStore.Hand(folded.HandID); !found {
+		t.Fatal("preflop fold history was not persisted")
+	} else if len(persisted.Board) != 0 {
+		t.Fatalf("preflop fold board=%#v", persisted.Board)
+	}
 	if err := chips.ApplySettlement(ctx, created.RoomID, "hand-1", map[string]int64{
 		"owner": 1_200, "guest": 800,
 	}, 2_000); err != nil {
@@ -126,14 +169,12 @@ func TestPostgresPhase3PersistenceFlow(t *testing.T) {
 		t.Fatalf("guest wallet=%#v err=%v", guestWallet, err)
 	}
 
-	ledgerStore, _ := ledger.NewPostgresStore(database)
 	if err := ledgerStore.Append([]ledger.Entry{
 		{EntryID: "ledger-owner", HandID: "history-hand", PlayerID: "owner", Delta: 100, BalanceAfter: 1_200},
 		{EntryID: "ledger-guest", HandID: "history-hand", PlayerID: "guest", Delta: -100, BalanceAfter: 800},
 	}); err != nil {
 		t.Fatalf("append ledger before history: %v", err)
 	}
-	historyStore, _ := history.NewPostgresStore(database)
 	if err := historyStore.Append(history.Hand{
 		HandID: "history-hand", RoomID: created.RoomID, RoomCode: created.Code,
 		DealerSeat: 1, StartedAt: now, EndedAt: now.Add(time.Minute),
@@ -155,7 +196,7 @@ func TestPostgresPhase3PersistenceFlow(t *testing.T) {
 	} else if len(loaded.Players) != 2 || len(loaded.Actions) != 1 {
 		t.Fatalf("loaded history=%#v", loaded)
 	}
-	if recent := historyStore.RecentForPlayer("owner", 10); len(recent) != 1 || recent[0].DealerSeat != 1 || len(recent[0].Actions) != 1 {
+	if recent := historyStore.RecentForPlayer("owner", 10); len(recent) != 2 || recent[0].HandID != "history-hand" || recent[0].DealerSeat != 1 || len(recent[0].Actions) != 1 {
 		t.Fatalf("recent history=%#v", recent)
 	}
 	chatStore, _ := chat.NewPostgresStore(database)
@@ -171,3 +212,7 @@ func TestPostgresPhase3PersistenceFlow(t *testing.T) {
 		t.Fatalf("repeat chat message=%#v err=%v", saved, err)
 	}
 }
+
+type postgresZeroRandom struct{}
+
+func (postgresZeroRandom) Intn(int) (int, error) { return 0, nil }

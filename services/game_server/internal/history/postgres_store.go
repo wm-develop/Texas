@@ -26,6 +26,13 @@ func (store *PostgresStore) Append(hand Hand) error {
 	if err := validate(hand); err != nil {
 		return err
 	}
+	// database/sql sends a nil []string as SQL NULL. Preflop folds have no
+	// community cards, but hands.board_cards is intentionally NOT NULL; store
+	// an empty PostgreSQL array for that valid game state.
+	board := hand.Board
+	if board == nil {
+		board = []string{}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), postgresOperationTimeout)
 	defer cancel()
 	transaction, err := store.database.BeginTx(ctx, nil)
@@ -48,7 +55,7 @@ func (store *PostgresStore) Append(hand Hand) error {
 		 hand_id, room_id, room_code, dealer_seat, board_cards, pot_awards,
 		 revealed_hands, showdown, started_at, ended_at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		hand.HandID, hand.RoomID, hand.RoomCode, persistentDealerSeat(hand), hand.Board,
+		hand.HandID, hand.RoomID, hand.RoomCode, persistentDealerSeat(hand), board,
 		string(potAwards), string(revealedHands), hand.Showdown, hand.StartedAt, hand.EndedAt,
 	)
 	if err != nil {
@@ -56,6 +63,10 @@ func (store *PostgresStore) Append(hand Hand) error {
 		return fmt.Errorf("insert hand history: %w", err)
 	}
 	for _, player := range hand.Players {
+		holeCards := player.HoleCards
+		if holeCards == nil {
+			holeCards = []string{}
+		}
 		_, err := transaction.ExecContext(
 			ctx,
 			`INSERT INTO hand_players (
@@ -63,7 +74,7 @@ func (store *PostgresStore) Append(hand Hand) error {
 			 ending_stack, chip_delta, hole_cards
 			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 			hand.HandID, player.UserID, player.DisplayName, player.Seat,
-			player.StartingStack, player.EndingStack, player.Delta, player.HoleCards,
+			player.StartingStack, player.EndingStack, player.Delta, holeCards,
 		)
 		if err != nil {
 			_ = transaction.Rollback()
