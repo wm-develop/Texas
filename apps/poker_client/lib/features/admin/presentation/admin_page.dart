@@ -260,6 +260,8 @@ class _AdminPageState extends State<AdminPage> {
                           Icons.meeting_room_outlined,
                           '房间 ${user.roomCode}',
                         ),
+                      if (user.chatMuted)
+                        _metric(Icons.comments_disabled_outlined, '文字已禁言'),
                     ],
                   ),
                   if (user.isInRoom)
@@ -282,6 +284,7 @@ class _AdminPageState extends State<AdminPage> {
               onSelected: (value) => switch (value) {
                 'edit' => _editUser(user),
                 'password' => _resetPassword(user),
+                'chat-mute' => _changeChatMute(user),
                 'leave' => _removeFromRoom(user),
                 _ => null,
               },
@@ -299,6 +302,18 @@ class _AdminPageState extends State<AdminPage> {
                     child: ListTile(
                       leading: Icon(Icons.password),
                       title: Text('重置密码'),
+                    ),
+                  ),
+                if (selectable)
+                  PopupMenuItem(
+                    value: 'chat-mute',
+                    child: ListTile(
+                      leading: Icon(
+                        user.chatMuted
+                            ? Icons.mark_chat_read_outlined
+                            : Icons.comments_disabled_outlined,
+                      ),
+                      title: Text(user.chatMuted ? '解除文字禁言' : '禁止发送文字消息'),
                     ),
                   ),
                 if (user.isInRoom)
@@ -457,6 +472,43 @@ class _AdminPageState extends State<AdminPage> {
         password: password,
       );
       _showMessage('密码已重置，该账号需要重新登录');
+    });
+  }
+
+  Future<void> _changeChatMute(ManagedUser user) async {
+    final nextMuted = !user.chatMuted;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(
+          nextMuted ? '禁言 ${user.username}？' : '解除 ${user.username} 的禁言？',
+        ),
+        content: Text(
+          nextMuted
+              ? '禁言后，该账号仍可正常进行牌局和使用语音，但不能发送牌桌文字、快捷语或表情。'
+              : '解除后，该账号可以立即恢复发送牌桌文字、快捷语和表情。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(nextMuted ? '确认禁言' : '确认解除'),
+          ),
+        ],
+      ),
+    );
+    if (!(confirmed ?? false)) return;
+    await _run(() async {
+      await _api.adminSetChatMuted(
+        accessToken: widget.session.accessToken,
+        userId: user.userId,
+        muted: nextMuted,
+      );
+      await _load();
+      _showMessage(nextMuted ? '该账号已被禁止发送牌桌文字消息' : '该账号已解除文字禁言');
     });
   }
 

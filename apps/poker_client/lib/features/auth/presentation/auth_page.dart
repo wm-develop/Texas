@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
@@ -71,6 +73,7 @@ class _AuthPageState extends State<AuthPage> {
                                       width: 230,
                                       child: _AuthBranding(
                                         compact: true,
+                                        showRegistrationRules: _registering,
                                         onIconTap: _handleAdminTap,
                                       ),
                                     ),
@@ -88,6 +91,7 @@ class _AuthPageState extends State<AuthPage> {
                                   children: [
                                     _AuthBranding(
                                       compact: compact,
+                                      showRegistrationRules: _registering,
                                       onIconTap: _handleAdminTap,
                                     ),
                                     SizedBox(height: compact ? 12 : 24),
@@ -149,16 +153,14 @@ class _AuthPageState extends State<AuthPage> {
             '账号',
             hint: compact ? null : '3～24 位字母、数字或下划线',
           ),
-          validator: (value) =>
-              value == null || value.trim().isEmpty ? '请输入账号' : null,
+          validator: _validateUsername,
         ),
         if (_registering) ...[
           SizedBox(height: fieldGap),
           TextFormField(
             controller: _displayName,
             decoration: decoration('牌桌昵称'),
-            validator: (value) =>
-                value == null || value.trim().isEmpty ? '请输入牌桌昵称' : null,
+            validator: _validateDisplayName,
           ),
         ],
         SizedBox(height: fieldGap),
@@ -167,7 +169,7 @@ class _AuthPageState extends State<AuthPage> {
           obscureText: true,
           autofillHints: const [AutofillHints.password],
           decoration: decoration('密码'),
-          validator: (value) => value == null || value.isEmpty ? '请输入密码' : null,
+          validator: _validatePassword,
           onFieldSubmitted: (_) => _submit(),
         ),
         if (_error != null) ...[
@@ -184,6 +186,41 @@ class _AuthPageState extends State<AuthPage> {
         ),
       ],
     );
+  }
+
+  String? _validateUsername(String? value) {
+    final username = value?.trim() ?? '';
+    if (username.isEmpty) return '请输入账号';
+    if (!_registering) return null;
+    if (!RegExp(r'^[A-Za-z0-9_]+$').hasMatch(username)) {
+      return '账号只能包含英文字母、数字和下划线';
+    }
+    if (username.length < 3 || username.length > 24) {
+      return '账号长度须为 3～24 位';
+    }
+    return null;
+  }
+
+  String? _validateDisplayName(String? value) {
+    final displayName = value?.trim() ?? '';
+    if (displayName.isEmpty) return '请输入牌桌昵称';
+    final characterCount = displayName.runes.length;
+    if (characterCount > 20) return '牌桌昵称不能超过 20 个字符';
+    if (displayName.runes.any(_isControlCharacter)) {
+      return '牌桌昵称不能包含换行等控制字符';
+    }
+    return null;
+  }
+
+  String? _validatePassword(String? value) {
+    final password = value ?? '';
+    if (password.isEmpty) return '请输入密码';
+    if (!_registering) return null;
+    final byteLength = utf8.encode(password).length;
+    if (byteLength < 8 || byteLength > 128) {
+      return '密码须为 8～128 字节（英文/数字各占 1 字节）';
+    }
+    return null;
   }
 
   Future<void> _submit() async {
@@ -244,9 +281,14 @@ class _AuthPageState extends State<AuthPage> {
 }
 
 class _AuthBranding extends StatelessWidget {
-  const _AuthBranding({required this.compact, required this.onIconTap});
+  const _AuthBranding({
+    required this.compact,
+    required this.showRegistrationRules,
+    required this.onIconTap,
+  });
 
   final bool compact;
+  final bool showRegistrationRules;
   final VoidCallback onIconTap;
 
   @override
@@ -280,16 +322,81 @@ class _AuthBranding extends StatelessWidget {
           textAlign: TextAlign.center,
           style: TextStyle(color: Colors.white60),
         ),
+        if (showRegistrationRules) ...[
+          SizedBox(height: compact ? 8 : 14),
+          const Divider(height: 1),
+          SizedBox(height: compact ? 8 : 12),
+          const Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              '注册格式要求',
+              style: TextStyle(
+                color: Color(0xFFD9B85F),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          SizedBox(height: compact ? 4 : 8),
+          const _RegistrationRule(
+            label: '账号',
+            description: '3～24 位，仅限英文字母、数字和下划线',
+          ),
+          const _RegistrationRule(
+            label: '牌桌昵称',
+            description: '1～20 个字符，不能包含换行等控制字符',
+          ),
+          const _RegistrationRule(
+            label: '密码',
+            description: '8～128 字节；英文/数字各占 1 字节，中文通常占 3 字节',
+          ),
+        ],
       ],
     );
   }
 }
 
+class _RegistrationRule extends StatelessWidget {
+  const _RegistrationRule({required this.label, required this.description});
+
+  final String label;
+  final String description;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 3),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Text.rich(
+          TextSpan(
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: Colors.white60),
+            children: [
+              TextSpan(
+                text: '$label：',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              TextSpan(text: description),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+bool _isControlCharacter(int codePoint) =>
+    codePoint <= 0x1F || (codePoint >= 0x7F && codePoint <= 0x9F);
+
 String _messageFor(String code) => switch (code) {
   'invalid_credentials' => '账号或密码不正确',
   'username_taken' => '这个账号已被使用',
-  'invalid_profile' => '账号或昵称格式不符合要求',
-  'invalid_password' => '密码不符合要求',
+  'invalid_profile' => '账号须为 3～24 位英文字母、数字或下划线；牌桌昵称须为 1～20 个字符',
+  'invalid_password' => '密码须为 8～128 字节（英文/数字各占 1 字节，中文通常占 3 字节）',
   'registration_disabled' => '服务器当前已关闭新用户注册',
   'admin_already_initialized' => '服务器已经创建管理员，请使用普通注册或联系管理员',
   _ => '操作失败（$code）',

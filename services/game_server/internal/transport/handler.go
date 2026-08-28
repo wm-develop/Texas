@@ -44,7 +44,7 @@ func NewHandler(logger *slog.Logger, options Options) http.Handler {
 	registerBankrollRoutes(mux, options.Accounts, options.Bankroll)
 	registerAdminRoutes(
 		mux, options.Accounts, options.Bankroll, options.Rooms, options.Tables,
-		presence, webSockets.disconnectUsers,
+		options.Chat, presence, webSockets.disconnectUsers,
 	)
 	registerRoomRoutes(mux, options.Accounts, options.Rooms, options.Tables)
 	registerHistoryRoutes(mux, options.Accounts, options.History)

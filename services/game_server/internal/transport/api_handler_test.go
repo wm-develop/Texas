@@ -6,6 +6,7 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 
 	"texas/services/game_server/internal/account"
 	"texas/services/game_server/internal/bankroll"
+	"texas/services/game_server/internal/chat"
 	"texas/services/game_server/internal/game/tablemanager"
 	"texas/services/game_server/internal/history"
 	"texas/services/game_server/internal/room"
@@ -349,6 +351,104 @@ func TestAdministratorHTTPFlowEnforcesRolesAndRegistrationSetting(t *testing.T) 
 	blocked.Body.Close()
 	if blocked.StatusCode != http.StatusForbidden || !strings.Contains(body, "registration_disabled") {
 		t.Fatalf("blocked registration status=%d body=%s", blocked.StatusCode, body)
+	}
+}
+
+func TestAdministratorChatMuteIsVisibleAndImmediatelyEnforced(t *testing.T) {
+	accounts, _ := testApplicationServices(t)
+	chips, err := bankroll.NewService(bankroll.NewMemoryRepository(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextID := 0
+	chatService, err := chat.NewService(chat.Policy{
+		MaximumRunes: 200, MaximumPerWindow: 5, RateWindow: 10 * time.Second,
+	}, time.Now, func() string {
+		nextID++
+		return fmt.Sprintf("msg_admin_%d", nextID)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(NewHandler(testLogger(), Options{
+		Accounts: accounts, Bankroll: chips, Chat: chatService,
+	}))
+	defer server.Close()
+	administrator, err := accounts.RegisterWithOptions(
+		context.Background(), "mute_admin", "管理员", "password-123",
+		account.RegistrationOptions{RequestInitialAdmin: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	player := registerHTTPUser(t, server.URL, "muted_http", "被禁言玩家")
+
+	forbidden := doJSONRequest(
+		t, http.MethodPost,
+		server.URL+"/v1/admin/users/"+player.User.UserID+"/chat-mute",
+		player.AccessToken, map[string]any{"muted": true},
+	)
+	forbidden.Body.Close()
+	if forbidden.StatusCode != http.StatusForbidden {
+		t.Fatalf("ordinary mute status=%d", forbidden.StatusCode)
+	}
+
+	mute := doJSONRequest(
+		t, http.MethodPost,
+		server.URL+"/v1/admin/users/"+player.User.UserID+"/chat-mute",
+		administrator.AccessToken, map[string]any{"muted": true},
+	)
+	mute.Body.Close()
+	if mute.StatusCode != http.StatusOK {
+		t.Fatalf("mute status=%d", mute.StatusCode)
+	}
+	if muted, err := chatService.IsMuted(player.User.UserID); err != nil || !muted {
+		t.Fatalf("muted=%v err=%v", muted, err)
+	}
+
+	listed := doJSONRequest(
+		t, http.MethodGet, server.URL+"/v1/admin/users", administrator.AccessToken, nil,
+	)
+	var payload struct {
+		Users []managedUserResponse `json:"users"`
+	}
+	if err := json.NewDecoder(listed.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	listed.Body.Close()
+	foundMuted := false
+	for _, user := range payload.Users {
+		if user.UserID == player.User.UserID {
+			foundMuted = user.ChatMuted
+		}
+	}
+	if !foundMuted {
+		t.Fatalf("managed users did not expose chat mute: %#v", payload.Users)
+	}
+
+	_, sendErr := chatService.Send(chat.Sender{
+		UserID: player.User.UserID, DisplayName: player.User.DisplayName,
+		TableID: "table_1", CanChat: true,
+	}, chat.Request{ClientMessageID: "blocked-message", Kind: chat.KindText, Content: "hello"})
+	var chatErr chat.Error
+	if !errors.As(sendErr, &chatErr) || chatErr.Code != "chat_muted" {
+		t.Fatalf("send while muted error=%v", sendErr)
+	}
+
+	unmute := doJSONRequest(
+		t, http.MethodPost,
+		server.URL+"/v1/admin/users/"+player.User.UserID+"/chat-mute",
+		administrator.AccessToken, map[string]any{"muted": false},
+	)
+	unmute.Body.Close()
+	if unmute.StatusCode != http.StatusOK {
+		t.Fatalf("unmute status=%d", unmute.StatusCode)
+	}
+	if _, err := chatService.Send(chat.Sender{
+		UserID: player.User.UserID, DisplayName: player.User.DisplayName,
+		TableID: "table_1", CanChat: true,
+	}, chat.Request{ClientMessageID: "after-unmute", Kind: chat.KindText, Content: "hello"}); err != nil {
+		t.Fatalf("send after unmute: %v", err)
 	}
 }
 

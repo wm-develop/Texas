@@ -4,7 +4,9 @@ This directory contains ordered, reversible SQL migrations for the game server.
 `000001_phase3_core.up.sql` defines the phase 3 persistence contract.
 `000002_admin_console.up.sql` adds account roles and the singleton registration
 setting used by the administrator console. `000003_admin_account_management.up.sql`
-adds the auditable administrator wallet-adjustment ledger reason. Matching
+adds the auditable administrator wallet-adjustment ledger reason.
+`000004_chat_moderation.up.sql` adds persistent chat mute state; each change is
+committed atomically with its immutable administrator audit event. Matching
 `down` files are intended only for disposable development databases.
 
 Set `DATABASE_URL` in the repository-root `.env`, then run from

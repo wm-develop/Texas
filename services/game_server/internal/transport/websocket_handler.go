@@ -394,7 +394,6 @@ func (client *webSocketClient) sendChat(ctx context.Context, message protocol.En
 	accepted, err := client.server.chat.Send(chat.Sender{
 		UserID: client.user.UserID, DisplayName: client.user.DisplayName,
 		TableID: client.roomID, CanChat: true,
-		Muted: client.server.chat.IsMuted(client.user.UserID),
 	}, chat.Request{
 		ClientMessageID: payload.ClientMessageID, Kind: chat.Kind(payload.Kind), Content: payload.Content,
 	})

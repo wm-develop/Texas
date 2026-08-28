@@ -326,6 +326,7 @@ void main() {
                   'tableId': 'table_1',
                   'roomCode': '654321',
                   'online': true,
+                  'chatMuted': true,
                   'createdAt': '2026-08-24T00:00:00Z',
                 },
               ],
@@ -341,6 +342,28 @@ void main() {
     expect(users.single.online, isTrue);
     expect(users.single.roomCode, '654321');
     expect(users.single.isInRoom, isTrue);
+    expect(users.single.chatMuted, isTrue);
+  });
+
+  test('sends administrator chat mute changes', () async {
+    final client = GameApiClient(
+      serverBaseUri: Uri.parse('http://game.test'),
+      httpClient: MockClient((request) async {
+        expect(request.method, 'POST');
+        expect(request.url.path, '/v1/admin/users/usr_1/chat-mute');
+        expect(request.headers['authorization'], 'Bearer admin-token');
+        expect(jsonDecode(request.body), {'muted': true});
+        return http.Response(jsonEncode({'muted': true}), 200);
+      }),
+    );
+
+    final muted = await client.adminSetChatMuted(
+      accessToken: 'admin-token',
+      userId: 'usr_1',
+      muted: true,
+    );
+
+    expect(muted, isTrue);
   });
 
   test('sends personal profile changes and receives a fresh session', () async {

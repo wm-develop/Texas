@@ -2119,6 +2119,7 @@ String _gameErrorLabel(String code) => switch (code) {
   'illegal_action' => '当前不能执行这个操作',
   'invalid_amount' => '下注额度不在允许范围内',
   'rate_limited' => '消息发送太快，请稍后再试',
+  'chat_muted' => '你已被管理员禁言，暂时不能发送牌桌文字消息',
   'content_rejected' => '消息内容不符合要求',
   'authentication_required' => '登录状态已失效，请重新登录',
   'no_time_extensions' => '本手的两张加时卡已经用完',

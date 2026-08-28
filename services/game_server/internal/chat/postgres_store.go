@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -98,6 +99,72 @@ func (store *PostgresStore) History(tableID string, limit int) ([]Message, error
 		result = append(result, message)
 	}
 	return result, rows.Err()
+}
+
+func (store *PostgresStore) SetMuted(change ModerationChange) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	transaction, err := store.database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin chat moderation: %w", err)
+	}
+	defer transaction.Rollback()
+	if change.Muted {
+		_, err = transaction.ExecContext(
+			ctx,
+			`INSERT INTO chat_mutes (
+			 user_id, muted_by_user_id, muted_at, updated_at
+			) VALUES ($1, $2, $3, $3)
+			 ON CONFLICT (user_id) DO UPDATE SET
+			 muted_by_user_id = EXCLUDED.muted_by_user_id,
+			 muted_at = EXCLUDED.muted_at,
+			 updated_at = EXCLUDED.updated_at`,
+			change.TargetUserID, change.ActorUserID, change.ChangedAt,
+		)
+	} else {
+		_, err = transaction.ExecContext(
+			ctx, `DELETE FROM chat_mutes WHERE user_id = $1`, change.TargetUserID,
+		)
+	}
+	if err != nil {
+		return fmt.Errorf("persist chat mute: %w", err)
+	}
+	metadata, err := json.Marshal(map[string]any{
+		"targetUserId": change.TargetUserID,
+		"muted":        change.Muted,
+	})
+	if err != nil {
+		return fmt.Errorf("encode chat moderation audit: %w", err)
+	}
+	eventType := "admin.chat_unmuted"
+	if change.Muted {
+		eventType = "admin.chat_muted"
+	}
+	if _, err := transaction.ExecContext(
+		ctx,
+		`INSERT INTO audit_events (
+		 event_id, actor_user_id, event_type, metadata, created_at
+		) VALUES ($1, $2, $3, $4, $5)`,
+		change.AuditEventID, change.ActorUserID, eventType, metadata, change.ChangedAt,
+	); err != nil {
+		return fmt.Errorf("record chat moderation audit: %w", err)
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit chat moderation: %w", err)
+	}
+	return nil
+}
+
+func (store *PostgresStore) IsMuted(userID string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var muted bool
+	if err := store.database.QueryRowContext(
+		ctx, `SELECT EXISTS (SELECT 1 FROM chat_mutes WHERE user_id = $1)`, userID,
+	).Scan(&muted); err != nil {
+		return false, fmt.Errorf("load chat mute: %w", err)
+	}
+	return muted, nil
 }
 
 type messageScanner interface {

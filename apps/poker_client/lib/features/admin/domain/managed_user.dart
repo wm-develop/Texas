@@ -10,6 +10,7 @@ class ManagedUser {
     required this.tableId,
     required this.roomCode,
     required this.online,
+    required this.chatMuted,
     required this.createdAt,
   });
 
@@ -23,6 +24,7 @@ class ManagedUser {
   final String tableId;
   final String roomCode;
   final bool online;
+  final bool chatMuted;
   final DateTime createdAt;
 
   bool get isAdmin => role == 'admin';
@@ -40,6 +42,7 @@ class ManagedUser {
     tableId: json['tableId'] as String? ?? '',
     roomCode: json['roomCode'] as String? ?? '',
     online: json['online'] as bool? ?? false,
+    chatMuted: json['chatMuted'] as bool? ?? false,
     createdAt: DateTime.parse(json['createdAt'] as String),
   );
 }

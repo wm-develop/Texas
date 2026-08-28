@@ -67,7 +67,6 @@ type Service struct {
 	nextID IDGenerator
 	store  Store
 	recent map[string][]time.Time
-	muted  map[string]bool
 }
 
 func NewService(policy Policy, clock Clock, idGenerator IDGenerator) (*Service, error) {
@@ -91,7 +90,6 @@ func NewServiceWithStore(policy Policy, clock Clock, idGenerator IDGenerator, st
 		nextID: idGenerator,
 		store:  store,
 		recent: make(map[string][]time.Time),
-		muted:  make(map[string]bool),
 	}, nil
 }
 
@@ -110,7 +108,11 @@ func (service *Service) Send(sender Sender, request Request) (Message, error) {
 	} else if exists {
 		return previous, nil
 	}
-	if sender.Muted || service.muted[sender.UserID] {
+	muted, err := service.store.IsMuted(sender.UserID)
+	if err != nil {
+		return Message{}, err
+	}
+	if sender.Muted || muted {
 		return Message{}, Error{Code: "chat_muted"}
 	}
 
@@ -151,24 +153,31 @@ func (service *Service) Send(sender Sender, request Request) (Message, error) {
 	return service.store.Save(message)
 }
 
-func (service *Service) SetMuted(userID string, muted bool) error {
-	if strings.TrimSpace(userID) == "" {
+func (service *Service) SetMuted(actorUserID, userID string, muted bool) error {
+	actorUserID = strings.TrimSpace(actorUserID)
+	userID = strings.TrimSpace(userID)
+	if actorUserID == "" || userID == "" {
 		return Error{Code: "invalid_user"}
 	}
 	service.mu.Lock()
 	defer service.mu.Unlock()
-	if muted {
-		service.muted[userID] = true
-	} else {
-		delete(service.muted, userID)
+	auditEventID := service.nextID()
+	if auditEventID == "" {
+		return errors.New("chat moderation id generator returned empty id")
 	}
-	return nil
+	return service.store.SetMuted(ModerationChange{
+		AuditEventID: moderationAuditID(auditEventID),
+		ActorUserID:  actorUserID,
+		TargetUserID: userID,
+		Muted:        muted,
+		ChangedAt:    service.now(),
+	})
 }
 
-func (service *Service) IsMuted(userID string) bool {
+func (service *Service) IsMuted(userID string) (bool, error) {
 	service.mu.Lock()
 	defer service.mu.Unlock()
-	return service.muted[userID]
+	return service.store.IsMuted(strings.TrimSpace(userID))
 }
 
 func (service *Service) History(tableID string, limit int) []Message {
@@ -214,4 +223,9 @@ func ShouldDeliver(senderUserID string, recipientUserID string, blockedByRecipie
 	}
 	_, blocked := blockedByRecipient[senderUserID]
 	return !blocked
+}
+
+func moderationAuditID(value string) string {
+	value = strings.TrimPrefix(value, "msg_")
+	return "aud_chat_" + value
 }

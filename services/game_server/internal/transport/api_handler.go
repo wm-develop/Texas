@@ -11,6 +11,7 @@ import (
 
 	"texas/services/game_server/internal/account"
 	"texas/services/game_server/internal/bankroll"
+	"texas/services/game_server/internal/chat"
 	"texas/services/game_server/internal/game/tablemanager"
 	"texas/services/game_server/internal/history"
 	"texas/services/game_server/internal/room"
@@ -172,6 +173,7 @@ type managedUserResponse struct {
 	TableID     string         `json:"tableId,omitempty"`
 	RoomCode    string         `json:"roomCode,omitempty"`
 	Online      bool           `json:"online"`
+	ChatMuted   bool           `json:"chatMuted"`
 	CreatedAt   time.Time      `json:"createdAt"`
 }
 
@@ -181,6 +183,7 @@ func registerAdminRoutes(
 	chips *bankroll.Service,
 	rooms *room.Service,
 	tables *tablemanager.Manager,
+	chatService *chat.Service,
 	presence *presenceTracker,
 	disconnectUsers func(roomID string, userIDs []string),
 ) {
@@ -212,15 +215,60 @@ func registerAdminRoutes(
 					roomCode = current.Code
 				}
 			}
+			chatMuted := false
+			if chatService != nil {
+				chatMuted, err = chatService.IsMuted(user.UserID)
+				if err != nil {
+					writeJSONError(writer, http.StatusInternalServerError, "internal_error")
+					return
+				}
+			}
 			managed = append(managed, managedUserResponse{
 				UserID: user.UserID, Username: user.Username, DisplayName: user.DisplayName,
 				Role: user.Role, Status: user.Status, CreatedAt: user.CreatedAt,
 				WalletChips: snapshot.WalletChips, TableChips: snapshot.TableChips,
 				TableID: snapshot.TableID, RoomCode: roomCode,
-				Online: presence.online(user.UserID),
+				Online: presence.online(user.UserID), ChatMuted: chatMuted,
 			})
 		}
 		writeJSON(writer, http.StatusOK, map[string]any{"users": managed})
+	})
+
+	mux.HandleFunc("POST /v1/admin/users/{userID}/chat-mute", func(writer http.ResponseWriter, request *http.Request) {
+		actor, ok := authenticateRequest(writer, request, accounts)
+		if !ok {
+			return
+		}
+		if err := accounts.AuthorizeAdmin(actor); err != nil {
+			writeAccountError(writer, err)
+			return
+		}
+		if chatService == nil {
+			writeJSONError(writer, http.StatusServiceUnavailable, "service_unavailable")
+			return
+		}
+		target, err := accounts.ManagedUser(
+			request.Context(), actor, request.PathValue("userID"),
+		)
+		if err != nil {
+			writeAccountError(writer, err)
+			return
+		}
+		if target.Role == account.RoleAdmin {
+			writeJSONError(writer, http.StatusForbidden, "protected_account")
+			return
+		}
+		var body struct {
+			Muted bool `json:"muted"`
+		}
+		if !decodeJSONBody(writer, request, &body) {
+			return
+		}
+		if err := chatService.SetMuted(actor.UserID, target.UserID, body.Muted); err != nil {
+			writeJSONError(writer, http.StatusInternalServerError, "internal_error")
+			return
+		}
+		writeJSON(writer, http.StatusOK, map[string]bool{"muted": body.Muted})
 	})
 
 	mux.HandleFunc("POST /v1/admin/users", func(writer http.ResponseWriter, request *http.Request) {

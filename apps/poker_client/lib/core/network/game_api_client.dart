@@ -120,6 +120,18 @@ class GameApiClient {
     );
   }
 
+  Future<bool> adminSetChatMuted({
+    required String accessToken,
+    required String userId,
+    required bool muted,
+  }) async =>
+      (await _request(
+            'v1/admin/users/$userId/chat-mute',
+            token: accessToken,
+            body: {'muted': muted},
+          ))['muted']
+          as bool;
+
   Future<AppUser> adminUpdateUsername({
     required String accessToken,
     required String userId,

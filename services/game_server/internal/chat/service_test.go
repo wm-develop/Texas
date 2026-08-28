@@ -97,16 +97,35 @@ func TestShouldDeliverHonorsRecipientBlock(t *testing.T) {
 func TestServerMuteStateIsEnforcedUntilCleared(t *testing.T) {
 	now := time.Unix(100, 0)
 	nextID := 0
-	service := mustService(t, &now, &nextID)
-	if err := service.SetMuted("user_1", true); err != nil {
+	store := NewMemoryStore(50)
+	service, err := NewServiceWithStore(Policy{
+		MaximumRunes: 8, MaximumPerWindow: 3, RateWindow: 10 * time.Second,
+	}, func() time.Time { return now }, func() string {
+		nextID++
+		return fmt.Sprintf("message_%d", nextID)
+	}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SetMuted("admin_1", "user_1", true); err != nil {
 		t.Fatalf("SetMuted: %v", err)
 	}
-	_, err := service.Send(Sender{UserID: "user_1", TableID: "table_1", CanChat: true}, Request{
+	if muted, err := service.IsMuted("user_1"); err != nil || !muted {
+		t.Fatalf("IsMuted=%v err=%v", muted, err)
+	}
+	_, err = service.Send(Sender{UserID: "user_1", TableID: "table_1", CanChat: true}, Request{
 		ClientMessageID: "muted-by-service", Kind: KindText, Content: "hello",
 	})
 	assertChatCode(t, err, "chat_muted")
-	if err := service.SetMuted("user_1", false); err != nil {
+	if err := service.SetMuted("admin_1", "user_1", false); err != nil {
 		t.Fatalf("clear mute: %v", err)
+	}
+	if muted, err := service.IsMuted("user_1"); err != nil || muted {
+		t.Fatalf("IsMuted after clear=%v err=%v", muted, err)
+	}
+	if len(store.changes) != 2 || !store.changes[0].Muted || store.changes[1].Muted ||
+		store.changes[0].ActorUserID != "admin_1" {
+		t.Fatalf("moderation changes=%#v", store.changes)
 	}
 	if _, err := service.Send(Sender{UserID: "user_1", TableID: "table_1", CanChat: true}, Request{
 		ClientMessageID: "unmuted", Kind: KindText, Content: "hello",
