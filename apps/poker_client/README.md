@@ -29,3 +29,5 @@ flutter test
 - Web 使用仓库内 `web/vendor/trtc/trtc-5.19.1.js`，不依赖运行时 CDN。
 - HarmonyOS 根目录 `build-profile.json5` 含本机签名信息，已被 Git 忽略。
 - 所有平台默认横屏运行。
+
+Web、Windows、Android 和 HarmonyOS 的生产构建命令、产物路径与发布注意事项见[生产环境更新手册](../../docs/PRODUCTION_UPDATE_GUIDE.md)。

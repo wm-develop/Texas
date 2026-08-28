@@ -37,6 +37,7 @@
 - [阶段 2.1：牌桌可玩性补全](docs/PHASE_2_1_TABLE_PLAYABILITY.md)
 - [阶段 2 验收记录](docs/PHASE_2_ACCEPTANCE.md)
 - [阶段 3：上线准备计划](docs/PHASE_3_PLAN.md)
+- [生产环境更新手册](docs/PRODUCTION_UPDATE_GUIDE.md)
 - [德州扑克规则规格 v1](docs/TEXAS_HOLDEM_RULES_V1.md)
 - [WebSocket 协议 v1](docs/WEBSOCKET_PROTOCOL_V1.md)
 - [语音 RTC 决策记录](docs/decisions/ADR-001-VOICE-RTC.md)

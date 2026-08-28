@@ -74,6 +74,8 @@ docker compose -f .\deploy\docker-compose.dev.yml up -d
 
 服务镜像定义位于 `services/game_server/Dockerfile`。Redis 当前仅作为下一步多实例路由的开发依赖，尚未接入游戏运行时。
 
+香港生产环境的数据库迁移、服务容器更新、应用回滚和 Web 静态文件发布步骤见[生产环境更新手册](../../docs/PRODUCTION_UPDATE_GUIDE.md)。
+
 ## 当前限制
 
-默认配置仍使用内存仓储。PostgreSQL 运行时已经接通，但本机没有可用的 PostgreSQL/Docker 服务，所以带 `TEST_DATABASE_URL` 的真实数据库集成用例尚未执行。完成该验收后，再按 [上线准备计划](../../docs/PHASE_3_PLAN.md) 接入 Redis 租约、多实例恢复、备份和管理治理。
+默认配置仍使用内存仓储，生产环境已经接通 PostgreSQL 并完成真实数据库集成验收。Redis 当前尚未接入游戏运行时；后续按[上线准备计划](../../docs/PHASE_3_PLAN.md)继续实现租约、多实例恢复、自动备份和运行保障。
