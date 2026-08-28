@@ -391,6 +391,23 @@ void main() {
             200,
           );
         }
+        if (requestNumber == 2) {
+          expect(request.url.path, '/v1/users/me/display-name');
+          expect(body, {'displayName': '新的昵称'});
+          return http.Response.bytes(
+            utf8.encode(
+              jsonEncode({
+                'userId': 'usr_1',
+                'username': 'new_login',
+                'displayName': '新的昵称',
+                'role': 'player',
+                'status': 'active',
+                'createdAt': '2026-08-24T00:00:00Z',
+              }),
+            ),
+            200,
+          );
+        }
         expect(request.url.path, '/v1/users/me/password');
         expect(body, {
           'currentPassword': 'password-123',
@@ -422,6 +439,10 @@ void main() {
       accessToken: 'access-token',
       username: 'new_login',
     );
+    final renamed = await client.updateDisplayName(
+      accessToken: 'access-token',
+      displayName: '新的昵称',
+    );
     final session = await client.changePassword(
       accessToken: 'access-token',
       currentPassword: 'password-123',
@@ -429,7 +450,48 @@ void main() {
     );
 
     expect(user.username, 'new_login');
+    expect(renamed.displayName, '新的昵称');
     expect(session.accessToken, 'fresh-access-token');
+  });
+
+  test('rotates and revokes authentication sessions', () async {
+    var requestNumber = 0;
+    final client = GameApiClient(
+      serverBaseUri: Uri.parse('http://game.test'),
+      httpClient: MockClient((request) async {
+        requestNumber++;
+        if (requestNumber == 1) {
+          expect(request.url.path, '/v1/auth/refresh');
+          expect(request.headers.containsKey('authorization'), isFalse);
+          expect(jsonDecode(request.body), {'refreshToken': 'old-refresh'});
+          return http.Response.bytes(
+            utf8.encode(
+              jsonEncode({
+                'user': {
+                  'userId': 'usr_1',
+                  'username': 'friend_1',
+                  'displayName': '好友一',
+                },
+                'accessToken': 'new-access',
+                'refreshToken': 'new-refresh',
+                'accessExpiresAt': '2030-01-01T00:15:00Z',
+                'refreshExpiresAt': '2030-02-01T00:00:00Z',
+              }),
+            ),
+            200,
+          );
+        }
+        expect(request.url.path, '/v1/auth/logout');
+        expect(request.headers['authorization'], 'Bearer new-access');
+        return http.Response('', 204);
+      }),
+    );
+
+    final refreshed = await client.refresh('old-refresh');
+    await client.logout(refreshed.accessToken);
+
+    expect(refreshed.refreshToken, 'new-refresh');
+    expect(requestNumber, 2);
   });
 
   test('reports slow network timeouts separately from server errors', () async {

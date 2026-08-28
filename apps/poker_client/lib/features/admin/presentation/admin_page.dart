@@ -1,14 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
 import 'package:poker_client/features/admin/domain/managed_user.dart';
 
 class AdminPage extends StatefulWidget {
-  const AdminPage({required this.session, super.key});
+  const AdminPage({required this.accessTokenProvider, super.key});
 
-  final AuthSession session;
+  final Future<String> Function({bool forceRefresh}) accessTokenProvider;
 
   @override
   State<AdminPage> createState() => _AdminPageState();
@@ -373,10 +372,12 @@ class _AdminPageState extends State<AdminPage> {
       });
     }
     try {
-      final results = await Future.wait([
-        _api.adminUsers(widget.session.accessToken),
-        _api.adminRegistrationEnabled(widget.session.accessToken),
-      ]);
+      final results = await _withAccessToken(
+        (token) => Future.wait([
+          _api.adminUsers(token),
+          _api.adminRegistrationEnabled(token),
+        ]),
+      );
       if (!mounted) return;
       setState(() {
         _users = results[0] as List<ManagedUser>;
@@ -394,9 +395,11 @@ class _AdminPageState extends State<AdminPage> {
 
   Future<void> _setRegistrationEnabled(bool enabled) async {
     await _run(() async {
-      final value = await _api.adminSetRegistrationEnabled(
-        accessToken: widget.session.accessToken,
-        enabled: enabled,
+      final value = await _withAccessToken(
+        (token) => _api.adminSetRegistrationEnabled(
+          accessToken: token,
+          enabled: enabled,
+        ),
       );
       if (mounted) setState(() => _registrationEnabled = value);
     });
@@ -405,10 +408,12 @@ class _AdminPageState extends State<AdminPage> {
   Future<void> _changeStatus(String status) async {
     final ids = _selected.toList(growable: false);
     await _run(() async {
-      await _api.adminSetUserStatus(
-        accessToken: widget.session.accessToken,
-        userIds: ids,
-        status: status,
+      await _withAccessToken(
+        (token) => _api.adminSetUserStatus(
+          accessToken: token,
+          userIds: ids,
+          status: status,
+        ),
       );
       _selected.clear();
       await _load();
@@ -466,10 +471,12 @@ class _AdminPageState extends State<AdminPage> {
     );
     if (password == null) return;
     await _run(() async {
-      await _api.adminResetPassword(
-        accessToken: widget.session.accessToken,
-        userId: user.userId,
-        password: password,
+      await _withAccessToken(
+        (token) => _api.adminResetPassword(
+          accessToken: token,
+          userId: user.userId,
+          password: password,
+        ),
       );
       _showMessage('密码已重置，该账号需要重新登录');
     });
@@ -502,10 +509,12 @@ class _AdminPageState extends State<AdminPage> {
     );
     if (!(confirmed ?? false)) return;
     await _run(() async {
-      await _api.adminSetChatMuted(
-        accessToken: widget.session.accessToken,
-        userId: user.userId,
-        muted: nextMuted,
+      await _withAccessToken(
+        (token) => _api.adminSetChatMuted(
+          accessToken: token,
+          userId: user.userId,
+          muted: nextMuted,
+        ),
       );
       await _load();
       _showMessage(nextMuted ? '该账号已被禁止发送牌桌文字消息' : '该账号已解除文字禁言');
@@ -575,18 +584,22 @@ class _AdminPageState extends State<AdminPage> {
     }
     await _run(() async {
       if (!user.isAdmin && values[0] != user.username) {
-        await _api.adminUpdateUsername(
-          accessToken: widget.session.accessToken,
-          userId: user.userId,
-          username: values[0],
+        await _withAccessToken(
+          (token) => _api.adminUpdateUsername(
+            accessToken: token,
+            userId: user.userId,
+            username: values[0],
+          ),
         );
       }
       if (!user.isInRoom && walletChips != user.walletChips) {
-        await _api.adminSetWallet(
-          accessToken: widget.session.accessToken,
-          userId: user.userId,
-          chips: walletChips!,
-          requestId: 'admin-wallet-${DateTime.now().microsecondsSinceEpoch}',
+        await _withAccessToken(
+          (token) => _api.adminSetWallet(
+            accessToken: token,
+            userId: user.userId,
+            chips: walletChips!,
+            requestId: 'admin-wallet-${DateTime.now().microsecondsSinceEpoch}',
+          ),
         );
       }
       await _load();
@@ -617,9 +630,8 @@ class _AdminPageState extends State<AdminPage> {
     );
     if (!(confirmed ?? false)) return;
     await _run(() async {
-      final closed = await _api.adminLeaveRoom(
-        accessToken: widget.session.accessToken,
-        userId: user.userId,
+      final closed = await _withAccessToken(
+        (token) => _api.adminLeaveRoom(accessToken: token, userId: user.userId),
       );
       await _load();
       _showMessage(closed ? '玩家已被请出，房间已无成员并关闭' : '玩家已被请出房间');
@@ -673,11 +685,13 @@ class _AdminPageState extends State<AdminPage> {
         if (fields.length != 3) {
           throw const FormatException('每行必须包含用户名、昵称和密码三项');
         }
-        await _api.adminCreateUser(
-          accessToken: widget.session.accessToken,
-          username: fields[0].trim(),
-          displayName: fields[1].trim(),
-          password: fields[2].trim(),
+        await _withAccessToken(
+          (token) => _api.adminCreateUser(
+            accessToken: token,
+            username: fields[0].trim(),
+            displayName: fields[1].trim(),
+            password: fields[2].trim(),
+          ),
         );
         created++;
       }
@@ -698,6 +712,19 @@ class _AdminPageState extends State<AdminPage> {
       if (mounted) setState(() => _error = _message(error));
     } finally {
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<T> _withAccessToken<T>(
+    Future<T> Function(String accessToken) operation,
+  ) async {
+    var token = await widget.accessTokenProvider();
+    try {
+      return await operation(token);
+    } on GameApiException catch (error) {
+      if (error.statusCode != 401) rethrow;
+      token = await widget.accessTokenProvider(forceRefresh: true);
+      return operation(token);
     }
   }
 

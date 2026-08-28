@@ -23,7 +23,9 @@ class LobbyPage extends StatefulWidget {
     required this.onLoadBankrollEntries,
     required this.onPreviewRoom,
     required this.onUpdateUsername,
+    required this.onUpdateDisplayName,
     required this.onChangePassword,
+    required this.accessTokenProvider,
     required this.settings,
     required this.onLogout,
     super.key,
@@ -39,8 +41,10 @@ class LobbyPage extends StatefulWidget {
   final Future<List<BankrollEntry>> Function() onLoadBankrollEntries;
   final Future<RoomPreview> Function(String code) onPreviewRoom;
   final Future<AppUser> Function(String username) onUpdateUsername;
+  final Future<AppUser> Function(String displayName) onUpdateDisplayName;
   final Future<AuthSession> Function(String currentPassword, String newPassword)
   onChangePassword;
+  final Future<String> Function({bool forceRefresh}) accessTokenProvider;
   final AppSettingsController settings;
   final VoidCallback onLogout;
 
@@ -191,7 +195,10 @@ class _LobbyPageState extends State<LobbyPage> {
   }
 
   Future<void> _openAdmin() => Navigator.of(context).push(
-    MaterialPageRoute<void>(builder: (_) => AdminPage(session: widget.session)),
+    MaterialPageRoute<void>(
+      builder: (_) =>
+          AdminPage(accessTokenProvider: widget.accessTokenProvider),
+    ),
   );
 
   Future<void> _openProfile() => Navigator.of(context).push(
@@ -199,6 +206,7 @@ class _LobbyPageState extends State<LobbyPage> {
       builder: (_) => ProfilePage(
         session: widget.session,
         onUpdateUsername: widget.onUpdateUsername,
+        onUpdateDisplayName: widget.onUpdateDisplayName,
         onChangePassword: widget.onChangePassword,
       ),
     ),

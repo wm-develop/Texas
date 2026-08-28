@@ -8,31 +8,54 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
-	Port           string
-	StorageBackend string
-	DatabaseURL    string
-	AutoMigrate    bool
-	AllowedOrigins []string
-	TRTCSDKAppID   int
-	TRTCSecretKey  string
-	TRTCDebugToken string
-	TRTCExpire     int
+	Port            string
+	StorageBackend  string
+	DatabaseURL     string
+	AutoMigrate     bool
+	AllowedOrigins  []string
+	AccessTokenTTL  time.Duration
+	RefreshTokenTTL time.Duration
+	TRTCSDKAppID    int
+	TRTCSecretKey   string
+	TRTCDebugToken  string
+	TRTCExpire      int
 }
 
 func Load() (Config, error) {
 	loadLocalEnvironment()
 
 	config := Config{
-		Port:           valueOrDefault("PORT", "8080"),
-		StorageBackend: strings.ToLower(valueOrDefault("STORAGE_BACKEND", "memory")),
-		DatabaseURL:    strings.TrimSpace(os.Getenv("DATABASE_URL")),
-		TRTCSecretKey:  strings.TrimSpace(os.Getenv("TRTC_SECRET_KEY")),
-		TRTCDebugToken: strings.TrimSpace(os.Getenv("TRTC_DEBUG_TOKEN")),
-		TRTCExpire:     3600,
+		Port:            valueOrDefault("PORT", "8080"),
+		StorageBackend:  strings.ToLower(valueOrDefault("STORAGE_BACKEND", "memory")),
+		DatabaseURL:     strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		TRTCSecretKey:   strings.TrimSpace(os.Getenv("TRTC_SECRET_KEY")),
+		TRTCDebugToken:  strings.TrimSpace(os.Getenv("TRTC_DEBUG_TOKEN")),
+		TRTCExpire:      3600,
+		AccessTokenTTL:  15 * time.Minute,
+		RefreshTokenTTL: 30 * 24 * time.Hour,
 	}
+	accessTTL, err := durationFromSeconds(
+		"AUTH_ACCESS_TOKEN_TTL_SECONDS", config.AccessTokenTTL, 60, 24*time.Hour,
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	refreshTTL, err := durationFromSeconds(
+		"AUTH_REFRESH_TOKEN_TTL_SECONDS", config.RefreshTokenTTL,
+		60*time.Minute, 365*24*time.Hour,
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	if refreshTTL <= accessTTL {
+		return Config{}, errors.New("AUTH_REFRESH_TOKEN_TTL_SECONDS must be greater than AUTH_ACCESS_TOKEN_TTL_SECONDS")
+	}
+	config.AccessTokenTTL = accessTTL
+	config.RefreshTokenTTL = refreshTTL
 	if origins := strings.TrimSpace(os.Getenv("ALLOWED_ORIGINS")); origins != "" {
 		for _, origin := range strings.Split(origins, ",") {
 			if origin = strings.TrimSuffix(strings.TrimSpace(origin), "/"); origin != "" {
@@ -153,4 +176,29 @@ func valueOrDefault(key string, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func durationFromSeconds(
+	key string,
+	fallback time.Duration,
+	minimum time.Duration,
+	maximum time.Duration,
+) (time.Duration, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	seconds, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer number of seconds", key)
+	}
+	minimumSeconds := int64(minimum / time.Second)
+	maximumSeconds := int64(maximum / time.Second)
+	if seconds < minimumSeconds || seconds > maximumSeconds {
+		return 0, fmt.Errorf(
+			"%s must be between %d and %d seconds",
+			key, minimumSeconds, maximumSeconds,
+		)
+	}
+	return time.Duration(seconds) * time.Second, nil
 }

@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLoadTRTCConfiguration(t *testing.T) {
 	t.Setenv("PORT", "9090")
@@ -67,5 +70,30 @@ func TestLoadRejectsPunctuatedAllowedOrigin(t *testing.T) {
 	t.Setenv("ALLOWED_ORIGINS", "https://poker.example.com，")
 	if _, err := Load(); err == nil {
 		t.Fatal("Load should reject an origin with Chinese punctuation")
+	}
+}
+
+func TestLoadAuthenticationTokenTTLs(t *testing.T) {
+	t.Setenv("TRTC_SDK_APP_ID", "")
+	t.Setenv("TRTC_SECRET_KEY", "")
+	t.Setenv("AUTH_ACCESS_TOKEN_TTL_SECONDS", "600")
+	t.Setenv("AUTH_REFRESH_TOKEN_TTL_SECONDS", "7200")
+
+	config, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if config.AccessTokenTTL != 10*time.Minute || config.RefreshTokenTTL != 2*time.Hour {
+		t.Fatalf("token TTLs access=%s refresh=%s", config.AccessTokenTTL, config.RefreshTokenTTL)
+	}
+}
+
+func TestLoadRejectsInvalidAuthenticationTokenTTLs(t *testing.T) {
+	t.Setenv("TRTC_SDK_APP_ID", "")
+	t.Setenv("TRTC_SECRET_KEY", "")
+	t.Setenv("AUTH_ACCESS_TOKEN_TTL_SECONDS", "3600")
+	t.Setenv("AUTH_REFRESH_TOKEN_TTL_SECONDS", "3600")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load should reject a refresh TTL that is not longer than the access TTL")
 	}
 }

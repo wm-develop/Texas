@@ -138,6 +138,26 @@ func (repository *PostgresRepository) UpdateUsername(
 	return nil
 }
 
+func (repository *PostgresRepository) UpdateDisplayName(
+	ctx context.Context,
+	userID, displayName string,
+	now time.Time,
+) error {
+	result, err := repository.database.ExecContext(
+		ctx,
+		`UPDATE users SET display_name = $2, updated_at = $3
+         WHERE user_id = $1 AND status <> 'deleted'`,
+		userID, displayName, now,
+	)
+	if err != nil {
+		return fmt.Errorf("update display name: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (repository *PostgresRepository) UpdatePassword(ctx context.Context, userID, passwordHash string, now time.Time) error {
 	transaction, err := repository.database.BeginTx(ctx, nil)
 	if err != nil {

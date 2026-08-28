@@ -157,7 +157,7 @@ func TestInitialAdministratorControlsRegistrationAndAccounts(t *testing.T) {
 	}
 }
 
-func TestUserCanChangeOwnUsernameAndPassword(t *testing.T) {
+func TestUserCanChangeOwnUsernameDisplayNameAndPassword(t *testing.T) {
 	now := time.Unix(3_000, 0)
 	service := mustAccountService(t, &now)
 	ctx := context.Background()
@@ -175,6 +175,13 @@ func TestUserCanChangeOwnUsernameAndPassword(t *testing.T) {
 	}
 	if _, err := service.Login(ctx, "new_login", "password-123"); err != nil {
 		t.Fatalf("new username login: %v", err)
+	}
+	updated, err = service.UpdateOwnDisplayName(ctx, updated, "新的牌桌昵称")
+	if err != nil || updated.DisplayName != "新的牌桌昵称" {
+		t.Fatalf("UpdateOwnDisplayName user=%#v err=%v", updated, err)
+	}
+	if _, err := service.UpdateOwnDisplayName(ctx, updated, ""); accountErrorCode(err) != "invalid_profile" {
+		t.Fatalf("invalid display name error=%v", err)
 	}
 
 	if _, err := service.ChangeOwnPassword(

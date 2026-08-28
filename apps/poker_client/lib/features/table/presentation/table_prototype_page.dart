@@ -25,6 +25,7 @@ class TablePrototypePage extends StatefulWidget {
     required this.settings,
     required this.onLeave,
     required this.onRemoved,
+    required this.accessTokenProvider,
     required this.loadBankroll,
     super.key,
   });
@@ -34,6 +35,7 @@ class TablePrototypePage extends StatefulWidget {
   final AppSettingsController settings;
   final Future<void> Function() onLeave;
   final Future<void> Function() onRemoved;
+  final Future<String> Function({bool forceRefresh}) accessTokenProvider;
   final Future<BankrollSnapshot> Function() loadBankroll;
 
   @override
@@ -75,7 +77,7 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
   void initState() {
     super.initState();
     _gameSocket = GameSocketClient(
-      accessToken: widget.session.accessToken,
+      accessTokenProvider: widget.accessTokenProvider,
       roomId: widget.room.roomId,
       userId: widget.session.user.userId,
     )..addListener(_refresh);
@@ -259,7 +261,10 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
   }
 
   Future<void> _openAdmin() => Navigator.of(context).push(
-    MaterialPageRoute<void>(builder: (_) => AdminPage(session: widget.session)),
+    MaterialPageRoute<void>(
+      builder: (_) =>
+          AdminPage(accessTokenProvider: widget.accessTokenProvider),
+    ),
   );
 
   Future<void> _setVoiceJoined(bool value) async {
@@ -267,10 +272,11 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
     setState(() => _voiceOperationInProgress = true);
     try {
       if (value) {
+        final accessToken = await widget.accessTokenProvider();
         final credentials = await _trtcCredentials.issue(
           userId: widget.session.user.userId,
           roomId: widget.room.roomId,
-          accessToken: widget.session.accessToken,
+          accessToken: accessToken,
         );
         await _voiceChat.joinTableChannel(
           sdkAppId: credentials.sdkAppId,

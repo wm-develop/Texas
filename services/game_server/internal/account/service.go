@@ -211,6 +211,41 @@ func (service *Service) UpdateOwnUsername(
 	return service.updateUsername(ctx, actor, actor.UserID, username, "user.username_changed")
 }
 
+func (service *Service) UpdateOwnDisplayName(
+	ctx context.Context,
+	actor User,
+	displayName string,
+) (User, error) {
+	displayName = strings.TrimSpace(displayName)
+	if !validDisplayName(displayName) {
+		return User{}, Error{Code: "invalid_profile"}
+	}
+	previous, err := service.repository.UserByID(ctx, actor.UserID)
+	if err != nil {
+		return User{}, Error{Code: "user_not_found"}
+	}
+	if err := service.repository.UpdateDisplayName(
+		ctx, actor.UserID, displayName, service.config.Now(),
+	); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return User{}, Error{Code: "user_not_found"}
+		}
+		return User{}, err
+	}
+	updated, err := service.repository.UserByID(ctx, actor.UserID)
+	if err != nil {
+		return User{}, err
+	}
+	if err := service.recordAudit(ctx, actor.UserID, "user.display_name_changed", map[string]any{
+		"targetUserId":   actor.UserID,
+		"oldDisplayName": previous.DisplayName,
+		"newDisplayName": updated.DisplayName,
+	}); err != nil {
+		return User{}, err
+	}
+	return updated, nil
+}
+
 func (service *Service) UpdateManagedUsername(
 	ctx context.Context,
 	actor User,

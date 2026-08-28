@@ -76,6 +76,12 @@ func TestPostgresRepositoryPersistsUsersWalletsAndRotatedSessions(t *testing.T) 
 	}); err == nil {
 		t.Fatal("case-insensitive duplicate username was accepted")
 	}
+	if err := repository.UpdateDisplayName(ctx, user.UserID, "新昵称", now.Add(time.Minute)); err != nil {
+		t.Fatalf("UpdateDisplayName: %v", err)
+	}
+	if updated, err := repository.UserByID(ctx, user.UserID); err != nil || updated.DisplayName != "新昵称" {
+		t.Fatalf("updated display name user=%#v err=%v", updated, err)
+	}
 
 	first := Session{
 		SessionID: "ses_1", UserID: user.UserID,

@@ -6,12 +6,14 @@ class ProfilePage extends StatefulWidget {
   const ProfilePage({
     required this.session,
     required this.onUpdateUsername,
+    required this.onUpdateDisplayName,
     required this.onChangePassword,
     super.key,
   });
 
   final AuthSession session;
   final Future<AppUser> Function(String username) onUpdateUsername;
+  final Future<AppUser> Function(String displayName) onUpdateDisplayName;
   final Future<AuthSession> Function(String currentPassword, String newPassword)
   onChangePassword;
 
@@ -69,6 +71,12 @@ class _ProfilePageState extends State<ProfilePage> {
                       ),
                       const SizedBox(height: 10),
                       OutlinedButton.icon(
+                        onPressed: _busy ? null : _editDisplayName,
+                        icon: const Icon(Icons.badge_outlined),
+                        label: const Text('修改牌桌昵称'),
+                      ),
+                      const SizedBox(height: 10),
+                      OutlinedButton.icon(
                         onPressed: _busy ? null : _changePassword,
                         icon: const Icon(Icons.password_outlined),
                         label: const Text('修改密码'),
@@ -82,6 +90,43 @@ class _ProfilePageState extends State<ProfilePage> {
         ),
       ),
     );
+  }
+
+  Future<void> _editDisplayName() async {
+    var value = _user.displayName;
+    final displayName = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('修改牌桌昵称'),
+        content: TextFormField(
+          initialValue: value,
+          onChanged: (next) => value = next,
+          autofocus: true,
+          maxLength: 20,
+          decoration: const InputDecoration(
+            labelText: '新牌桌昵称',
+            helperText: '1～20 个字符，不能包含控制字符',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, value.trim()),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (displayName == null || displayName == _user.displayName) return;
+    await _run(() async {
+      final updated = await widget.onUpdateDisplayName(displayName);
+      if (mounted) setState(() => _user = updated);
+      _showMessage('牌桌昵称已修改');
+    });
   }
 
   Widget _line(String label, String value) => Padding(
@@ -224,7 +269,7 @@ class _ProfilePageState extends State<ProfilePage> {
     if (error is GameApiException) {
       return switch (error.code) {
         'username_taken' => '用户名已经存在',
-        'invalid_profile' => '用户名格式不正确',
+        'invalid_profile' => '用户名或牌桌昵称格式不正确',
         'invalid_current_password' => '当前密码不正确',
         'invalid_password' => '新密码必须为 8～128 位',
         'authentication_required' => '登录状态已失效，请重新登录',

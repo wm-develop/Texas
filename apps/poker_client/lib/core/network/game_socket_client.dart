@@ -18,7 +18,7 @@ enum GameSocketStatus {
 
 class GameSocketClient extends ChangeNotifier {
   GameSocketClient({
-    required this.accessToken,
+    required this.accessTokenProvider,
     required this.roomId,
     required this.userId,
     String? serverUrl,
@@ -31,7 +31,7 @@ class GameSocketClient extends ChangeNotifier {
            );
 
   final String serverUrl;
-  final String accessToken;
+  final Future<String> Function({bool forceRefresh}) accessTokenProvider;
   final String roomId;
   final String userId;
   final Duration connectTimeout;
@@ -53,6 +53,7 @@ class GameSocketClient extends ChangeNotifier {
   int? _pendingRevision;
   final TableSequenceTracker _sequences = TableSequenceTracker();
   bool _recoveringSequenceGap = false;
+  bool _forceRefreshOnNextConnect = false;
   int _requestCounter = 0;
   DateTime _lastServerMessageAt = DateTime.now();
 
@@ -80,6 +81,10 @@ class GameSocketClient extends ChangeNotifier {
     _errorMessage = null;
     WebSocketChannel? pendingChannel;
     try {
+      final accessToken = await accessTokenProvider(
+        forceRefresh: _forceRefreshOnNextConnect,
+      );
+      _forceRefreshOnNextConnect = false;
       pendingChannel = WebSocketChannel.connect(Uri.parse(serverUrl));
       await pendingChannel.ready.timeout(connectTimeout);
       final channel = pendingChannel;
@@ -291,6 +296,11 @@ class GameSocketClient extends ChangeNotifier {
         case 'table.rebuy.rejected':
           if (payload is Map<String, dynamic>) {
             _errorMessage = payload['code'] as String? ?? type;
+            if (type == 'system.error' &&
+                _errorMessage == 'authentication_required') {
+              _forceRefreshOnNextConnect = true;
+              unawaited(_channel?.sink.close());
+            }
             if (type == 'table.action.rejected') {
               _actionPending = false;
               _pendingRevision = null;

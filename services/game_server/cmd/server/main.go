@@ -101,7 +101,9 @@ func main() {
 	accountService, err := account.NewService(
 		accountRepository,
 		passwordHasher,
-		account.ServiceConfig{AccessTTL: 24 * time.Hour, RefreshTTL: 30 * 24 * time.Hour},
+		account.ServiceConfig{
+			AccessTTL: appConfig.AccessTokenTTL, RefreshTTL: appConfig.RefreshTokenTTL,
+		},
 	)
 	if err != nil {
 		logger.Error("account service initialization failed", "error", err)

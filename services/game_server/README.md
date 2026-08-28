@@ -14,6 +14,8 @@ go run .\cmd\server
 
 默认监听 `:8080`。健康检查为 `GET /healthz`，WebSocket 入口为 `/ws`。
 
+访问令牌默认有效 15 分钟，客户端会在到期前通过轮换式 Refresh Token 自动更新。可使用 `AUTH_ACCESS_TOKEN_TTL_SECONDS` 和 `AUTH_REFRESH_TOKEN_TTL_SECONDS` 调整，两者默认分别为 `900` 和 `2592000` 秒，且 Refresh Token 有效期必须更长。
+
 ## PostgreSQL 迁移
 
 设置根目录 `.env` 中的 `DATABASE_URL` 后，在本目录执行：
@@ -44,7 +46,7 @@ DATABASE_AUTO_MIGRATE=false
 - 管理员可查看账号在线状态与当前房间号、修改登录用户名和钱包筹码，并将玩家请出房间。房间内禁止直接调整筹码；正在进行的一手牌必须先结算。
 - 管理员可禁言或解除禁言普通账号；禁言只影响牌桌文字、快捷语和表情，不影响牌局与语音。状态持久化到 PostgreSQL，对已连接的牌桌立即生效，并与操作审计在同一事务提交。
 - 在线状态由客户端每 30 秒发送一次已认证心跳，90 秒无心跳后显示离线；管理页面每 15 秒静默刷新一次。当前为单实例内存状态，后续多实例部署时迁移至 Redis。
-- 已登录用户可修改自己的登录用户名和密码；修改密码会撤销旧会话并向当前客户端签发新会话。
+- 已登录用户可修改自己的登录用户名、牌桌昵称和密码；修改密码会撤销旧会话并向当前客户端签发新会话。
 
 `ALLOWED_ORIGINS` 使用逗号分隔完整的 Web 来源（例如 `https://poker.example.com`），同时控制 REST CORS 和 WebSocket Origin 校验；不要填写路径、中文标点或通配符。
 

@@ -167,7 +167,13 @@ class _LobbyHarnessState extends State<_LobbyHarness> {
       onPreviewRoom: (_) => Future.error(UnimplementedError()),
       onUpdateUsername: (username) async =>
           AppUser(userId: 'user_1', username: username, displayName: '好友一'),
+      onUpdateDisplayName: (displayName) async => AppUser(
+        userId: 'user_1',
+        username: 'friend_1',
+        displayName: displayName,
+      ),
       onChangePassword: (_, _) => Future.error(UnimplementedError()),
+      accessTokenProvider: ({bool forceRefresh = false}) async => 'access',
       settings: _settings,
       onLogout: () {},
     );

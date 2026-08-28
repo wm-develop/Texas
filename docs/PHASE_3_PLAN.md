@@ -58,7 +58,7 @@
 
 ### 3.4 会话、安全与配置
 
-- [ ] Access Token 缩短有效期，Refresh Token 可轮换、撤销和注销。
+- [x] Access Token 缩短为可配置的短期凭证，客户端在 REST、WebSocket 重连和 RTC 鉴权前自动轮换 Refresh Token；支持会话撤销和注销。
 - [ ] 登录、注册、建房、入房、WebSocket、聊天和 TRTC 凭证分别限流。
 - [ ] 配置允许来源、请求体上限、连接上限和可信代理规则。
 - [ ] 生产环境强制 HTTPS/WSS，设置安全响应头并隐藏内部错误。

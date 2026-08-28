@@ -138,6 +138,28 @@ func registerAccountRoutes(
 		writeJSON(writer, http.StatusOK, updated)
 	})
 
+	mux.HandleFunc("POST /v1/users/me/display-name", func(writer http.ResponseWriter, request *http.Request) {
+		user, ok := authenticateRequest(writer, request, accounts)
+		if !ok {
+			return
+		}
+		var body struct {
+			DisplayName string `json:"displayName"`
+		}
+		if !decodeJSONBody(writer, request, &body) {
+			return
+		}
+		updated, err := accounts.UpdateOwnDisplayName(
+			request.Context(), user, body.DisplayName,
+		)
+		if err != nil {
+			writeAccountError(writer, err)
+			return
+		}
+		presence.touch(user.UserID)
+		writeJSON(writer, http.StatusOK, updated)
+	})
+
 	mux.HandleFunc("POST /v1/users/me/password", func(writer http.ResponseWriter, request *http.Request) {
 		user, ok := authenticateRequest(writer, request, accounts)
 		if !ok {

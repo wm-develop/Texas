@@ -197,6 +197,20 @@ class GameApiClient {
     ),
   );
 
+  Future<AuthSession> refresh(String refreshToken) async =>
+      AuthSession.fromJson(
+        await _request('v1/auth/refresh', body: {'refreshToken': refreshToken}),
+      );
+
+  Future<void> logout(String accessToken) async {
+    await _request(
+      'v1/auth/logout',
+      token: accessToken,
+      body: const {},
+      expectedStatus: 204,
+    );
+  }
+
   Future<void> heartbeat(String accessToken) async {
     await _request(
       'v1/users/me/heartbeat',
@@ -214,6 +228,17 @@ class GameApiClient {
       'v1/users/me/username',
       token: accessToken,
       body: {'username': username},
+    ),
+  );
+
+  Future<AppUser> updateDisplayName({
+    required String accessToken,
+    required String displayName,
+  }) async => AppUser.fromJson(
+    await _request(
+      'v1/users/me/display-name',
+      token: accessToken,
+      body: {'displayName': displayName},
     ),
   );
 

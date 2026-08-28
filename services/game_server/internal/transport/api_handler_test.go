@@ -452,7 +452,7 @@ func TestAdministratorChatMuteIsVisibleAndImmediatelyEnforced(t *testing.T) {
 	}
 }
 
-func TestPersonalProfileHTTPFlowChangesUsernameAndPassword(t *testing.T) {
+func TestPersonalProfileHTTPFlowChangesUsernameDisplayNameAndPassword(t *testing.T) {
 	accounts, _ := testApplicationServices(t)
 	server := httptest.NewServer(NewHandler(testLogger(), Options{Accounts: accounts}))
 	defer server.Close()
@@ -466,6 +466,22 @@ func TestPersonalProfileHTTPFlowChangesUsernameAndPassword(t *testing.T) {
 		t.Fatalf("rename status=%d body=%s", rename.StatusCode, readBody(rename))
 	}
 	rename.Body.Close()
+
+	nickname := doJSONRequest(
+		t, http.MethodPost, server.URL+"/v1/users/me/display-name", player.AccessToken,
+		map[string]any{"displayName": "新的牌桌昵称"},
+	)
+	if nickname.StatusCode != http.StatusOK {
+		t.Fatalf("display name status=%d body=%s", nickname.StatusCode, readBody(nickname))
+	}
+	var renamed account.User
+	if err := json.NewDecoder(nickname.Body).Decode(&renamed); err != nil {
+		t.Fatal(err)
+	}
+	nickname.Body.Close()
+	if renamed.DisplayName != "新的牌桌昵称" {
+		t.Fatalf("display name=%q", renamed.DisplayName)
+	}
 
 	wrong := doJSONRequest(
 		t, http.MethodPost, server.URL+"/v1/users/me/password", player.AccessToken,

@@ -4,7 +4,7 @@ import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/features/profile/presentation/profile_page.dart';
 
 void main() {
-  testWidgets('updates login username and password from personal profile', (
+  testWidgets('updates login username, table nickname and password', (
     tester,
   ) async {
     const user = AppUser(
@@ -31,6 +31,11 @@ void main() {
             username: username,
             displayName: user.displayName,
           ),
+          onUpdateDisplayName: (displayName) async => AppUser(
+            userId: user.userId,
+            username: 'new_login',
+            displayName: displayName,
+          ),
           onChangePassword: (currentPassword, newPassword) async {
             changedCurrentPassword = currentPassword;
             changedNewPassword = newPassword;
@@ -46,6 +51,13 @@ void main() {
     await tester.tap(find.text('保存'));
     await tester.pumpAndSettle();
     expect(find.text('new_login'), findsOneWidget);
+
+    await tester.tap(find.text('修改牌桌昵称'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextFormField), '新的昵称');
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    expect(find.text('新的昵称'), findsOneWidget);
 
     await tester.tap(find.text('修改密码'));
     await tester.pumpAndSettle();

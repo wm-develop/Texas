@@ -321,9 +321,13 @@ C:\Programming\Texas\apps\poker_client\build\ohos\hap\entry-default-signed.hap
 STORAGE_BACKEND=postgres
 DATABASE_AUTO_MIGRATE=false
 ALLOWED_ORIGINS=https://web.example.com
+AUTH_ACCESS_TOKEN_TTL_SECONDS=900
+AUTH_REFRESH_TOKEN_TTL_SECONDS=2592000
 ```
 
 `ALLOWED_ORIGINS` 必须使用英文逗号分隔完整来源，不能带路径、中文标点或末尾多余逗号。修改环境文件后必须重新创建游戏服务容器，单纯 `docker restart` 不会让容器重新读取修改后的 `--env-file`。
+
+启用 15 分钟短期访问令牌前，应先把带自动刷新功能的新客户端分发到 Web、Windows、Android 和 HarmonyOS。仍在使用旧客户端时，可以临时将 `AUTH_ACCESS_TOKEN_TTL_SECONDS` 设为 `86400`；确认客户端全部更新后再改为 `900` 并重新创建服务容器。
 
 域名未变化时，无需修改宝塔反向代理、WebSocket 配置、DNS 或 HTTPS 证书。
 
