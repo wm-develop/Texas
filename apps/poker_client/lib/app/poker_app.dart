@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
+import 'package:poker_client/core/platform/system_ui_policy.dart';
 import 'package:poker_client/core/settings/app_settings.dart';
 import 'package:poker_client/features/auth/presentation/auth_page.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_entry.dart';
@@ -32,23 +33,26 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    unawaited(_enableImmersiveMode());
-    unawaited(
-      SystemChrome.setSystemUIChangeCallback((systemBarsVisible) async {
-        if (!systemBarsVisible) return;
-        // Android temporarily prevents UI changes after the keyboard closes.
-        // Reapply after that guard interval so the whole app stays immersive.
-        await Future<void>.delayed(const Duration(milliseconds: 1100));
-        if (mounted) await _enableImmersiveMode();
-      }),
-    );
+    if (shouldUseCurrentPlatformDartSystemUi) {
+      unawaited(_enableImmersiveMode());
+      unawaited(
+        SystemChrome.setSystemUIChangeCallback((systemBarsVisible) async {
+          if (!systemBarsVisible) return;
+          // Android temporarily prevents UI changes after the keyboard closes.
+          // Reapply after that guard interval so the whole app stays immersive.
+          await Future<void>.delayed(const Duration(milliseconds: 1100));
+          if (mounted) await _enableImmersiveMode();
+        }),
+      );
+    }
     _api = GameApiClient();
     _settings = AppSettingsController()..load();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    if (state == AppLifecycleState.resumed &&
+        shouldUseCurrentPlatformDartSystemUi) {
       unawaited(_enableImmersiveMode());
     }
   }
@@ -56,7 +60,9 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    unawaited(SystemChrome.setSystemUIChangeCallback(null));
+    if (shouldUseCurrentPlatformDartSystemUi) {
+      unawaited(SystemChrome.setSystemUIChangeCallback(null));
+    }
     _presenceTimer?.cancel();
     _api.close();
     _settings.dispose();
