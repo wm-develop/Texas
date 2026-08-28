@@ -45,6 +45,7 @@ type runtime struct {
 	handStartedAt            time.Time
 	persistedHandID          string
 	actions                  []history.Action
+	lastAction               *ConfirmedActionSnapshot
 }
 
 const (
@@ -99,28 +100,37 @@ type ActionSnapshot struct {
 	Suggestions []BetSuggestion      `json:"suggestions"`
 }
 
+type ConfirmedActionSnapshot struct {
+	ActionID      string            `json:"actionId"`
+	HandID        string            `json:"handId"`
+	UserID        string            `json:"userId"`
+	Action        holdem.ActionType `json:"action"`
+	TableRevision uint64            `json:"tableRevision"`
+}
+
 type Snapshot struct {
-	RoomID             string                `json:"roomId"`
-	RoomCode           string                `json:"roomCode"`
-	OwnerUserID        string                `json:"ownerUserId"`
-	RoomRevision       uint64                `json:"roomRevision"`
-	TableRevision      uint64                `json:"tableRevision"`
-	Phase              holdem.Phase          `json:"phase"`
-	HandID             string                `json:"handId,omitempty"`
-	DealerSeat         int                   `json:"dealerSeat,omitempty"`
-	SmallBlindSeat     int                   `json:"smallBlindSeat,omitempty"`
-	BigBlindSeat       int                   `json:"bigBlindSeat,omitempty"`
-	Board              []string              `json:"board"`
-	HoleCards          []string              `json:"holeCards,omitempty"`
-	Seats              []SeatSnapshot        `json:"seats"`
-	CurrentAction      *ActionSnapshot       `json:"currentAction,omitempty"`
-	TotalPot           int64                 `json:"totalPot"`
-	Settlement         *holdem.Settlement    `json:"settlement,omitempty"`
-	VoluntaryReveals   []holdem.RevealedHand `json:"voluntaryReveals,omitempty"`
-	CanShowHoleCards   bool                  `json:"canShowHoleCards"`
-	AutoReadyDeadline  int64                 `json:"autoReadyDeadline,omitempty"`
-	AutoReadyCancelled bool                  `json:"autoReadyCancelled"`
-	MaxBuyIn           int64                 `json:"maxBuyIn"`
+	RoomID             string                   `json:"roomId"`
+	RoomCode           string                   `json:"roomCode"`
+	OwnerUserID        string                   `json:"ownerUserId"`
+	RoomRevision       uint64                   `json:"roomRevision"`
+	TableRevision      uint64                   `json:"tableRevision"`
+	Phase              holdem.Phase             `json:"phase"`
+	HandID             string                   `json:"handId,omitempty"`
+	DealerSeat         int                      `json:"dealerSeat,omitempty"`
+	SmallBlindSeat     int                      `json:"smallBlindSeat,omitempty"`
+	BigBlindSeat       int                      `json:"bigBlindSeat,omitempty"`
+	Board              []string                 `json:"board"`
+	HoleCards          []string                 `json:"holeCards,omitempty"`
+	Seats              []SeatSnapshot           `json:"seats"`
+	CurrentAction      *ActionSnapshot          `json:"currentAction,omitempty"`
+	LastAction         *ConfirmedActionSnapshot `json:"lastAction,omitempty"`
+	TotalPot           int64                    `json:"totalPot"`
+	Settlement         *holdem.Settlement       `json:"settlement,omitempty"`
+	VoluntaryReveals   []holdem.RevealedHand    `json:"voluntaryReveals,omitempty"`
+	CanShowHoleCards   bool                     `json:"canShowHoleCards"`
+	AutoReadyDeadline  int64                    `json:"autoReadyDeadline,omitempty"`
+	AutoReadyCancelled bool                     `json:"autoReadyCancelled"`
+	MaxBuyIn           int64                    `json:"maxBuyIn"`
 }
 
 func New(rooms *room.Service, random holdem.IntnSource) (*Manager, error) {
@@ -230,6 +240,7 @@ func (manager *Manager) SetReady(ctx context.Context, userID string, ready bool)
 		runtime.voluntarilyRevealedHands = make(map[string]holdem.RevealedHand)
 		runtime.handStartedAt = manager.now()
 		runtime.actions = nil
+		runtime.lastAction = nil
 		runtime.persistedHandID = ""
 		if err := runtime.engine.StartHand(manager.random); err != nil {
 			return Snapshot{}, err
@@ -285,6 +296,10 @@ func (manager *Manager) SubmitAction(
 			Street: strings.ToLower(string(street)), Type: string(result.Action),
 			Committed: result.Committed, RaiseTo: request.RaiseTo, CreatedAt: manager.now(),
 		})
+		runtime.lastAction = &ConfirmedActionSnapshot{
+			ActionID: result.ActionID, HandID: request.HandID, UserID: userID,
+			Action: result.Action, TableRevision: result.Revision,
+		}
 	}
 	if result.HandEnded {
 		if err := manager.persistSettlementLocked(runtime, roomValue); err != nil {
@@ -632,6 +647,10 @@ func (manager *Manager) handleTimeout(roomID string, generation uint64) {
 				Street: strings.ToLower(string(street)), Type: string(result.Action), Committed: result.Committed,
 				CreatedAt: manager.now(),
 			})
+			runtime.lastAction = &ConfirmedActionSnapshot{
+				ActionID: result.ActionID, HandID: runtime.engine.HandID(), UserID: actorUserID,
+				Action: result.Action, TableRevision: result.Revision,
+			}
 		}
 		if err == nil && result.HandEnded {
 			err = manager.persistSettlementLocked(runtime, roomValue)
@@ -773,6 +792,10 @@ func snapshotForRuntime(runtime *runtime, roomValue room.Room, recipientUserID s
 		return Snapshot{}, err
 	}
 	result.OwnerUserID = roomValue.OwnerUserID
+	if runtime.lastAction != nil {
+		lastAction := *runtime.lastAction
+		result.LastAction = &lastAction
+	}
 	result.CanShowHoleCards = canVoluntarilyReveal(runtime.engine, recipientUserID) &&
 		runtime.voluntarilyRevealedHands[recipientUserID].PlayerID == ""
 	if !runtime.autoReadyDeadline.IsZero() {

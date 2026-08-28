@@ -55,6 +55,13 @@ void main() {
             {'label': 'all_in', 'action': 'all_in', 'raiseTo': 2000},
           ],
         },
+        'lastAction': {
+          'actionId': 'raise_1',
+          'handId': 'hand_1',
+          'userId': 'user_1',
+          'action': 'raise',
+          'tableRevision': 11,
+        },
         'totalPot': 400,
         'maxBuyIn': 5000,
         'canShowHoleCards': true,
@@ -100,6 +107,9 @@ void main() {
       expect(snapshot.seats.single.timeExtensions, 2);
       expect(snapshot.currentAction!.options.minRaiseTo, 120);
       expect(snapshot.currentAction!.suggestions.last.label, 'all_in');
+      expect(snapshot.lastAction!.actionId, 'raise_1');
+      expect(snapshot.lastAction!.action, 'raise');
+      expect(snapshot.lastAction!.tableRevision, 11);
       expect(snapshot.settlement!.revealedHands.single.category, 'straight');
       expect(snapshot.settlement!.potAwards.single.payouts.single.amount, 400);
     },

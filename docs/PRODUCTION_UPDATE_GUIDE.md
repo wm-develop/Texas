@@ -178,8 +178,11 @@ Web、Windows、Android 和 HarmonyOS 共用同一套 Dart 代码及生产服务
 
 ```powershell
 cd C:\Programming\Texas\apps\poker_client
+$env:GIT_LFS_SKIP_SMUDGE = '1'
 & 'C:\Programming\env\flutter_flutter\bin\flutter.bat' pub get
 ```
+
+`GIT_LFS_SKIP_SMUDGE` 只跳过 HarmonyOS 音频插件仓库中与应用构建无关的示例工程大文件；实际插件源码和四个平台实现仍会完整下载。新电脑首次解析依赖时必须保留这一行，后续构建也可以一直保留。
 
 生产构建统一使用：
 

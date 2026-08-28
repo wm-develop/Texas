@@ -193,6 +193,7 @@
 - 座位、玩家公开资料、筹码、连接和准备状态。
 - 当前 `handId`、公共牌、各玩家本轮投入和本手总投入。
 - 主池、边池、当前行动座位、截止时间和合法动作。
+- 最近一次已确认动作 `lastAction`，包含 `actionId`、`handId`、`userId`、`action` 和动作后的 `tableRevision`；客户端用它驱动一次性音效等反馈，不以未确认的本地点击代替。
 - 仅对接收者可见的本人底牌。
 - 已主动公开的底牌 `voluntaryReveals`，以及当前接收者的 `canShowHoleCards` 权限。
 - 两手之间的 `autoReadyDeadline` 和当前接收者的 `autoReadyCancelled` 状态。

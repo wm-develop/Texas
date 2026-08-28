@@ -13,6 +13,8 @@ import 'package:poker_client/core/settings/settings_dialog.dart';
 import 'package:poker_client/features/admin/presentation/admin_page.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
+import 'package:poker_client/features/table/audio/table_action_sound_tracker.dart';
+import 'package:poker_client/features/table/audio/table_sound_effects.dart';
 import 'package:poker_client/features/table/domain/table_seat.dart';
 import 'package:poker_client/features/table/domain/table_snapshot.dart';
 import 'package:poker_client/features/table/presentation/responsive_action_strip.dart';
@@ -62,8 +64,8 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
   Timer? _tableClock;
   String? _lastShownGameError;
   GameSocketStatus? _lastGameSocketStatus;
-  String? _lastActionSoundUserId;
-  String? _lastSettlementSoundHandId;
+  final TableActionSoundTracker _actionSoundTracker = TableActionSoundTracker();
+  final TableSoundEffects _tableSoundEffects = TableSoundEffects();
   bool _autoJoinAttempted = false;
   bool _rebuyDialogOpen = false;
   String? _autoRebuyHandId;
@@ -119,6 +121,7 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
     unawaited(_voiceStateSubscription.cancel());
     unawaited(_speakingSubscription.cancel());
     unawaited(_voiceChat.dispose());
+    unawaited(_tableSoundEffects.dispose());
     _tableClock?.cancel();
     _trtcCredentials.close();
     widget.settings.removeListener(_settingsChanged);
@@ -409,21 +412,9 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
   }
 
   void _playTableSounds() {
-    final snapshot = _gameSocket.snapshot;
-    final actor = snapshot?.currentAction?.userId;
-    if (actor != _lastActionSoundUserId) {
-      _lastActionSoundUserId = actor;
-      if (widget.settings.soundEnabled && actor == widget.session.user.userId) {
-        unawaited(SystemSound.play(SystemSoundType.alert));
-      }
-    }
-    final settlementHand = snapshot?.settlement?.handId;
-    if (settlementHand != null &&
-        settlementHand != _lastSettlementSoundHandId) {
-      _lastSettlementSoundHandId = settlementHand;
-      if (widget.settings.soundEnabled) {
-        unawaited(SystemSound.play(SystemSoundType.click));
-      }
+    final actionEffect = _actionSoundTracker.observe(_gameSocket.snapshot);
+    if (widget.settings.soundEnabled && actionEffect != null) {
+      unawaited(_tableSoundEffects.play(actionEffect));
     }
   }
 

@@ -86,6 +86,31 @@ class CurrentTableAction {
       );
 }
 
+class ConfirmedTableAction {
+  const ConfirmedTableAction({
+    required this.actionId,
+    required this.handId,
+    required this.userId,
+    required this.action,
+    required this.tableRevision,
+  });
+
+  final String actionId;
+  final String handId;
+  final String userId;
+  final String action;
+  final int tableRevision;
+
+  factory ConfirmedTableAction.fromJson(Map<String, dynamic> json) =>
+      ConfirmedTableAction(
+        actionId: json['actionId'] as String,
+        handId: json['handId'] as String,
+        userId: json['userId'] as String,
+        action: json['action'] as String,
+        tableRevision: json['tableRevision'] as int,
+      );
+}
+
 class TableSeatSnapshot {
   const TableSeatSnapshot({
     required this.userId,
@@ -235,6 +260,7 @@ class TableSnapshot {
     required this.holeCards,
     required this.seats,
     required this.currentAction,
+    required this.lastAction,
     required this.totalPot,
     required this.maxBuyIn,
     required this.settlement,
@@ -255,6 +281,7 @@ class TableSnapshot {
   final List<String> holeCards;
   final List<TableSeatSnapshot> seats;
   final CurrentTableAction? currentAction;
+  final ConfirmedTableAction? lastAction;
   final int totalPot;
   final int maxBuyIn;
   final TableSettlement? settlement;
@@ -283,6 +310,11 @@ class TableSnapshot {
         ? null
         : CurrentTableAction.fromJson(
             json['currentAction'] as Map<String, dynamic>,
+          ),
+    lastAction: json['lastAction'] == null
+        ? null
+        : ConfirmedTableAction.fromJson(
+            json['lastAction'] as Map<String, dynamic>,
           ),
     totalPot: json['totalPot'] as int? ?? 0,
     maxBuyIn: json['maxBuyIn'] as int? ?? 0,

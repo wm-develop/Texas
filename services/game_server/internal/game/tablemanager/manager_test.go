@@ -100,6 +100,12 @@ func TestManagerStartsRealHandAndProducesPrivateSnapshots(t *testing.T) {
 	if !result.HandEnded || settled.Phase != holdem.PhaseWaitingNextHand || settled.Settlement == nil {
 		t.Fatalf("result=%#v snapshot=%#v", result, settled)
 	}
+	if settled.LastAction == nil || settled.LastAction.ActionID != "fold_1" ||
+		settled.LastAction.HandID != settled.HandID || settled.LastAction.UserID != actor ||
+		settled.LastAction.Action != holdem.ActionFold ||
+		settled.LastAction.TableRevision != result.Revision {
+		t.Fatalf("confirmed last action=%#v result=%#v", settled.LastAction, result)
+	}
 	for _, seat := range settled.Seats {
 		if seat.Ready {
 			t.Fatalf("ready was not reset after settlement: %#v", settled.Seats)

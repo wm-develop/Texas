@@ -38,6 +38,11 @@ dependencies:
   # 13.x currently requires a newer Android Gradle/Kotlin toolchain than this
   # Flutter OH branch; 12.0.3 uses the current embedding and builds with AGP 8.
   permission_handler: 12.0.3
+  audioplayers:
+    git:
+      url: https://gitcode.com/CPF-Flutter/flutter_audioplayers.git
+      ref: b853cdafdef1549be31b478a954f6d8b36d314e6
+      path: packages/audioplayers
   permission_handler_ohos:
     git:
       url: https://gitcode.com/openharmony-sig/flutter_permission_handler.git
