@@ -79,3 +79,6 @@ apps/poker_client/ohos/build-profile.json5
 services/game_server/game_server.exe
 services/game_server/*.test
 services/game_server/*.prof
+
+# docs
+docs/PRODUCTION_UPDATE_GUIDE_local.md

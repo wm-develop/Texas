@@ -15,6 +15,7 @@ import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
 import 'package:poker_client/features/table/audio/table_action_sound_tracker.dart';
 import 'package:poker_client/features/table/audio/table_sound_effects.dart';
+import 'package:poker_client/features/table/domain/hand_category_label.dart';
 import 'package:poker_client/features/table/domain/table_seat.dart';
 import 'package:poker_client/features/table/domain/table_snapshot.dart';
 import 'package:poker_client/features/table/presentation/responsive_action_strip.dart';
@@ -55,6 +56,7 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
   bool _voiceOperationInProgress = false;
   Set<String> _speakingUserIds = const {};
   final Set<String> _blockedUserIds = {};
+  final Set<String> _mutedVoiceUserIds = {};
   bool _chatVisible = true;
   bool _compactChatOpen = false;
   int _observedChatRevision = 0;
@@ -176,7 +178,8 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
                           top: 18,
                           child: _RoomHeader(
                             room: widget.room,
-                            currentPlayers: _gameSocket.snapshot?.seats.length ??
+                            currentPlayers:
+                                _gameSocket.snapshot?.seats.length ??
                                 widget.room.members.length,
                             onLeave: _leaveTable,
                             onSettings: () => showAppSettingsDialog(
@@ -204,12 +207,17 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
                             connectionState: _voiceState,
                             microphoneEnabled: _microphoneEnabled,
                             operationInProgress: _voiceOperationInProgress,
-                            speakingCount: _speakingUserIds.length,
+                            speakingCount: _speakingUserIds
+                                .difference(_mutedVoiceUserIds)
+                                .length,
                             members: _gameSocket.voiceMembers,
                             speakingUserIds: _speakingUserIds,
-                            userId: widget.session.user.displayName,
+                            mutedUserIds: _mutedVoiceUserIds,
+                            currentUserId: widget.session.user.userId,
+                            displayName: widget.session.user.displayName,
                             onJoinChanged: _setVoiceJoined,
                             onMicrophoneChanged: _setMicrophoneEnabled,
+                            onUserMuted: _setVoiceUserMuted,
                           ),
                         ),
                         Positioned.fromRect(
@@ -250,7 +258,11 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
                                   : _showCompactChat,
                               icon: Badge(
                                 isLabelVisible: _unreadChatCount > 0,
-                                label: Text(_unreadChatCount > 99 ? '99+' : '$_unreadChatCount'),
+                                label: Text(
+                                  _unreadChatCount > 99
+                                      ? '99+'
+                                      : '$_unreadChatCount',
+                                ),
                                 child: const Icon(Icons.chat_bubble_outline),
                               ),
                               label: Text(
@@ -279,6 +291,20 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
                             userId: widget.session.user.userId,
                             smallBlind: widget.room.rules.smallBlind,
                             onRebuy: _showRebuyDialog,
+                          ),
+                        ),
+                        Positioned.fromRect(
+                          rect: Rect.fromLTRB(
+                            viewport.tableRect.left + 210,
+                            viewport.tableRect.top + 105,
+                            viewport.tableRect.right - 210,
+                            viewport.tableRect.bottom - 105,
+                          ),
+                          child: IgnorePointer(
+                            child: _BoardCenter(
+                              snapshot: _gameSocket.snapshot,
+                              actionRemaining: _actionRemaining,
+                            ),
                           ),
                         ),
                       ],
@@ -318,7 +344,7 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
           userSig: credentials.userSig,
         );
         await _voiceChat.setPlaybackVolume(widget.settings.voiceVolume);
-        for (final userId in _blockedUserIds) {
+        for (final userId in {..._blockedUserIds, ..._mutedVoiceUserIds}) {
           await _voiceChat.setRemoteUserMuted(userId, true);
         }
         _gameSocket.setVoiceState(
@@ -398,7 +424,30 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
     });
     if (!_voiceJoined) return;
     try {
-      await _voiceChat.setRemoteUserMuted(userId, blocked);
+      await _voiceChat.setRemoteUserMuted(
+        userId,
+        blocked || _mutedVoiceUserIds.contains(userId),
+      );
+    } on Object catch (error) {
+      _showVoiceError(error);
+    }
+  }
+
+  Future<void> _setVoiceUserMuted(String userId, bool muted) async {
+    if (userId == widget.session.user.userId) return;
+    setState(() {
+      if (muted) {
+        _mutedVoiceUserIds.add(userId);
+      } else {
+        _mutedVoiceUserIds.remove(userId);
+      }
+    });
+    if (!_voiceJoined) return;
+    try {
+      await _voiceChat.setRemoteUserMuted(
+        userId,
+        muted || _blockedUserIds.contains(userId),
+      );
     } on Object catch (error) {
       _showVoiceError(error);
     }
@@ -448,7 +497,8 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
     final message = _gameSocket.latestChatEvent;
     if (message == null || message.userId == widget.session.user.userId) return;
     final size = MediaQuery.sizeOf(context);
-    final sideChatVisible = _chatVisible &&
+    final sideChatVisible =
+        _chatVisible &&
         TableViewportLayout.fromSize(size, chatVisible: true).supportsSideChat;
     if (!_compactChatOpen && !sideChatVisible) _unreadChatCount++;
   }
@@ -565,16 +615,21 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
 
   Future<void> _handleSeatTap(TableSeat seat) async {
     final snapshot = _gameSocket.snapshot;
-    if (snapshot == null || seat.isCurrentUser) return;
+    if (snapshot == null) return;
     final waiting =
         snapshot.phase == 'WAITING' || snapshot.phase == 'WAITING_NEXT_HAND';
     if (waiting) {
       final full = snapshot.seats.length >= 10;
-      if (!seat.isEmpty && !full) {
-        _showTableHint('还有空座位，请直接点击想换到的空位');
+      if (seat.isCurrentUser && !full) {
+        await _showEmptySeatPicker(snapshot, seat.number);
         return;
       }
-      if (!seat.isEmpty && full) {
+      if (seat.isCurrentUser) return;
+      if (!full) {
+        _showTableHint('牌桌未坐满时，请点击自己的玩家框选择空座位');
+        return;
+      }
+      if (full) {
         final confirmed = await _confirmTableAction(
           '申请换位',
           '向 ${seat.displayName} 发出交换座位申请？',
@@ -582,13 +637,8 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
         if (confirmed) _gameSocket.requestSeatChange(seat.number);
         return;
       }
-      final confirmed = await _confirmTableAction(
-        '更换座位',
-        '立即换到 ${seat.number} 号空位？',
-      );
-      if (confirmed) _gameSocket.requestSeatChange(seat.number);
-      return;
     }
+    if (seat.isCurrentUser) return;
     final ownSeat = snapshot.seats
         .where((value) => value.userId == widget.session.user.userId)
         .firstOrNull;
@@ -601,6 +651,43 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
       '向 ${seat.displayName} 申请提前查看他的手牌？只有对方同意后你才能看到。',
     );
     if (confirmed) _gameSocket.requestHoleCardsView(seat.userId);
+  }
+
+  Future<void> _showEmptySeatPicker(
+    TableSnapshot snapshot,
+    int currentSeat,
+  ) async {
+    final occupied = snapshot.seats.map((seat) => seat.seat).toSet();
+    final available = [
+      for (var number = 1; number <= 10; number++)
+        if (!occupied.contains(number)) number,
+    ];
+    if (available.isEmpty) return;
+    final selected = await showDialog<int>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('选择空座位'),
+        content: Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final number in available)
+              OutlinedButton(
+                onPressed: () => Navigator.of(context).pop(number),
+                child: Text('$number 号位'),
+              ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+        ],
+      ),
+    );
+    if (selected == null || selected == currentSeat) return;
+    _gameSocket.requestSeatChange(selected);
   }
 
   Future<void> _handleAvatarTap(TableSeat seat) async {
@@ -756,60 +843,48 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
 
   List<TableSeat> get _tableSeats {
     final snapshot = _gameSocket.snapshot;
-    final bySeat = {
-      for (final seat in snapshot?.seats ?? const <TableSeatSnapshot>[])
-        seat.seat: seat,
-    };
-    final highestOccupiedSeat = bySeat.keys.fold(0, math.max);
-    final occupied = bySeat.length;
-    final visibleSeatCount = math.max(
-      2,
-      math.min(10, math.max(highestOccupiedSeat, occupied < 10 ? occupied + 1 : 10)),
-    );
-    return List.generate(visibleSeatCount, (index) {
-      final seatNumber = index + 1;
-      final value = bySeat[seatNumber];
-      if (value == null) {
-        return TableSeat(
-          number: seatNumber,
-          displayName: '等待入座',
-          chips: 0,
-          isEmpty: true,
-        );
-      }
-      final revealed = [
-        ...?snapshot?.settlement?.revealedHands,
-        ...?snapshot?.voluntaryReveals,
-        ...?snapshot?.privateReveals,
-      ].where((hand) => hand.userId == value.userId).firstOrNull;
-      return TableSeat(
-        number: seatNumber,
-        userId: value.userId,
-        displayName: value.displayName,
-        chips: value.stack,
-        isCurrentUser: value.userId == widget.session.user.userId,
-        isDealer: snapshot?.dealerSeat == seatNumber,
-        isOwner: snapshot?.ownerUserId == value.userId,
-        isSpeaking: _speakingUserIds.contains(value.userId),
-        isMicrophoneEnabled: _gameSocket.voiceMembers.any(
-          (member) => member.userId == value.userId && member.microphoneEnabled,
-        ),
-        isReady: value.ready,
-        isConnected: value.connected,
-        isFolded: value.folded,
-        isAllIn: value.allIn,
-        position: value.position,
-        streetBet: value.streetBet,
-        totalBet: value.totalBet,
-        lastAction: value.lastAction,
-        lastActionTo: value.lastActionTo,
-        isCurrentActor: snapshot?.currentAction?.userId == value.userId,
-        revealedCards: revealed?.holeCards ?? const [],
-        handCategory: revealed?.category ?? '',
-        timeExtensions: value.timeExtensions,
-        isParticipating: value.participating,
-      );
-    });
+    final occupiedSeats = [...?snapshot?.seats]
+      ..sort((left, right) => left.seat.compareTo(right.seat));
+    return occupiedSeats
+        .map((value) {
+          final seatNumber = value.seat;
+          final revealed = [
+            ...?snapshot?.settlement?.revealedHands,
+            ...?snapshot?.voluntaryReveals,
+            ...?snapshot?.privateReveals,
+          ].where((hand) => hand.userId == value.userId).firstOrNull;
+          return TableSeat(
+            number: seatNumber,
+            userId: value.userId,
+            displayName: value.displayName,
+            chips: value.stack,
+            isCurrentUser: value.userId == widget.session.user.userId,
+            isDealer: snapshot?.dealerSeat == seatNumber,
+            isOwner: snapshot?.ownerUserId == value.userId,
+            isSpeaking:
+                _speakingUserIds.contains(value.userId) &&
+                !_mutedVoiceUserIds.contains(value.userId),
+            isMicrophoneEnabled: _gameSocket.voiceMembers.any(
+              (member) =>
+                  member.userId == value.userId && member.microphoneEnabled,
+            ),
+            isReady: value.ready,
+            isConnected: value.connected,
+            isFolded: value.folded,
+            isAllIn: value.allIn,
+            position: value.position,
+            streetBet: value.streetBet,
+            totalBet: value.totalBet,
+            lastAction: value.lastAction,
+            lastActionTo: value.lastActionTo,
+            isCurrentActor: snapshot?.currentAction?.userId == value.userId,
+            revealedCards: revealed?.holeCards ?? const [],
+            handCategory: revealed?.category ?? '',
+            timeExtensions: value.timeExtensions,
+            isParticipating: value.participating,
+          );
+        })
+        .toList(growable: false);
   }
 
   List<Alignment> _seatAlignments({required double verticalRadius}) {
@@ -818,8 +893,7 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
     final anchor = currentIndex < 0 ? 0 : currentIndex;
     return List.generate(seats.length, (index) {
       final relativeIndex = (index - anchor) % seats.length;
-      final angle =
-          math.pi / 2 + (math.pi * 2 * relativeIndex / seats.length);
+      final angle = math.pi / 2 + (math.pi * 2 * relativeIndex / seats.length);
       return Alignment(
         math.cos(angle) * 0.94,
         math.sin(angle) * verticalRadius,
@@ -949,9 +1023,12 @@ class _VoiceControls extends StatelessWidget {
     required this.speakingCount,
     required this.members,
     required this.speakingUserIds,
-    required this.userId,
+    required this.mutedUserIds,
+    required this.currentUserId,
+    required this.displayName,
     required this.onJoinChanged,
     required this.onMicrophoneChanged,
+    required this.onUserMuted,
   });
 
   final bool voiceJoined;
@@ -961,9 +1038,12 @@ class _VoiceControls extends StatelessWidget {
   final int speakingCount;
   final List<TableVoiceMember> members;
   final Set<String> speakingUserIds;
-  final String userId;
+  final Set<String> mutedUserIds;
+  final String currentUserId;
+  final String displayName;
   final ValueChanged<bool> onJoinChanged;
   final ValueChanged<bool> onMicrophoneChanged;
+  final void Function(String userId, bool muted) onUserMuted;
 
   @override
   Widget build(BuildContext context) {
@@ -994,12 +1074,14 @@ class _VoiceControls extends StatelessWidget {
         ),
         const SizedBox(width: 8),
         Text(
-          '$userId · $speakingCount 人说话',
+          '$displayName · $speakingCount 人说话',
           style: const TextStyle(color: Colors.white60, fontSize: 12),
         ),
         const SizedBox(width: 4),
         PopupMenuButton<String>(
           tooltip: '语音成员',
+          onSelected: (userId) =>
+              onUserMuted(userId, !mutedUserIds.contains(userId)),
           icon: Badge(
             label: Text('${members.length}'),
             child: const Icon(Icons.groups_2_outlined, size: 20),
@@ -1014,7 +1096,8 @@ class _VoiceControls extends StatelessWidget {
               : [
                   for (final member in members)
                     PopupMenuItem<String>(
-                      enabled: false,
+                      value: member.userId,
+                      enabled: voiceJoined && member.userId != currentUserId,
                       child: Row(
                         children: [
                           Icon(
@@ -1022,20 +1105,34 @@ class _VoiceControls extends StatelessWidget {
                                 ? Icons.mic
                                 : Icons.mic_off,
                             size: 17,
-                            color: speakingUserIds.contains(member.userId)
+                            color:
+                                speakingUserIds.contains(member.userId) &&
+                                    !mutedUserIds.contains(member.userId)
                                 ? const Color(0xFF6DE0A4)
                                 : Colors.white54,
                           ),
                           const SizedBox(width: 8),
                           Expanded(child: Text(member.displayName)),
-                          if (speakingUserIds.contains(member.userId))
+                          if (member.userId == currentUserId)
+                            const Text('自己', style: TextStyle(fontSize: 11))
+                          else if (mutedUserIds.contains(member.userId))
+                            const Row(
+                              children: [
+                                Icon(Icons.volume_off, size: 15),
+                                SizedBox(width: 3),
+                                Text('已屏蔽', style: TextStyle(fontSize: 11)),
+                              ],
+                            )
+                          else if (speakingUserIds.contains(member.userId))
                             const Text(
                               '说话中',
                               style: TextStyle(
                                 color: Color(0xFF6DE0A4),
                                 fontSize: 11,
                               ),
-                            ),
+                            )
+                          else
+                            const Text('点击屏蔽', style: TextStyle(fontSize: 11)),
                         ],
                       ),
                     ),
@@ -1101,10 +1198,6 @@ class _PokerTable extends StatelessWidget {
                 BoxShadow(color: Color(0xFF253C30), spreadRadius: 5),
               ],
             ),
-            child: _BoardCenter(
-              snapshot: snapshot,
-              actionRemaining: actionRemaining,
-            ),
           ),
         ),
         for (var index = 0; index < seats.length; index++)
@@ -1125,11 +1218,10 @@ class _PokerTable extends StatelessWidget {
         for (final interaction in interactions)
           if (seats.any((seat) => seat.userId == interaction.targetUserId))
             Align(
-              alignment: alignments[
-                seats.indexWhere(
-                  (seat) => seat.userId == interaction.targetUserId,
-                )
-              ],
+              alignment:
+                  alignments[seats.indexWhere(
+                    (seat) => seat.userId == interaction.targetUserId,
+                  )],
               child: IgnorePointer(
                 child: _PlayerInteractionBurst(interaction: interaction),
               ),
@@ -1174,92 +1266,124 @@ class _BoardCenter extends StatelessWidget {
         .where((seat) => seat.userId == actor?.userId)
         .map((seat) => seat.displayName)
         .firstOrNull;
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        AnimatedSwitcher(
-          duration: const Duration(milliseconds: 220),
-          transitionBuilder: (child, animation) => ScaleTransition(
-            scale: Tween<double>(begin: 0.88, end: 1).animate(animation),
-            child: FadeTransition(opacity: animation, child: child),
-          ),
-          child: Text(
-            '底池  ${snapshot?.totalPot ?? 0}',
-            key: ValueKey(snapshot?.totalPot ?? 0),
-            style: const TextStyle(color: Color(0xFFF6D986), fontSize: 18),
-          ),
-        ),
-        if (snapshot?.settlement != null) ...[
-          const SizedBox(height: 6),
-          for (final award in snapshot!.settlement!.potAwards)
-            Text(
-              _potAwardLabel(award, snapshot!.seats),
-              style: const TextStyle(
-                color: Color(0xFFF6D986),
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-              ),
+    return LayoutBuilder(
+      builder: (context, constraints) => Center(
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Container(
+            width: runoutBoards.length == 2 ? 500 : 430,
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xF2126344),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: const Color(0x449B7838)),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0xCC126344),
+                  blurRadius: 22,
+                  spreadRadius: 14,
+                ),
+              ],
             ),
-          const SizedBox(height: 5),
-          Text(
-            _phaseLabel(snapshot!.phase),
-            style: const TextStyle(color: Colors.white70),
-          ),
-        ],
-        SizedBox(height: snapshot?.settlement == null ? 16 : 10),
-        if (runoutBoards.length == 2)
-          for (
-            var runoutIndex = 0;
-            runoutIndex < runoutBoards.length;
-            runoutIndex++
-          )
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 2),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  SizedBox(
-                    width: 48,
-                    child: Text(
-                      '第${runoutIndex + 1}次',
-                      style: const TextStyle(
-                        color: Color(0xFFF6D986),
-                        fontSize: 11,
-                      ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 220),
+                  transitionBuilder: (child, animation) => ScaleTransition(
+                    scale: Tween<double>(
+                      begin: 0.88,
+                      end: 1,
+                    ).animate(animation),
+                    child: FadeTransition(opacity: animation, child: child),
+                  ),
+                  child: Text(
+                    '底池  ${snapshot?.totalPot ?? 0}',
+                    key: ValueKey(snapshot?.totalPot ?? 0),
+                    style: const TextStyle(
+                      color: Color(0xFFF6D986),
+                      fontSize: 18,
                     ),
                   ),
-                  for (final card in runoutBoards[runoutIndex])
-                    _PlayingCard(
-                      rank: _cardRank(card),
-                      suit: _cardSuit(card),
-                      red: card.endsWith('h') || card.endsWith('d'),
-                      compact: true,
+                ),
+                if (snapshot?.settlement != null) ...[
+                  const SizedBox(height: 6),
+                  for (final award in snapshot!.settlement!.potAwards)
+                    Text(
+                      _potAwardLabel(award, snapshot!.seats),
+                      style: const TextStyle(
+                        color: Color(0xFFF6D986),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
+                  const SizedBox(height: 5),
+                  Text(
+                    _phaseLabel(snapshot!.phase),
+                    style: const TextStyle(color: Colors.white70),
+                  ),
                 ],
-              ),
-            )
-        else
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: List.generate(5, (index) {
-              final card = index < board.length ? board[index] : null;
-              return _PlayingCard(
-                rank: card == null ? '?' : _cardRank(card),
-                suit: card == null ? '' : _cardSuit(card),
-                red: card != null && (card.endsWith('h') || card.endsWith('d')),
-              );
-            }),
+                SizedBox(height: snapshot?.settlement == null ? 16 : 10),
+                if (runoutBoards.length == 2)
+                  for (
+                    var runoutIndex = 0;
+                    runoutIndex < runoutBoards.length;
+                    runoutIndex++
+                  )
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          SizedBox(
+                            width: 48,
+                            child: Text(
+                              '第${runoutIndex + 1}次',
+                              style: const TextStyle(
+                                color: Color(0xFFF6D986),
+                                fontSize: 11,
+                              ),
+                            ),
+                          ),
+                          for (final card in runoutBoards[runoutIndex])
+                            _PlayingCard(
+                              rank: _cardRank(card),
+                              suit: _cardSuit(card),
+                              red: card.endsWith('h') || card.endsWith('d'),
+                              compact: true,
+                            ),
+                        ],
+                      ),
+                    )
+                else
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: List.generate(5, (index) {
+                      final card = index < board.length ? board[index] : null;
+                      return _PlayingCard(
+                        rank: card == null ? '?' : _cardRank(card),
+                        suit: card == null ? '' : _cardSuit(card),
+                        red:
+                            card != null &&
+                            (card.endsWith('h') || card.endsWith('d')),
+                      );
+                    }),
+                  ),
+                if (snapshot?.settlement == null) ...[
+                  const SizedBox(height: 18),
+                  Text(
+                    actorName == null
+                        ? _phaseLabel(snapshot?.phase)
+                        : '轮到 $actorName 行动 · ${_remainingSeconds(actionRemaining)} 秒',
+                    style: const TextStyle(color: Colors.white70),
+                  ),
+                ],
+              ],
+            ),
           ),
-        if (snapshot?.settlement == null) ...[
-          const SizedBox(height: 18),
-          Text(
-            actorName == null
-                ? _phaseLabel(snapshot?.phase)
-                : '轮到 $actorName 行动 · ${_remainingSeconds(actionRemaining)} 秒',
-            style: const TextStyle(color: Colors.white70),
-          ),
-        ],
-      ],
+        ),
+      ),
     );
   }
 }
@@ -1345,9 +1469,9 @@ class _SeatCard extends StatelessWidget {
     return AnimatedContainer(
       duration: const Duration(milliseconds: 240),
       curve: Curves.easeOut,
-      width: 172,
-      height: 104,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      width: 208,
+      height: 116,
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
       decoration: BoxDecoration(
         color: seat.isEmpty
             ? const Color(0x80112622)
@@ -1385,14 +1509,16 @@ class _SeatCard extends StatelessWidget {
                   ? ''
                   : '点击赞赏或嘲讽 ${seat.displayName}',
               child: CircleAvatar(
-                radius: 24,
+                radius: 25,
                 backgroundColor: seat.isEmpty
                     ? Colors.white10
                     : const Color(0xFF315F51),
                 child: seat.isEmpty
                     ? const Icon(Icons.add, color: Colors.white54, size: 24)
                     : Text(
-                        seat.position.isEmpty ? '${seat.number}' : seat.position,
+                        seat.position.isEmpty
+                            ? '${seat.number}'
+                            : seat.position,
                         textAlign: TextAlign.center,
                         style: const TextStyle(
                           fontWeight: FontWeight.w700,
@@ -1402,7 +1528,7 @@ class _SeatCard extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(width: 9),
+          const SizedBox(width: 10),
           Expanded(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -1410,13 +1536,17 @@ class _SeatCard extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    Flexible(
-                      child: Text(
-                        seat.displayName,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w700,
-                          fontSize: 15,
+                    Expanded(
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          seat.displayName,
+                          maxLines: 1,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 16,
+                          ),
                         ),
                       ),
                     ),
@@ -1440,44 +1570,45 @@ class _SeatCard extends StatelessWidget {
                           ),
                         ),
                       ),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Row(
+                  children: [
                     if (seat.isSpeaking)
-                      const Padding(
-                        padding: EdgeInsets.only(left: 3),
-                        child: Icon(
-                          Icons.graphic_eq,
-                          color: Color(0xFF6DE0A4),
-                          size: 17,
-                        ),
+                      const Icon(
+                        Icons.graphic_eq,
+                        color: Color(0xFF6DE0A4),
+                        size: 17,
                       )
                     else if (seat.isMicrophoneEnabled)
-                      const Padding(
-                        padding: EdgeInsets.only(left: 3),
-                        child: Icon(
-                          Icons.mic,
+                      const Icon(Icons.mic, color: Color(0xFF6DE0A4), size: 17),
+                    if (showReadyStatus && seat.isReady) ...[
+                      const SizedBox(width: 4),
+                      const Icon(
+                        Icons.check_circle,
+                        color: Color(0xFF6DE0A4),
+                        size: 16,
+                      ),
+                      const SizedBox(width: 3),
+                      const Text(
+                        '已准备',
+                        style: TextStyle(
                           color: Color(0xFF6DE0A4),
-                          size: 17,
+                          fontSize: 11,
                         ),
                       ),
-                    if (showReadyStatus && seat.isReady)
-                      const Padding(
-                        padding: EdgeInsets.only(left: 3),
-                        child: Icon(
-                          Icons.check_circle,
-                          color: Color(0xFF6DE0A4),
-                          size: 15,
+                    ],
+                    if (seat.isParticipating && !showReadyStatus) ...[
+                      const Spacer(),
+                      Text(
+                        '加时卡 ×${seat.timeExtensions}',
+                        style: const TextStyle(
+                          color: Colors.white54,
+                          fontSize: 11,
                         ),
                       ),
-                    if (seat.isParticipating && !showReadyStatus)
-                      Padding(
-                        padding: const EdgeInsets.only(left: 3),
-                        child: Text(
-                          '⏱${seat.timeExtensions}',
-                          style: const TextStyle(
-                            color: Colors.white54,
-                            fontSize: 11,
-                          ),
-                        ),
-                      ),
+                    ],
                   ],
                 ),
                 if (seat.isEmpty)
@@ -1603,9 +1734,7 @@ class _PlayerInteractionBurst extends StatelessWidget {
           ),
           boxShadow: [
             BoxShadow(
-              color: praise
-                  ? const Color(0x99FFD54F)
-                  : const Color(0x99FF5252),
+              color: praise ? const Color(0x99FFD54F) : const Color(0x99FF5252),
               blurRadius: 18,
               spreadRadius: 3,
             ),
@@ -1680,7 +1809,7 @@ class _RevealedCardsBadge extends StatelessWidget {
             ],
           ),
           Text(
-            _handCategoryLabel(seat.handCategory),
+            handCategoryLabel(seat.handCategory),
             style: const TextStyle(fontSize: 9, color: Color(0xFFF6D986)),
           ),
         ],
@@ -2576,20 +2705,6 @@ String _suggestionButtonLabel(BetSuggestion suggestion, int streetBet) {
   return '${_suggestionLabel(suggestion.label)}\n'
       '投入 $committed · 至 ${suggestion.raiseTo}';
 }
-
-String _handCategoryLabel(String category) => switch (category) {
-  'voluntary' => '主动亮牌',
-  'high_card' => '高牌',
-  'one_pair' => '一对',
-  'two_pair' => '两对',
-  'three_of_a_kind' => '三条',
-  'straight' => '顺子',
-  'flush' => '同花',
-  'full_house' => '葫芦',
-  'four_of_a_kind' => '四条',
-  'straight_flush' => '同花顺',
-  _ => category,
-};
 
 String _potAwardLabel(PotAward award, List<TableSeatSnapshot> seats) {
   final names = award.payouts

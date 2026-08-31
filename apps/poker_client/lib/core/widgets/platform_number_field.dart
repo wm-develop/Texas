@@ -45,37 +45,48 @@ class PlatformNumberField extends StatelessWidget {
     }
     return ValueListenableBuilder<TextEditingValue>(
       valueListenable: controller,
-      builder: (context, value, _) => Semantics(
-        button: true,
-        textField: true,
-        label: decoration.labelText,
-        value: value.text,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(4),
-          onTap: () async {
-            final selected = await showDialog<String>(
-              context: context,
-              builder: (context) => _InAppNumberPadDialog(
-                title: decoration.labelText ?? '输入数字',
-                initialValue: value.text,
-                maxLength: maxLength,
-              ),
-            );
-            if (selected == null) return;
-            controller.value = TextEditingValue(
-              text: selected,
-              selection: TextSelection.collapsed(offset: selected.length),
-            );
-            onChanged?.call(selected);
-            onSubmitted?.call(selected);
-          },
-          child: InputDecorator(
-            decoration: decoration,
-            isEmpty: value.text.isEmpty,
-            child: Text(value.text.isEmpty ? '点击输入' : value.text),
+      builder: (context, value, _) {
+        final effectiveDecoration = decoration.copyWith(
+          // OHOS renders the label and our custom child at the same baseline
+          // when an InputDecorator is empty. Keep the label floated and let
+          // the decorator own the hint so the two texts cannot overlap.
+          floatingLabelBehavior: FloatingLabelBehavior.always,
+          hintText: decoration.hintText ?? '点击输入',
+        );
+        return Semantics(
+          button: true,
+          textField: true,
+          label: decoration.labelText,
+          value: value.text,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(4),
+            onTap: () async {
+              final selected = await showDialog<String>(
+                context: context,
+                builder: (context) => _InAppNumberPadDialog(
+                  title: decoration.labelText ?? '输入数字',
+                  initialValue: value.text,
+                  maxLength: maxLength,
+                ),
+              );
+              if (selected == null) return;
+              controller.value = TextEditingValue(
+                text: selected,
+                selection: TextSelection.collapsed(offset: selected.length),
+              );
+              onChanged?.call(selected);
+              onSubmitted?.call(selected);
+            },
+            child: InputDecorator(
+              decoration: effectiveDecoration,
+              isEmpty: value.text.isEmpty,
+              child: value.text.isEmpty
+                  ? const SizedBox.shrink()
+                  : Text(value.text),
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }
