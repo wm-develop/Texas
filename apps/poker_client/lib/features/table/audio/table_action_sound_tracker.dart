@@ -1,6 +1,6 @@
 import 'package:poker_client/features/table/domain/table_snapshot.dart';
 
-enum TableSoundEffect { chips, allIn, check, fold }
+enum TableSoundEffect { chips, allIn, check, fold, praise, taunt }
 
 class TableActionSoundFrame {
   const TableActionSoundFrame({

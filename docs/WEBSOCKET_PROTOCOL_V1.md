@@ -68,6 +68,7 @@
 | `table.snapshot.request` | 主动请求完整快照 | `lastSequence?`, `reason` |
 | `table.action.submit` | 提交牌局动作 | `actionId`, `action`, `raiseTo?` |
 | `table.chat.send` | 发送文字、快捷语或表情 | `clientMessageId`, `kind`, `content` |
+| `table.player.interact` | 对同桌其他玩家发送赞赏或嘲讽 | `targetUserId`, `kind`（`praise` 或 `taunt`） |
 | `table.voice.state.set` | 同步当前用户语音加入和开麦状态 | `joined`, `microphoneEnabled` |
 | `table.chat.history.request` | 获取最近聊天 | `beforeMessageId?`, `limit` |
 | `system.ping` | 业务心跳 | 可为空 |
@@ -178,7 +179,16 @@
 
 最终聊天消息至少包含：`messageId`、`clientMessageId`、`userId`、`displayName`、`kind`、`content` 和 `sentAt`。
 
-### 5.5 语音状态
+### 5.5 玩家互动
+
+| 类型 | 用途 |
+|---|---|
+| `table.player.interact.accepted` | 确认发送者的互动请求 |
+| `table.player.interaction` | 向全桌广播赞赏或嘲讽动画、音效所需的数据 |
+
+广播载荷包含 `interactionId`、发送者与目标玩家的 ID/牌桌昵称、`kind` 和 `sentAt`。只能对仍在同一牌桌的其他玩家发送，服务端按发送者限制为至少间隔 1.5 秒。
+
+### 5.6 语音状态
 
 | 类型 | 用途 |
 |---|---|

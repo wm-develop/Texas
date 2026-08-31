@@ -61,7 +61,6 @@ class _LobbyPageState extends State<LobbyPage> {
   final _maxBuyIn = TextEditingController(text: '2000');
   final _createBuyIn = TextEditingController(text: '2000');
   String _preset = 'standard';
-  double _maxPlayers = 6;
   bool _busy = false;
   String? _error;
 
@@ -301,25 +300,12 @@ class _LobbyPageState extends State<LobbyPage> {
               Expanded(child: _chipField(_createBuyIn, '我的带入', compact)),
             ],
           ),
-          SizedBox(height: compact ? 2 : 10),
-          Row(
+          SizedBox(height: compact ? 4 : 10),
+          const Row(
             children: [
-              Text('人数：${_maxPlayers.round()} 人'),
-              Expanded(
-                child: SizedBox(
-                  height: compact ? 36 : null,
-                  child: Slider(
-                    value: _maxPlayers,
-                    min: 2,
-                    max: 10,
-                    divisions: 8,
-                    label: '${_maxPlayers.round()}',
-                    onChanged: _busy
-                        ? null
-                        : (value) => setState(() => _maxPlayers = value),
-                  ),
-                ),
-              ),
+              Icon(Icons.groups_2_outlined, size: 18, color: Color(0xFFD9B85F)),
+              SizedBox(width: 7),
+              Expanded(child: Text('无需预设人数，牌桌随朋友加入动态扩展，最多 10 人')),
             ],
           ),
           if (compact)
@@ -474,7 +460,6 @@ class _LobbyPageState extends State<LobbyPage> {
       () => widget.onCreateRoom(
         CreateRoomInput(
           preset: _preset,
-          maxPlayers: _maxPlayers.round(),
           password: password,
           smallBlind: smallBlind,
           bigBlind: bigBlind,

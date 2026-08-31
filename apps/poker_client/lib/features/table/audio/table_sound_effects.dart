@@ -47,6 +47,8 @@ Uint8List _buildClip(TableSoundEffect effect) {
     TableSoundEffect.allIn => 0.68,
     TableSoundEffect.check => 0.36,
     TableSoundEffect.fold => 0.3,
+    TableSoundEffect.praise => 0.5,
+    TableSoundEffect.taunt => 0.46,
   };
   final samples = Float64List((sampleRate * duration).ceil());
   var noiseState = 0x13579BDF;
@@ -138,6 +140,17 @@ Uint8List _buildClip(TableSoundEffect effect) {
             envelope *
             (0.34 * math.sin(2 * math.pi * 220 * time) + 0.12 * noise()),
       );
+    case TableSoundEffect.praise:
+      mixTone(0, 0.2, 523.25);
+      mixTone(0.1, 0.24, 659.25);
+      mixTone(0.22, 0.26, 783.99);
+      mixChip(0.3, pitch: 1.25);
+      mixChip(0.36, pitch: 1.45);
+    case TableSoundEffect.taunt:
+      mixTone(0, 0.18, 330);
+      mixTone(0.11, 0.2, 247);
+      mixTone(0.23, 0.22, 196);
+      mixKnock(0.31);
   }
 
   var peak = 0.0;

@@ -35,6 +35,8 @@ type webSocketServer struct {
 	userLocks      map[string]*sync.Mutex
 	originPatterns []string
 	presence       *presenceTracker
+	interactionMu  sync.Mutex
+	interactionAt  map[string]time.Time
 }
 
 type webSocketClient struct {
@@ -70,6 +72,7 @@ func newWebSocketServer(
 		userLocks:      make(map[string]*sync.Mutex),
 		originPatterns: webSocketOriginPatterns(options.AllowedOrigins),
 		presence:       presence,
+		interactionAt:  make(map[string]time.Time),
 	}
 	if server.tables != nil {
 		server.tables.SetSnapshotListener(func(roomID string) {
@@ -187,6 +190,8 @@ func (client *webSocketClient) route(ctx context.Context, message protocol.Envel
 		return client.setVoiceState(message)
 	case protocol.TypeTableChatSend:
 		return client.sendChat(ctx, message)
+	case protocol.TypeTablePlayerInteract:
+		return client.sendPlayerInteraction(ctx, message)
 	default:
 		return client.sendError(message, protocol.TypeSystemError, "unsupported_message_type", 0)
 	}
@@ -514,6 +519,51 @@ func (client *webSocketClient) sendChat(ctx context.Context, message protocol.En
 		return err
 	}
 	return client.server.hub.broadcast(client.roomID, protocol.TypeTableChatMessage, chatPayload(accepted))
+}
+
+func (client *webSocketClient) sendPlayerInteraction(ctx context.Context, message protocol.Envelope) error {
+	if client.roomID == "" || client.server.rooms == nil {
+		return client.sendError(message, protocol.TypeSystemError, "table_not_joined", 0)
+	}
+	var payload protocol.PlayerInteractPayload
+	if !decodePayload(message.Payload, &payload) ||
+		(payload.Kind != "praise" && payload.Kind != "taunt") ||
+		payload.TargetUserID == "" || payload.TargetUserID == client.user.UserID {
+		return client.sendError(message, protocol.TypeSystemError, "invalid_player_interaction", 0)
+	}
+	roomValue, err := client.server.rooms.GetForMember(ctx, client.user.UserID, client.roomID)
+	if err != nil {
+		return client.sendError(message, protocol.TypeSystemError, errorCode(err), 0)
+	}
+	var targetName string
+	for _, member := range roomValue.Members {
+		if member.UserID == payload.TargetUserID {
+			targetName = member.DisplayName
+			break
+		}
+	}
+	if targetName == "" {
+		return client.sendError(message, protocol.TypeSystemError, "player_not_at_table", 0)
+	}
+	now := time.Now()
+	client.server.interactionMu.Lock()
+	lastSent := client.server.interactionAt[client.user.UserID]
+	if now.Sub(lastSent) < 1500*time.Millisecond {
+		client.server.interactionMu.Unlock()
+		return client.sendError(message, protocol.TypeSystemError, "player_interaction_too_frequent", 0)
+	}
+	client.server.interactionAt[client.user.UserID] = now
+	client.server.interactionMu.Unlock()
+
+	result := protocol.PlayerInteractionPayload{
+		InteractionID: message.RequestID, FromUserID: client.user.UserID,
+		FromDisplayName: client.user.DisplayName, TargetUserID: payload.TargetUserID,
+		TargetDisplayName: targetName, Kind: payload.Kind, SentAt: now.UnixMilli(),
+	}
+	if err := client.respond(message, protocol.TypeTablePlayerInteractAccept, result); err != nil {
+		return err
+	}
+	return client.server.hub.broadcast(client.roomID, protocol.TypeTablePlayerInteraction, result)
 }
 
 func (client *webSocketClient) recoverEvents(ctx context.Context, message protocol.Envelope) error {
@@ -845,7 +895,8 @@ func isIdempotentRequest(messageType protocol.MessageType) bool {
 		protocol.TypeTableTimeExtensionUse,
 		protocol.TypeTableRebuy,
 		protocol.TypeTableVoiceStateSet,
-		protocol.TypeTableChatSend:
+		protocol.TypeTableChatSend,
+		protocol.TypeTablePlayerInteract:
 		return true
 	default:
 		return false

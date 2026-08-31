@@ -65,7 +65,10 @@ type JoinOptions struct {
 func (service *Service) CreateConfigured(ctx context.Context, owner Participant, options CreateOptions) (Room, error) {
 	service.mu.Lock()
 	defer service.mu.Unlock()
-	if service.bankroll == nil || !validParticipant(owner) || options.MaxPlayers < 2 || options.MaxPlayers > 10 {
+	// Friend rooms no longer ask the owner to choose a capacity. Every newly
+	// created room can expand with its membership up to the product-wide limit.
+	options.MaxPlayers = MaximumPlayers
+	if service.bankroll == nil || !validParticipant(owner) {
 		return Room{}, Error{Code: "invalid_room"}
 	}
 	if current, err := service.repository.ByUser(ctx, owner.UserID); err == nil {

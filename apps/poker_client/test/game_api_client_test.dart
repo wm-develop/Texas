@@ -12,6 +12,7 @@ void main() {
       httpClient: MockClient((request) async {
         expect(request.url.path, '/v1/auth/register');
         final body = jsonDecode(request.body) as Map<String, dynamic>;
+        expect(body.containsKey('maxPlayers'), isFalse);
         expect(body['username'], 'friend_1');
         expect(body['requestAdmin'], isTrue);
         return http.Response.bytes(
@@ -135,7 +136,6 @@ void main() {
     final room = await client.createRoom(
       accessToken: 'access-token',
       preset: 'standard',
-      maxPlayers: 10,
       password: '',
       smallBlind: 10,
       bigBlind: 20,

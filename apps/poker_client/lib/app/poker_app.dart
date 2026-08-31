@@ -176,7 +176,6 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
         (token) => _api.createRoom(
           accessToken: token,
           preset: input.preset,
-          maxPlayers: input.maxPlayers,
           password: input.password,
           smallBlind: input.smallBlind,
           bigBlind: input.bigBlind,

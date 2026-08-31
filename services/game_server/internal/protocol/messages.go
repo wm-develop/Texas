@@ -44,6 +44,9 @@ const (
 	TypeTableChatAccepted          MessageType = "table.chat.accepted"
 	TypeTableChatMessage           MessageType = "table.chat.message"
 	TypeTableChatRejected          MessageType = "table.chat.rejected"
+	TypeTablePlayerInteract        MessageType = "table.player.interact"
+	TypeTablePlayerInteractAccept  MessageType = "table.player.interact.accepted"
+	TypeTablePlayerInteraction     MessageType = "table.player.interaction"
 )
 
 type SessionAuthenticatePayload struct {
@@ -85,6 +88,21 @@ type ChatSendPayload struct {
 	ClientMessageID string `json:"clientMessageId"`
 	Kind            string `json:"kind"`
 	Content         string `json:"content"`
+}
+
+type PlayerInteractPayload struct {
+	TargetUserID string `json:"targetUserId"`
+	Kind         string `json:"kind"`
+}
+
+type PlayerInteractionPayload struct {
+	InteractionID     string `json:"interactionId"`
+	FromUserID        string `json:"fromUserId"`
+	FromDisplayName   string `json:"fromDisplayName"`
+	TargetUserID      string `json:"targetUserId"`
+	TargetDisplayName string `json:"targetDisplayName"`
+	Kind              string `json:"kind"`
+	SentAt            int64  `json:"sentAt"`
 }
 
 type VoiceStateSetPayload struct {

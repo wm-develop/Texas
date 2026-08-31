@@ -56,6 +56,9 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
   Set<String> _speakingUserIds = const {};
   final Set<String> _blockedUserIds = {};
   bool _chatVisible = true;
+  bool _compactChatOpen = false;
+  int _observedChatRevision = 0;
+  int _unreadChatCount = 0;
   late final GameSocketClient _gameSocket;
   late final TrtcCredentialClient _trtcCredentials;
   late final VoiceChatService _voiceChat;
@@ -73,6 +76,9 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
   String? _autoReadySubmittedHandId;
   final Set<String> _handledTableRequestIds = {};
   bool _tableRequestDialogOpen = false;
+  final Set<String> _observedInteractionIds = {};
+  final List<TablePlayerInteraction> _activeInteractions = [];
+  final Map<String, Timer> _interactionTimers = {};
 
   bool get _voiceJoined =>
       _voiceState == VoiceConnectionState.connected ||
@@ -128,6 +134,9 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
     unawaited(_voiceChat.dispose());
     unawaited(_tableSoundEffects.dispose());
     _tableClock?.cancel();
+    for (final timer in _interactionTimers.values) {
+      timer.cancel();
+    }
     _trtcCredentials.close();
     widget.settings.removeListener(_settingsChanged);
     super.dispose();
@@ -167,6 +176,8 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
                           top: 18,
                           child: _RoomHeader(
                             room: widget.room,
+                            currentPlayers: _gameSocket.snapshot?.seats.length ??
+                                widget.room.members.length,
                             onLeave: _leaveTable,
                             onSettings: () => showAppSettingsDialog(
                               context,
@@ -211,6 +222,8 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
                             snapshot: _gameSocket.snapshot,
                             actionRemaining: _actionRemaining,
                             onSeatTap: _handleSeatTap,
+                            onAvatarTap: _handleAvatarTap,
+                            interactions: _activeInteractions,
                           ),
                         ),
                         if (showSideChat)
@@ -235,8 +248,16 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
                               onPressed: viewport.supportsSideChat
                                   ? _toggleChat
                                   : _showCompactChat,
-                              icon: const Icon(Icons.chat_bubble_outline),
-                              label: const Text('文字聊天'),
+                              icon: Badge(
+                                isLabelVisible: _unreadChatCount > 0,
+                                label: Text(_unreadChatCount > 99 ? '99+' : '$_unreadChatCount'),
+                                child: const Icon(Icons.chat_bubble_outline),
+                              ),
+                              label: Text(
+                                _unreadChatCount > 0
+                                    ? '文字聊天 · $_unreadChatCount 条新消息'
+                                    : '文字聊天',
+                              ),
                             ),
                           ),
                         Positioned(
@@ -331,28 +352,39 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
     }
   }
 
-  void _toggleChat() => setState(() => _chatVisible = !_chatVisible);
+  void _toggleChat() => setState(() {
+    _chatVisible = !_chatVisible;
+    if (_chatVisible) _unreadChatCount = 0;
+  });
 
   Future<void> _showCompactChat() async {
     final mediaSize = MediaQuery.sizeOf(context);
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => Dialog(
-        insetPadding: const EdgeInsets.all(12),
-        backgroundColor: Colors.transparent,
-        child: SizedBox(
-          width: math.min(520, mediaSize.width * 0.72),
-          height: math.min(520, mediaSize.height * 0.88),
-          child: _ChatPanel(
-            client: _gameSocket,
-            currentUserId: widget.session.user.userId,
-            blockedUserIds: _blockedUserIds,
-            onBlockChanged: _setUserBlocked,
-            onClose: () => Navigator.of(dialogContext).pop(),
+    setState(() {
+      _compactChatOpen = true;
+      _unreadChatCount = 0;
+    });
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => Dialog(
+          insetPadding: const EdgeInsets.all(12),
+          backgroundColor: Colors.transparent,
+          child: SizedBox(
+            width: math.min(520, mediaSize.width * 0.72),
+            height: math.min(520, mediaSize.height * 0.88),
+            child: _ChatPanel(
+              client: _gameSocket,
+              currentUserId: widget.session.user.userId,
+              blockedUserIds: _blockedUserIds,
+              onBlockChanged: _setUserBlocked,
+              onClose: () => Navigator.of(dialogContext).pop(),
+            ),
           ),
         ),
-      ),
-    );
+      );
+    } finally {
+      if (mounted) setState(() => _compactChatOpen = false);
+    }
   }
 
   Future<void> _setUserBlocked(String userId, bool blocked) async {
@@ -374,6 +406,8 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
 
   void _refresh() {
     if (!mounted) return;
+    _updateChatNotification();
+    _updatePlayerInteractions();
     setState(() {});
     final error = _gameSocket.errorMessage;
     if (!_removedFromRoomHandled &&
@@ -404,6 +438,44 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
           ..hideCurrentSnackBar()
           ..showSnackBar(SnackBar(content: Text(_gameErrorLabel(error))));
       });
+    }
+  }
+
+  void _updateChatNotification() {
+    final revision = _gameSocket.chatEventRevision;
+    if (revision == _observedChatRevision) return;
+    _observedChatRevision = revision;
+    final message = _gameSocket.latestChatEvent;
+    if (message == null || message.userId == widget.session.user.userId) return;
+    final size = MediaQuery.sizeOf(context);
+    final sideChatVisible = _chatVisible &&
+        TableViewportLayout.fromSize(size, chatVisible: true).supportsSideChat;
+    if (!_compactChatOpen && !sideChatVisible) _unreadChatCount++;
+  }
+
+  void _updatePlayerInteractions() {
+    for (final interaction in _gameSocket.playerInteractions) {
+      if (!_observedInteractionIds.add(interaction.interactionId)) continue;
+      _activeInteractions.add(interaction);
+      if (widget.settings.soundEnabled) {
+        unawaited(
+          _tableSoundEffects.play(
+            interaction.kind == 'praise'
+                ? TableSoundEffect.praise
+                : TableSoundEffect.taunt,
+          ),
+        );
+      }
+      _interactionTimers[interaction.interactionId] = Timer(
+        const Duration(milliseconds: 1900),
+        () {
+          _interactionTimers.remove(interaction.interactionId);
+          _activeInteractions.removeWhere(
+            (value) => value.interactionId == interaction.interactionId,
+          );
+          if (mounted) setState(() {});
+        },
+      );
     }
   }
 
@@ -497,7 +569,7 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
     final waiting =
         snapshot.phase == 'WAITING' || snapshot.phase == 'WAITING_NEXT_HAND';
     if (waiting) {
-      final full = snapshot.seats.length >= widget.room.maxPlayers;
+      final full = snapshot.seats.length >= 10;
       if (!seat.isEmpty && !full) {
         _showTableHint('还有空座位，请直接点击想换到的空位');
         return;
@@ -529,6 +601,34 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
       '向 ${seat.displayName} 申请提前查看他的手牌？只有对方同意后你才能看到。',
     );
     if (confirmed) _gameSocket.requestHoleCardsView(seat.userId);
+  }
+
+  Future<void> _handleAvatarTap(TableSeat seat) async {
+    if (seat.isEmpty || seat.isCurrentUser || seat.userId.isEmpty) return;
+    final kind = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('与 ${seat.displayName} 互动'),
+        content: const Text('牌桌上的所有玩家都会看到动画并听到互动音效。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton.tonalIcon(
+            onPressed: () => Navigator.of(context).pop('taunt'),
+            icon: const Text('😜'),
+            label: const Text('嘲讽'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(context).pop('praise'),
+            icon: const Icon(Icons.thumb_up_alt),
+            label: const Text('赞赏'),
+          ),
+        ],
+      ),
+    );
+    if (kind != null) _gameSocket.interactWithPlayer(seat.userId, kind);
   }
 
   Future<bool> _confirmTableAction(String title, String content) async =>
@@ -660,7 +760,13 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
       for (final seat in snapshot?.seats ?? const <TableSeatSnapshot>[])
         seat.seat: seat,
     };
-    return List.generate(widget.room.maxPlayers, (index) {
+    final highestOccupiedSeat = bySeat.keys.fold(0, math.max);
+    final occupied = bySeat.length;
+    final visibleSeatCount = math.max(
+      2,
+      math.min(10, math.max(highestOccupiedSeat, occupied < 10 ? occupied + 1 : 10)),
+    );
+    return List.generate(visibleSeatCount, (index) {
       final seatNumber = index + 1;
       final value = bySeat[seatNumber];
       if (value == null) {
@@ -710,10 +816,10 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
     final seats = _tableSeats;
     final currentIndex = seats.indexWhere((seat) => seat.isCurrentUser);
     final anchor = currentIndex < 0 ? 0 : currentIndex;
-    return List.generate(widget.room.maxPlayers, (index) {
-      final relativeIndex = (index - anchor) % widget.room.maxPlayers;
+    return List.generate(seats.length, (index) {
+      final relativeIndex = (index - anchor) % seats.length;
       final angle =
-          math.pi / 2 + (math.pi * 2 * relativeIndex / widget.room.maxPlayers);
+          math.pi / 2 + (math.pi * 2 * relativeIndex / seats.length);
       return Alignment(
         math.cos(angle) * 0.94,
         math.sin(angle) * verticalRadius,
@@ -748,11 +854,13 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
 class _RoomHeader extends StatelessWidget {
   const _RoomHeader({
     required this.room,
+    required this.currentPlayers,
     required this.onLeave,
     required this.onSettings,
   });
 
   final FriendRoom room;
+  final int currentPlayers;
   final Future<void> Function() onLeave;
   final VoidCallback onSettings;
 
@@ -764,7 +872,7 @@ class _RoomHeader extends StatelessWidget {
         Row(
           children: [
             Text(
-              '${room.maxPlayers} 人好友牌桌',
+              '好友牌桌 · $currentPlayers/10 人',
               style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
             ),
             const SizedBox(width: 8),
@@ -945,6 +1053,8 @@ class _PokerTable extends StatelessWidget {
     required this.snapshot,
     required this.actionRemaining,
     required this.onSeatTap,
+    required this.onAvatarTap,
+    required this.interactions,
   });
 
   final List<TableSeat> seats;
@@ -952,6 +1062,8 @@ class _PokerTable extends StatelessWidget {
   final TableSnapshot? snapshot;
   final Duration actionRemaining;
   final ValueChanged<TableSeat> onSeatTap;
+  final ValueChanged<TableSeat> onAvatarTap;
+  final List<TablePlayerInteraction> interactions;
 
   @override
   Widget build(BuildContext context) {
@@ -1006,9 +1118,22 @@ class _PokerTable extends StatelessWidget {
                 actionRemaining: actionRemaining,
                 showReadyStatus: showReadyStatus,
                 winnerAmount: winnerAmounts[seats[index].userId] ?? 0,
+                onAvatarTap: () => onAvatarTap(seats[index]),
               ),
             ),
           ),
+        for (final interaction in interactions)
+          if (seats.any((seat) => seat.userId == interaction.targetUserId))
+            Align(
+              alignment: alignments[
+                seats.indexWhere(
+                  (seat) => seat.userId == interaction.targetUserId,
+                )
+              ],
+              child: IgnorePointer(
+                child: _PlayerInteractionBurst(interaction: interaction),
+              ),
+            ),
         for (var index = 0; index < seats.length; index++)
           if (seats[index].streetBet > 0)
             Align(
@@ -1196,12 +1321,14 @@ class _SeatCard extends StatelessWidget {
     required this.actionRemaining,
     required this.showReadyStatus,
     required this.winnerAmount,
+    required this.onAvatarTap,
   });
 
   final TableSeat seat;
   final Duration actionRemaining;
   final bool showReadyStatus;
   final int winnerAmount;
+  final VoidCallback onAvatarTap;
 
   @override
   Widget build(BuildContext context) {
@@ -1250,21 +1377,30 @@ class _SeatCard extends StatelessWidget {
       ),
       child: Row(
         children: [
-          CircleAvatar(
-            radius: 24,
-            backgroundColor: seat.isEmpty
-                ? Colors.white10
-                : const Color(0xFF315F51),
-            child: seat.isEmpty
-                ? const Icon(Icons.add, color: Colors.white54, size: 24)
-                : Text(
-                    seat.position.isEmpty ? '${seat.number}' : seat.position,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w700,
-                      fontSize: 11,
-                    ),
-                  ),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: seat.isEmpty || seat.isCurrentUser ? null : onAvatarTap,
+            child: Tooltip(
+              message: seat.isEmpty || seat.isCurrentUser
+                  ? ''
+                  : '点击赞赏或嘲讽 ${seat.displayName}',
+              child: CircleAvatar(
+                radius: 24,
+                backgroundColor: seat.isEmpty
+                    ? Colors.white10
+                    : const Color(0xFF315F51),
+                child: seat.isEmpty
+                    ? const Icon(Icons.add, color: Colors.white54, size: 24)
+                    : Text(
+                        seat.position.isEmpty ? '${seat.number}' : seat.position,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 11,
+                        ),
+                      ),
+              ),
+            ),
           ),
           const SizedBox(width: 9),
           Expanded(
@@ -1424,6 +1560,63 @@ class _SeatCard extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _PlayerInteractionBurst extends StatelessWidget {
+  const _PlayerInteractionBurst({required this.interaction});
+
+  final TablePlayerInteraction interaction;
+
+  @override
+  Widget build(BuildContext context) {
+    final praise = interaction.kind == 'praise';
+    return TweenAnimationBuilder<double>(
+      key: ValueKey(interaction.interactionId),
+      tween: Tween(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 1700),
+      curve: Curves.easeOut,
+      builder: (context, progress, child) {
+        final opacity = math.sin(math.pi * progress).clamp(0.0, 1.0);
+        final shake = praise ? 0.0 : math.sin(progress * math.pi * 10) * 8;
+        return Opacity(
+          opacity: opacity,
+          child: Transform.translate(
+            offset: Offset(shake, -48 - progress * 48),
+            child: Transform.scale(
+              scale: 0.72 + math.min(progress * 1.4, 0.38),
+              child: child,
+            ),
+          ),
+        );
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        decoration: BoxDecoration(
+          color: praise ? const Color(0xEE6A541C) : const Color(0xEE6A2A32),
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(
+            color: praise ? const Color(0xFFFFD54F) : Colors.redAccent,
+            width: 2,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: praise
+                  ? const Color(0x99FFD54F)
+                  : const Color(0x99FF5252),
+              blurRadius: 18,
+              spreadRadius: 3,
+            ),
+          ],
+        ),
+        child: Text(
+          praise
+              ? '👍  ${interaction.fromDisplayName} 赞赏'
+              : '😜  ${interaction.fromDisplayName} 嘲讽',
+          style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
+        ),
       ),
     );
   }
@@ -2435,6 +2628,9 @@ String _gameErrorLabel(String code) => switch (code) {
   'choose_empty_seat' => '牌桌未满时请点击空座位换位',
   'seat_swap_request_not_found' => '这条换位申请已经失效',
   'runout_choice_not_available' => '当前不在发牌次数选择阶段',
+  'invalid_player_interaction' => '请选择同桌的其他玩家进行互动',
+  'player_not_at_table' => '该玩家已经离开牌桌',
+  'player_interaction_too_frequent' => '互动发送太快，请稍后再试',
   _ when code.startsWith('invalid_server_message') => '收到的牌桌数据无法解析',
   _ => '牌桌操作失败（$code）',
 };

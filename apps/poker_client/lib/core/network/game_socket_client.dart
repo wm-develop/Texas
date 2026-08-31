@@ -43,6 +43,9 @@ class GameSocketClient extends ChangeNotifier {
   String? _errorMessage;
   TableSnapshot? _snapshot;
   final List<TableChatMessage> _chatMessages = [];
+  final List<TablePlayerInteraction> _playerInteractions = [];
+  int _chatEventRevision = 0;
+  TableChatMessage? _latestChatEvent;
   List<TableVoiceMember> _voiceMembers = const [];
   Timer? _reconnectTimer;
   Timer? _heartbeatTimer;
@@ -62,6 +65,10 @@ class GameSocketClient extends ChangeNotifier {
   String? get errorMessage => _errorMessage;
   TableSnapshot? get snapshot => _snapshot;
   List<TableChatMessage> get chatMessages => List.unmodifiable(_chatMessages);
+  List<TablePlayerInteraction> get playerInteractions =>
+      List.unmodifiable(_playerInteractions);
+  int get chatEventRevision => _chatEventRevision;
+  TableChatMessage? get latestChatEvent => _latestChatEvent;
   List<TableVoiceMember> get voiceMembers => _voiceMembers;
   bool get actionPending => _actionPending || _recoveringSequenceGap;
   int get lastSequence => _sequences.lastSequence;
@@ -185,6 +192,14 @@ class GameSocketClient extends ChangeNotifier {
         'kind': kind,
         'content': trimmed,
       },
+    );
+  }
+
+  void interactWithPlayer(String targetUserId, String kind) {
+    if (targetUserId.isEmpty || (kind != 'praise' && kind != 'taunt')) return;
+    _send(
+      'table.player.interact',
+      payload: {'targetUserId': targetUserId, 'kind': kind},
     );
   }
 
@@ -315,6 +330,20 @@ class GameSocketClient extends ChangeNotifier {
             )) {
               _chatMessages.add(chat);
               if (_chatMessages.length > 50) _chatMessages.removeAt(0);
+              _latestChatEvent = chat;
+              _chatEventRevision++;
+            }
+          }
+        case 'table.player.interaction':
+          if (payload is Map<String, dynamic>) {
+            final interaction = TablePlayerInteraction.fromJson(payload);
+            if (!_playerInteractions.any(
+              (item) => item.interactionId == interaction.interactionId,
+            )) {
+              _playerInteractions.add(interaction);
+              if (_playerInteractions.length > 20) {
+                _playerInteractions.removeAt(0);
+              }
             }
           }
         case 'table.voice.state':
@@ -446,6 +475,37 @@ class TableVoiceMember {
   final String displayName;
   final bool joined;
   final bool microphoneEnabled;
+}
+
+class TablePlayerInteraction {
+  const TablePlayerInteraction({
+    required this.interactionId,
+    required this.fromUserId,
+    required this.fromDisplayName,
+    required this.targetUserId,
+    required this.targetDisplayName,
+    required this.kind,
+    required this.sentAt,
+  });
+
+  factory TablePlayerInteraction.fromJson(Map<String, dynamic> json) =>
+      TablePlayerInteraction(
+        interactionId: json['interactionId'] as String,
+        fromUserId: json['fromUserId'] as String,
+        fromDisplayName: json['fromDisplayName'] as String,
+        targetUserId: json['targetUserId'] as String,
+        targetDisplayName: json['targetDisplayName'] as String,
+        kind: json['kind'] as String,
+        sentAt: DateTime.fromMillisecondsSinceEpoch(json['sentAt'] as int),
+      );
+
+  final String interactionId;
+  final String fromUserId;
+  final String fromDisplayName;
+  final String targetUserId;
+  final String targetDisplayName;
+  final String kind;
+  final DateTime sentAt;
 }
 
 Map<String, dynamic> _historyToWire(Map<String, dynamic> value) => {

@@ -241,6 +241,23 @@ func TestWebSocketFriendTableFlowAndHoleCardPrivacy(t *testing.T) {
 	if replayResult.Replayed != 1 || replayResult.LastSequence != secondGuestChat.Sequence {
 		t.Fatalf("replay result=%#v", replayResult)
 	}
+
+	writeTestEnvelope(t, ctx, ownerConnection, protocol.Envelope{
+		Version: 1, Type: string(protocol.TypeTablePlayerInteract), RequestID: "praise-guest",
+		TableID: created.RoomID, Payload: json.RawMessage(`{"targetUserId":"` + guest.User.UserID + `","kind":"praise"}`),
+	})
+	readUntilType(t, ctx, ownerConnection, protocol.TypeTablePlayerInteractAccept)
+	ownerInteraction := readUntilType(t, ctx, ownerConnection, protocol.TypeTablePlayerInteraction)
+	guestInteraction := readUntilType(t, ctx, guestConnection, protocol.TypeTablePlayerInteraction)
+	var interaction protocol.PlayerInteractionPayload
+	if err := json.Unmarshal(guestInteraction.Payload, &interaction); err != nil {
+		t.Fatalf("decode player interaction: %v", err)
+	}
+	if interaction.InteractionID != "praise-guest" || interaction.Kind != "praise" ||
+		interaction.FromUserID != owner.User.UserID || interaction.TargetUserID != guest.User.UserID ||
+		ownerInteraction.Sequence != guestInteraction.Sequence {
+		t.Fatalf("interaction=%#v ownerSequence=%d guestSequence=%d", interaction, ownerInteraction.Sequence, guestInteraction.Sequence)
+	}
 }
 
 func TestWebSocketReconnectRestoresCurrentHandAndPrivateCards(t *testing.T) {

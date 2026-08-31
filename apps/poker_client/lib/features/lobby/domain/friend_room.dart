@@ -73,7 +73,6 @@ class RoomPreview {
 class CreateRoomInput {
   const CreateRoomInput({
     required this.preset,
-    required this.maxPlayers,
     required this.password,
     required this.smallBlind,
     required this.bigBlind,
@@ -82,7 +81,6 @@ class CreateRoomInput {
   });
 
   final String preset;
-  final int maxPlayers;
   final String password;
   final int smallBlind;
   final int bigBlind;

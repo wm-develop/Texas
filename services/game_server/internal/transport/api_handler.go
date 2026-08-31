@@ -611,7 +611,7 @@ func registerRoomRoutes(mux *http.ServeMux, accounts *account.Service, rooms *ro
 		}
 		var body struct {
 			Preset     room.Preset `json:"preset"`
-			MaxPlayers int         `json:"maxPlayers"`
+			MaxPlayers int         `json:"maxPlayers"` // Deprecated; accepted but ignored.
 			Password   string      `json:"password"`
 			SmallBlind int64       `json:"smallBlind"`
 			BigBlind   int64       `json:"bigBlind"`
@@ -626,10 +626,10 @@ func registerRoomRoutes(mux *http.ServeMux, accounts *account.Service, rooms *ro
 		var value room.Room
 		var err error
 		if body.RequestID == "" {
-			value, err = rooms.Create(request.Context(), participant, body.Preset, body.MaxPlayers, body.Password)
+			value, err = rooms.Create(request.Context(), participant, body.Preset, room.MaximumPlayers, body.Password)
 		} else {
 			value, err = rooms.CreateConfigured(request.Context(), participant, room.CreateOptions{
-				Preset: body.Preset, MaxPlayers: body.MaxPlayers, Password: body.Password,
+				Preset: body.Preset, MaxPlayers: room.MaximumPlayers, Password: body.Password,
 				SmallBlind: body.SmallBlind, BigBlind: body.BigBlind, MaxBuyIn: body.MaxBuyIn,
 				BuyIn: body.BuyIn, RequestID: body.RequestID,
 			})

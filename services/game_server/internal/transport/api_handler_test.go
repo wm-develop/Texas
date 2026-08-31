@@ -58,6 +58,9 @@ func TestAccountAndFriendRoomHTTPFlow(t *testing.T) {
 	if created.Code == "" || created.PasswordHash != "" || len(created.Members) != 1 {
 		t.Fatalf("created room=%#v", created)
 	}
+	if created.MaxPlayers != room.MaximumPlayers {
+		t.Fatalf("dynamic room capacity=%d want=%d", created.MaxPlayers, room.MaximumPlayers)
+	}
 
 	wrongPassword := doJSONRequest(t, http.MethodPost, server.URL+"/v1/rooms/join", guest.AccessToken, map[string]any{
 		"code": created.Code, "password": "wrong-pass",
@@ -179,6 +182,9 @@ func TestConfiguredRoomBuyInPreviewAndCashOutHTTPFlow(t *testing.T) {
 		} else if value.RoomID != created.RoomID {
 			t.Fatalf("duplicate create allocated another room: %s != %s", value.RoomID, created.RoomID)
 		}
+	}
+	if created.MaxPlayers != room.MaximumPlayers {
+		t.Fatalf("configured capacity=%d want=%d", created.MaxPlayers, room.MaximumPlayers)
 	}
 	previewResponse := doJSONRequest(t, http.MethodGet, server.URL+"/v1/rooms/preview?code="+created.Code, guest.AccessToken, nil)
 	if previewResponse.StatusCode != http.StatusOK {

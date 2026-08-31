@@ -257,7 +257,6 @@ class GameApiClient {
   Future<FriendRoom> createRoom({
     required String accessToken,
     required String preset,
-    required int maxPlayers,
     required String password,
     required int smallBlind,
     required int bigBlind,
@@ -270,7 +269,6 @@ class GameApiClient {
       token: accessToken,
       body: {
         'preset': preset,
-        'maxPlayers': maxPlayers,
         'password': password,
         'smallBlind': smallBlind,
         'bigBlind': bigBlind,

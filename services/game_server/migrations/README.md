@@ -6,10 +6,12 @@ This directory contains ordered, reversible SQL migrations for the game server.
 setting used by the administrator console. `000003_admin_account_management.up.sql`
 adds the auditable administrator wallet-adjustment ledger reason.
 `000004_chat_moderation.up.sql` adds persistent chat mute state; each change is
-committed atomically with its immutable administrator audit event. Matching
+committed atomically with its immutable administrator audit event.
 `000005_runout_boards.up.sql` stores both public boards when heads-up all-in
-players unanimously choose to run the remaining cards twice. Matching
-`down` files are intended only for disposable development databases.
+players unanimously choose to run the remaining cards twice.
+`000006_dynamic_room_capacity.up.sql` expands existing open friend rooms to the
+new dynamic ten-player limit. Matching `down` files are intended only for
+disposable development databases.
 
 Set `DATABASE_URL` in the repository-root `.env`, then run from
 `services/game_server`:

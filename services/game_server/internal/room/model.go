@@ -10,6 +10,7 @@ const (
 	PresetDeep        Preset = "deep"
 	MinimumSmallBlind int64  = 10
 	MinimumBigBlind   int64  = 20
+	MaximumPlayers           = 10
 )
 
 type Rules struct {
