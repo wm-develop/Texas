@@ -38,6 +38,7 @@ type Hand struct {
 	StartedAt     time.Time             `json:"startedAt"`
 	EndedAt       time.Time             `json:"endedAt"`
 	Board         []string              `json:"board"`
+	RunoutBoards  [][]string            `json:"runoutBoards,omitempty"`
 	Players       []PlayerResult        `json:"players"`
 	Actions       []Action              `json:"actions"`
 	PotAwards     []holdem.PotAward     `json:"potAwards"`
@@ -156,6 +157,10 @@ func forRecipient(hand Hand, userID string) Hand {
 func cloneHand(hand Hand) Hand {
 	result := hand
 	result.Board = append([]string(nil), hand.Board...)
+	result.RunoutBoards = make([][]string, len(hand.RunoutBoards))
+	for index, board := range hand.RunoutBoards {
+		result.RunoutBoards[index] = append([]string(nil), board...)
+	}
 	result.Players = make([]PlayerResult, len(hand.Players))
 	for index, player := range hand.Players {
 		result.Players[index] = player

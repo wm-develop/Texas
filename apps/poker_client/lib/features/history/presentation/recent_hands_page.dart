@@ -95,6 +95,9 @@ class _HandCard extends StatelessWidget {
         : own.delta < 0
         ? Colors.redAccent
         : Colors.white70;
+    final boards = hand.runoutBoards.isEmpty
+        ? <List<String>>[hand.board]
+        : hand.runoutBoards;
     return Card(
       child: ExpansionTile(
         leading: CircleAvatar(
@@ -123,19 +126,23 @@ class _HandCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 const Divider(),
-                Wrap(
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  spacing: 6,
-                  children: [
-                    const Text('公共牌'),
-                    if (hand.board.isEmpty)
-                      const Text(
-                        '未发出',
-                        style: TextStyle(color: Colors.white54),
-                      ),
-                    for (final card in hand.board) _PlayingCard(card),
-                  ],
-                ),
+                for (var index = 0; index < boards.length; index++)
+                  Padding(
+                    padding: EdgeInsets.only(top: index == 0 ? 0 : 8),
+                    child: Wrap(
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      spacing: 6,
+                      children: [
+                        Text(boards.length == 1 ? '公共牌' : '第${index + 1}次公共牌'),
+                        if (boards[index].isEmpty)
+                          const Text(
+                            '未发出',
+                            style: TextStyle(color: Colors.white54),
+                          ),
+                        for (final card in boards[index]) _PlayingCard(card),
+                      ],
+                    ),
+                  ),
                 const SizedBox(height: 12),
                 for (final player in hand.players)
                   ListTile(

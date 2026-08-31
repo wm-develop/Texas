@@ -82,6 +82,12 @@ func SimulateHands(handCount int, seed int64) (SimulationResult, error) {
 					return result, fmt.Errorf("seed %d hand %d has negative chips", seed, handIndex)
 				}
 			}
+			if table.Phase() == PhaseRunoutChoice {
+				if err := table.ResolveRunoutChoiceTimeout(); err != nil {
+					return result, fmt.Errorf("seed %d hand %d resolve runout: %w", seed, handIndex, err)
+				}
+				continue
+			}
 
 			options, err := table.CurrentActionOptions()
 			if err != nil {

@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
 import 'package:poker_client/core/settings/app_settings.dart';
 import 'package:poker_client/core/settings/settings_dialog.dart';
+import 'package:poker_client/core/widgets/platform_number_field.dart';
 import 'package:poker_client/features/admin/presentation/admin_page.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_entry.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
@@ -220,10 +220,8 @@ class _LobbyPageState extends State<LobbyPage> {
         children: [
           _cardTitle(icon: Icons.group_add, title: '加入朋友的牌桌', compact: compact),
           SizedBox(height: compact ? 6 : 16),
-          TextField(
+          PlatformNumberField(
             controller: _roomCode,
-            keyboardType: TextInputType.number,
-            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
             maxLength: 6,
             decoration: _fieldDecoration(
               '6 位房间码',
@@ -491,10 +489,8 @@ class _LobbyPageState extends State<LobbyPage> {
     TextEditingController controller,
     String label,
     bool compact,
-  ) => TextField(
+  ) => PlatformNumberField(
     controller: controller,
-    keyboardType: TextInputType.number,
-    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
     decoration: _fieldDecoration(label, compact: compact),
   );
 
@@ -666,13 +662,10 @@ class _ChipAmountDialogState extends State<_ChipAmountDialog> {
         children: [
           Text(widget.description),
           SizedBox(height: keyboardVisible ? 8 : 12),
-          TextField(
+          PlatformNumberField(
             controller: _controller,
             autofocus: false,
-            keyboardType: TextInputType.number,
-            textInputAction: TextInputAction.done,
             scrollPadding: const EdgeInsets.only(bottom: 100),
-            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
             decoration: InputDecoration(
               labelText: widget.fieldLabel,
               helperText: widget.maximum == null

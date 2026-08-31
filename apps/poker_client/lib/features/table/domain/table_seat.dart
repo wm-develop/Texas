@@ -3,10 +3,12 @@ class TableSeat {
     required this.number,
     required this.displayName,
     required this.chips,
+    this.userId = '',
     this.isCurrentUser = false,
     this.isDealer = false,
     this.isOwner = false,
     this.isSpeaking = false,
+    this.isMicrophoneEnabled = false,
     this.isEmpty = false,
     this.isReady = false,
     this.isConnected = true,
@@ -25,12 +27,14 @@ class TableSeat {
   });
 
   final int number;
+  final String userId;
   final String displayName;
   final int chips;
   final bool isCurrentUser;
   final bool isDealer;
   final bool isOwner;
   final bool isSpeaking;
+  final bool isMicrophoneEnabled;
   final bool isEmpty;
   final bool isReady;
   final bool isConnected;

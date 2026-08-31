@@ -3,9 +3,52 @@ package holdem
 import (
 	"errors"
 	"sort"
+	"strings"
 
 	"texas/services/game_server/internal/ledger"
 )
+
+func (table *Table) completeRunout(count int) error {
+	if count != 1 && count != 2 {
+		return errors.New("invalid runout count")
+	}
+	prefix := append([]Card(nil), table.board...)
+	table.runoutBoards = make([][]Card, 0, count)
+	for index := 0; index < count; index++ {
+		board, err := table.dealRemainingBoard(prefix)
+		if err != nil {
+			return err
+		}
+		table.runoutBoards = append(table.runoutBoards, board)
+	}
+	table.board = append([]Card(nil), table.runoutBoards[0]...)
+	return table.settleHand()
+}
+
+func (table *Table) dealRemainingBoard(prefix []Card) ([]Card, error) {
+	board := append([]Card(nil), prefix...)
+	if len(board) == 0 {
+		if _, err := table.deck.Draw(1); err != nil {
+			return nil, err
+		}
+		cards, err := table.deck.Draw(3)
+		if err != nil {
+			return nil, err
+		}
+		board = append(board, cards...)
+	}
+	for len(board) < 5 {
+		if _, err := table.deck.Draw(1); err != nil {
+			return nil, err
+		}
+		cards, err := table.deck.Draw(1)
+		if err != nil {
+			return nil, err
+		}
+		board = append(board, cards[0])
+	}
+	return board, nil
+}
 
 func (table *Table) advanceStreetOrSettle() error {
 	if table.phase == PhaseRiver {
@@ -104,41 +147,61 @@ func (table *Table) settleHand() error {
 			})
 		}
 	} else {
-		if len(table.board) != 5 {
-			return errors.New("showdown requires five board cards")
+		boards := table.runoutBoards
+		if len(boards) == 0 {
+			boards = [][]Card{append([]Card(nil), table.board...)}
 		}
-		contenders := make([]Contender, 0, len(nonFolded))
-		for _, player := range nonFolded {
-			cards := append([]Card(nil), table.board...)
-			cards = append(cards, player.HoleCards[:]...)
-			hand, evaluateErr := Evaluate(cards)
-			if evaluateErr != nil {
-				return evaluateErr
+		categories := make(map[string][]string, len(nonFolded))
+		for runoutIndex, board := range boards {
+			if len(board) != 5 {
+				return errors.New("showdown requires five board cards")
 			}
-			contenders = append(contenders, Contender{
-				PlayerID: player.PlayerID,
-				Seat:     player.Seat,
-				Hand:     hand,
-			})
+			contenders := make([]Contender, 0, len(nonFolded))
+			for _, player := range nonFolded {
+				cards := append([]Card(nil), board...)
+				cards = append(cards, player.HoleCards[:]...)
+				hand, evaluateErr := Evaluate(cards)
+				if evaluateErr != nil {
+					return evaluateErr
+				}
+				contenders = append(contenders, Contender{
+					PlayerID: player.PlayerID, Seat: player.Seat, Hand: hand,
+				})
+				categories[player.PlayerID] = append(categories[player.PlayerID], hand.Category.String())
+			}
+			for potIndex, pot := range potResult.Pots {
+				amount := pot.Amount / int64(len(boards))
+				if int64(runoutIndex) < pot.Amount%int64(len(boards)) {
+					amount++
+				}
+				if amount == 0 {
+					continue
+				}
+				awardResult, awardErr := AwardPots(
+					[]Pot{{Amount: amount, EligiblePlayerIDs: pot.EligiblePlayerIDs}},
+					contenders, table.dealerSeat, table.config.MaxSeats,
+				)
+				if awardErr != nil {
+					return awardErr
+				}
+				award := awardResult.Pots[0]
+				award.PotIndex = potIndex
+				if len(boards) > 1 {
+					award.RunoutIndex = runoutIndex + 1
+				}
+				awards = append(awards, award)
+				for playerID, payout := range awardResult.TotalByPlayer {
+					table.playerByID(playerID).Stack += payout
+				}
+			}
+		}
+		for _, player := range nonFolded {
 			revealedHands = append(revealedHands, RevealedHand{
 				PlayerID:  player.PlayerID,
 				HoleCards: []string{player.HoleCards[0].String(), player.HoleCards[1].String()},
-				Category:  hand.Category.String(),
+				Category:  strings.Join(categories[player.PlayerID], " / "),
 			})
 		}
-		awardResult, awardErr := AwardPots(
-			potResult.Pots,
-			contenders,
-			table.dealerSeat,
-			table.config.MaxSeats,
-		)
-		if awardErr != nil {
-			return awardErr
-		}
-		for playerID, amount := range awardResult.TotalByPlayer {
-			table.playerByID(playerID).Stack += amount
-		}
-		awards = awardResult.Pots
 	}
 
 	table.phase = PhaseSettlement
@@ -150,6 +213,14 @@ func (table *Table) settleHand() error {
 		StacksByPlayer: make(map[string]int64, len(table.players)),
 		Showdown:       len(nonFolded) > 1,
 		RevealedHands:  revealedHands,
+	}
+	if len(table.runoutBoards) > 1 {
+		settlement.RunoutBoards = make([][]string, len(table.runoutBoards))
+		for index, board := range table.runoutBoards {
+			for _, card := range board {
+				settlement.RunoutBoards[index] = append(settlement.RunoutBoards[index], card.String())
+			}
+		}
 	}
 	for _, player := range table.players {
 		settlement.StacksByPlayer[player.PlayerID] = player.Stack

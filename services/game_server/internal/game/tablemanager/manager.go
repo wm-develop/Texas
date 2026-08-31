@@ -41,6 +41,9 @@ type runtime struct {
 	autoReadyDeadline        time.Time
 	autoReadyCancelled       map[string]bool
 	voluntarilyRevealedHands map[string]holdem.RevealedHand
+	holeCardViewRequests     map[string]holeCardViewRequest
+	privateHoleCardViews     map[string]map[string]holdem.RevealedHand
+	seatSwapRequests         map[string]seatSwapRequest
 	timeExtensions           map[string]int
 	handStartedAt            time.Time
 	persistedHandID          string
@@ -49,10 +52,11 @@ type runtime struct {
 }
 
 const (
-	timeExtensionsPerHand = 2
-	timeExtensionDuration = 30 * time.Second
-	headsUpActionDuration = 60 * time.Second
-	autoReadyDelay        = 10 * time.Second
+	timeExtensionsPerHand  = 2
+	timeExtensionDuration  = 30 * time.Second
+	standardActionDuration = 30 * time.Second
+	headsUpActionDuration  = 60 * time.Second
+	autoReadyDelay         = 10 * time.Second
 )
 
 type ScheduledTimer interface {
@@ -108,29 +112,59 @@ type ConfirmedActionSnapshot struct {
 	TableRevision uint64            `json:"tableRevision"`
 }
 
+type HoleCardViewRequestSnapshot struct {
+	RequestID       string `json:"requestId"`
+	RequesterUserID string `json:"requesterUserId"`
+	TargetUserID    string `json:"targetUserId"`
+}
+
+type SeatSwapRequestSnapshot struct {
+	RequestID       string `json:"requestId"`
+	RequesterUserID string `json:"requesterUserId"`
+	TargetUserID    string `json:"targetUserId"`
+}
+
+type RunoutChoiceSnapshot struct {
+	EligiblePlayerIDs []string       `json:"eligiblePlayerIds"`
+	Choices           map[string]int `json:"choices"`
+	Deadline          int64          `json:"deadline"`
+}
+
+type holeCardViewRequest struct {
+	RequestID, RequesterUserID, TargetUserID, HandID string
+}
+
+type seatSwapRequest struct {
+	RequestID, RequesterUserID, TargetUserID string
+}
+
 type Snapshot struct {
-	RoomID             string                   `json:"roomId"`
-	RoomCode           string                   `json:"roomCode"`
-	OwnerUserID        string                   `json:"ownerUserId"`
-	RoomRevision       uint64                   `json:"roomRevision"`
-	TableRevision      uint64                   `json:"tableRevision"`
-	Phase              holdem.Phase             `json:"phase"`
-	HandID             string                   `json:"handId,omitempty"`
-	DealerSeat         int                      `json:"dealerSeat,omitempty"`
-	SmallBlindSeat     int                      `json:"smallBlindSeat,omitempty"`
-	BigBlindSeat       int                      `json:"bigBlindSeat,omitempty"`
-	Board              []string                 `json:"board"`
-	HoleCards          []string                 `json:"holeCards,omitempty"`
-	Seats              []SeatSnapshot           `json:"seats"`
-	CurrentAction      *ActionSnapshot          `json:"currentAction,omitempty"`
-	LastAction         *ConfirmedActionSnapshot `json:"lastAction,omitempty"`
-	TotalPot           int64                    `json:"totalPot"`
-	Settlement         *holdem.Settlement       `json:"settlement,omitempty"`
-	VoluntaryReveals   []holdem.RevealedHand    `json:"voluntaryReveals,omitempty"`
-	CanShowHoleCards   bool                     `json:"canShowHoleCards"`
-	AutoReadyDeadline  int64                    `json:"autoReadyDeadline,omitempty"`
-	AutoReadyCancelled bool                     `json:"autoReadyCancelled"`
-	MaxBuyIn           int64                    `json:"maxBuyIn"`
+	RoomID             string                        `json:"roomId"`
+	RoomCode           string                        `json:"roomCode"`
+	OwnerUserID        string                        `json:"ownerUserId"`
+	RoomRevision       uint64                        `json:"roomRevision"`
+	TableRevision      uint64                        `json:"tableRevision"`
+	Phase              holdem.Phase                  `json:"phase"`
+	HandID             string                        `json:"handId,omitempty"`
+	DealerSeat         int                           `json:"dealerSeat,omitempty"`
+	SmallBlindSeat     int                           `json:"smallBlindSeat,omitempty"`
+	BigBlindSeat       int                           `json:"bigBlindSeat,omitempty"`
+	Board              []string                      `json:"board"`
+	HoleCards          []string                      `json:"holeCards,omitempty"`
+	Seats              []SeatSnapshot                `json:"seats"`
+	CurrentAction      *ActionSnapshot               `json:"currentAction,omitempty"`
+	LastAction         *ConfirmedActionSnapshot      `json:"lastAction,omitempty"`
+	TotalPot           int64                         `json:"totalPot"`
+	Settlement         *holdem.Settlement            `json:"settlement,omitempty"`
+	VoluntaryReveals   []holdem.RevealedHand         `json:"voluntaryReveals,omitempty"`
+	PrivateReveals     []holdem.RevealedHand         `json:"privateReveals,omitempty"`
+	HoleCardRequests   []HoleCardViewRequestSnapshot `json:"holeCardViewRequests,omitempty"`
+	SeatSwapRequests   []SeatSwapRequestSnapshot     `json:"seatSwapRequests,omitempty"`
+	RunoutChoice       *RunoutChoiceSnapshot         `json:"runoutChoice,omitempty"`
+	CanShowHoleCards   bool                          `json:"canShowHoleCards"`
+	AutoReadyDeadline  int64                         `json:"autoReadyDeadline,omitempty"`
+	AutoReadyCancelled bool                          `json:"autoReadyCancelled"`
+	MaxBuyIn           int64                         `json:"maxBuyIn"`
 }
 
 func New(rooms *room.Service, random holdem.IntnSource) (*Manager, error) {
@@ -202,9 +236,9 @@ func (manager *Manager) Disconnect(ctx context.Context, userID string, roomID st
 	defer runtime.mu.Unlock()
 	_ = runtime.engine.SetConnected(userID, false)
 	if runtime.engine.Phase() == holdem.PhaseWaiting || runtime.engine.Phase() == holdem.PhaseWaitingNextHand {
-		if !runtime.autoReadyDeadline.IsZero() {
-			runtime.autoReadyCancelled[userID] = true
-		}
+		// A short platform/network reconnect must not be treated as the player
+		// explicitly cancelling automatic ready. This is especially common on
+		// HarmonyOS when the app briefly changes lifecycle state.
 		if updated, readyErr := manager.rooms.SetReady(ctx, userID, false); readyErr == nil {
 			roomValue = updated
 			_ = runtime.engine.SetReady(userID, false)
@@ -238,6 +272,9 @@ func (manager *Manager) SetReady(ctx context.Context, userID string, ready bool)
 		(runtime.engine.Phase() == holdem.PhaseWaiting || runtime.engine.Phase() == holdem.PhaseWaitingNextHand) {
 		manager.clearAutoReadyLocked(runtime)
 		runtime.voluntarilyRevealedHands = make(map[string]holdem.RevealedHand)
+		runtime.holeCardViewRequests = make(map[string]holeCardViewRequest)
+		runtime.privateHoleCardViews = make(map[string]map[string]holdem.RevealedHand)
+		runtime.seatSwapRequests = make(map[string]seatSwapRequest)
 		runtime.handStartedAt = manager.now()
 		runtime.actions = nil
 		runtime.lastAction = nil
@@ -302,6 +339,8 @@ func (manager *Manager) SubmitAction(
 		}
 	}
 	if result.HandEnded {
+		runtime.holeCardViewRequests = make(map[string]holeCardViewRequest)
+		runtime.privateHoleCardViews = make(map[string]map[string]holdem.RevealedHand)
 		if err := manager.persistSettlementLocked(runtime, roomValue); err != nil {
 			return holdem.ActionResult{}, Snapshot{}, err
 		}
@@ -310,12 +349,46 @@ func (manager *Manager) SubmitAction(
 			return holdem.ActionResult{}, Snapshot{}, err
 		}
 		manager.scheduleAutoReadyLocked(runtime)
+		manager.refreshDeadlineLocked(runtime)
 	}
 	if runtime.engine.Revision() != previousRevision {
 		manager.refreshDeadlineLocked(runtime)
 	}
 	snapshot, err := snapshotForRuntime(runtime, roomValue, userID)
 	return result, snapshot, err
+}
+
+func (manager *Manager) SubmitRunoutChoice(
+	ctx context.Context, userID, roomID string, count int,
+) (Snapshot, error) {
+	roomValue, err := manager.rooms.GetForMember(ctx, userID, roomID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	runtime := manager.existingRuntime(roomID)
+	if runtime == nil {
+		return Snapshot{}, room.Error{Code: "table_not_started"}
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	settled, err := runtime.engine.ChooseRunoutCount(userID, count)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if settled {
+		if err := manager.persistSettlementLocked(runtime, roomValue); err != nil {
+			return Snapshot{}, err
+		}
+		roomValue, err = manager.resetReadyLocked(ctx, runtime, roomValue)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		manager.scheduleAutoReadyLocked(runtime)
+		manager.refreshDeadlineLocked(runtime)
+	} else {
+		manager.refreshDeadlineLocked(runtime)
+	}
+	return snapshotForRuntime(runtime, roomValue, userID)
 }
 
 func (manager *Manager) Snapshot(ctx context.Context, userID string, roomID string) (Snapshot, error) {
@@ -359,6 +432,162 @@ func (manager *Manager) ShowHoleCards(ctx context.Context, userID string, roomID
 		Category:  "voluntary",
 	}
 	return snapshotForRuntime(runtime, roomValue, userID)
+}
+
+func (manager *Manager) RequestHoleCardView(
+	ctx context.Context, requesterUserID, roomID, targetUserID, requestID string,
+) (Snapshot, error) {
+	roomValue, err := manager.rooms.GetForMember(ctx, requesterUserID, roomID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	runtime := manager.existingRuntime(roomID)
+	if runtime == nil {
+		return Snapshot{}, room.Error{Code: "table_not_started"}
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if requestID == "" || requesterUserID == targetUserID ||
+		runtime.engine.Phase() == holdem.PhaseWaiting || runtime.engine.Phase() == holdem.PhaseWaitingNextHand {
+		return Snapshot{}, holdem.RuleError{Code: "hole_card_view_not_available"}
+	}
+	var requester, target *holdem.Player
+	players := runtime.engine.Players()
+	for index := range players {
+		player := &players[index]
+		if player.PlayerID == requesterUserID {
+			requester = player
+		}
+		if player.PlayerID == targetUserID {
+			target = player
+		}
+	}
+	if requester == nil || !requester.Participating || !requester.Folded || target == nil ||
+		!target.Participating || target.HoleCards[0].Rank == 0 || target.HoleCards[1].Rank == 0 {
+		return Snapshot{}, holdem.RuleError{Code: "hole_card_view_not_available"}
+	}
+	for _, pending := range runtime.holeCardViewRequests {
+		if pending.RequesterUserID == requesterUserID && pending.TargetUserID == targetUserID {
+			return snapshotForRuntime(runtime, roomValue, requesterUserID)
+		}
+	}
+	runtime.holeCardViewRequests[requestID] = holeCardViewRequest{
+		RequestID: requestID, RequesterUserID: requesterUserID,
+		TargetUserID: targetUserID, HandID: runtime.engine.HandID(),
+	}
+	return snapshotForRuntime(runtime, roomValue, requesterUserID)
+}
+
+func (manager *Manager) RespondHoleCardView(
+	ctx context.Context, targetUserID, roomID, requestID string, accept bool,
+) (Snapshot, error) {
+	roomValue, err := manager.rooms.GetForMember(ctx, targetUserID, roomID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	runtime := manager.existingRuntime(roomID)
+	if runtime == nil {
+		return Snapshot{}, room.Error{Code: "table_not_started"}
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	pending, exists := runtime.holeCardViewRequests[requestID]
+	if !exists || pending.TargetUserID != targetUserID || pending.HandID != runtime.engine.HandID() {
+		return Snapshot{}, holdem.RuleError{Code: "hole_card_view_request_not_found"}
+	}
+	delete(runtime.holeCardViewRequests, requestID)
+	if accept {
+		for _, player := range runtime.engine.Players() {
+			if player.PlayerID != targetUserID || !player.Participating {
+				continue
+			}
+			if runtime.privateHoleCardViews[pending.RequesterUserID] == nil {
+				runtime.privateHoleCardViews[pending.RequesterUserID] = make(map[string]holdem.RevealedHand)
+			}
+			runtime.privateHoleCardViews[pending.RequesterUserID][targetUserID] = holdem.RevealedHand{
+				PlayerID:  targetUserID,
+				HoleCards: []string{player.HoleCards[0].String(), player.HoleCards[1].String()},
+				Category:  "private_view",
+			}
+			break
+		}
+	}
+	return snapshotForRuntime(runtime, roomValue, targetUserID)
+}
+
+func (manager *Manager) RequestSeatChange(
+	ctx context.Context, requesterUserID, roomID string, targetSeat int, requestID string,
+) (Snapshot, error) {
+	roomValue, err := manager.rooms.GetForMember(ctx, requesterUserID, roomID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	runtime := manager.existingRuntime(roomID)
+	if runtime == nil {
+		return Snapshot{}, room.Error{Code: "table_not_started"}
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.engine.Phase() != holdem.PhaseWaiting && runtime.engine.Phase() != holdem.PhaseWaitingNextHand {
+		return Snapshot{}, holdem.RuleError{Code: "hand_in_progress"}
+	}
+	var targetUserID string
+	for _, member := range roomValue.Members {
+		if member.Seat == targetSeat {
+			targetUserID = member.UserID
+			break
+		}
+	}
+	if targetUserID == "" {
+		roomValue, err = manager.rooms.MoveSeat(ctx, requesterUserID, targetSeat)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		if err := runtime.engine.MovePlayer(requesterUserID, targetSeat); err != nil {
+			return Snapshot{}, err
+		}
+		return snapshotForRuntime(runtime, roomValue, requesterUserID)
+	}
+	if len(roomValue.Members) != roomValue.MaxPlayers || targetUserID == requesterUserID || requestID == "" {
+		return Snapshot{}, holdem.RuleError{Code: "choose_empty_seat"}
+	}
+	runtime.seatSwapRequests[requestID] = seatSwapRequest{
+		RequestID: requestID, RequesterUserID: requesterUserID, TargetUserID: targetUserID,
+	}
+	return snapshotForRuntime(runtime, roomValue, requesterUserID)
+}
+
+func (manager *Manager) RespondSeatSwap(
+	ctx context.Context, targetUserID, roomID, requestID string, accept bool,
+) (Snapshot, error) {
+	roomValue, err := manager.rooms.GetForMember(ctx, targetUserID, roomID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	runtime := manager.existingRuntime(roomID)
+	if runtime == nil {
+		return Snapshot{}, room.Error{Code: "table_not_started"}
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	pending, exists := runtime.seatSwapRequests[requestID]
+	if !exists || pending.TargetUserID != targetUserID {
+		return Snapshot{}, holdem.RuleError{Code: "seat_swap_request_not_found"}
+	}
+	delete(runtime.seatSwapRequests, requestID)
+	if accept {
+		if runtime.engine.Phase() != holdem.PhaseWaiting && runtime.engine.Phase() != holdem.PhaseWaitingNextHand {
+			return Snapshot{}, holdem.RuleError{Code: "hand_in_progress"}
+		}
+		roomValue, err = manager.rooms.SwapSeats(ctx, pending.RequesterUserID, targetUserID)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		if err := runtime.engine.SwapPlayers(pending.RequesterUserID, targetUserID); err != nil {
+			return Snapshot{}, err
+		}
+	}
+	return snapshotForRuntime(runtime, roomValue, targetUserID)
 }
 
 func (manager *Manager) UseTimeExtension(ctx context.Context, userID string, roomID string) (Snapshot, error) {
@@ -508,6 +737,9 @@ func (manager *Manager) runtimeFor(roomValue room.Room) (*runtime, error) {
 		engine: engine, roomID: roomValue.RoomID, actionSeconds: roomValue.Rules.ActionSeconds,
 		timeExtensions: make(map[string]int), autoReadyCancelled: make(map[string]bool),
 		voluntarilyRevealedHands: make(map[string]holdem.RevealedHand),
+		holeCardViewRequests:     make(map[string]holeCardViewRequest),
+		privateHoleCardViews:     make(map[string]map[string]holdem.RevealedHand),
+		seatSwapRequests:         make(map[string]seatSwapRequest),
 	}
 	manager.tables[roomValue.RoomID] = created
 	return created, nil
@@ -520,7 +752,11 @@ func (manager *Manager) existingRuntime(roomID string) *runtime {
 }
 
 func (manager *Manager) refreshDeadlineLocked(runtime *runtime) {
-	duration := time.Duration(runtime.actionSeconds) * time.Second
+	duration := standardActionDuration
+	if runtime.engine.Phase() == holdem.PhaseRunoutChoice {
+		manager.scheduleDeadlineLocked(runtime, manager.now().Add(duration))
+		return
+	}
 	if runtime.engine.RemainingPlayerCount() == 2 {
 		duration = headsUpActionDuration
 	}
@@ -534,7 +770,7 @@ func (manager *Manager) scheduleDeadlineLocked(runtime *runtime, deadline time.T
 	}
 	runtime.timerGeneration++
 	runtime.deadline = time.Time{}
-	if runtime.engine.CurrentSeat() == 0 {
+	if runtime.engine.CurrentSeat() == 0 && runtime.engine.Phase() != holdem.PhaseRunoutChoice {
 		return
 	}
 	runtime.deadline = deadline
@@ -623,8 +859,45 @@ func (manager *Manager) handleTimeout(roomID string, generation uint64) {
 		return
 	}
 	runtime.mu.Lock()
-	if generation != runtime.timerGeneration || runtime.engine.CurrentSeat() == 0 ||
-		manager.now().Before(runtime.deadline) {
+	if generation != runtime.timerGeneration || manager.now().Before(runtime.deadline) {
+		runtime.mu.Unlock()
+		return
+	}
+	if runtime.engine.Phase() == holdem.PhaseRunoutChoice {
+		state := runtime.engine.RunoutChoiceState()
+		var roomValue room.Room
+		var err error
+		for _, userID := range state.EligiblePlayerIDs {
+			roomValue, err = manager.rooms.GetForMember(context.Background(), userID, roomID)
+			if err == nil {
+				break
+			}
+		}
+		if err == nil {
+			err = runtime.engine.ResolveRunoutChoiceTimeout()
+		}
+		if err == nil {
+			err = manager.persistSettlementLocked(runtime, roomValue)
+		}
+		if err == nil {
+			roomValue, err = manager.resetReadyLocked(context.Background(), runtime, roomValue)
+		}
+		if err == nil {
+			manager.scheduleAutoReadyLocked(runtime)
+			runtime.timerGeneration++
+			runtime.deadline = time.Time{}
+			runtime.timer = nil
+		} else {
+			runtime.deadline = time.Time{}
+			runtime.timer = nil
+		}
+		runtime.mu.Unlock()
+		if err == nil {
+			manager.notifySnapshot(roomID)
+		}
+		return
+	}
+	if runtime.engine.CurrentSeat() == 0 {
 		runtime.mu.Unlock()
 		return
 	}
@@ -726,7 +999,8 @@ func (manager *Manager) persistSettlementLocked(runtime *runtime, roomValue room
 			DealerSeat: runtime.engine.DealerSeat(),
 			StartedAt:  runtime.handStartedAt, EndedAt: manager.now(), Showdown: settlement.Showdown,
 			PotAwards: settlement.PotAwards, RevealedHands: settlement.RevealedHands,
-			Actions: append([]history.Action(nil), runtime.actions...),
+			RunoutBoards: settlement.RunoutBoards,
+			Actions:      append([]history.Action(nil), runtime.actions...),
 		}
 		for _, card := range runtime.engine.Board() {
 			record.Board = append(record.Board, card.String())
@@ -802,6 +1076,17 @@ func snapshotForRuntime(runtime *runtime, roomValue room.Room, recipientUserID s
 		result.AutoReadyDeadline = runtime.autoReadyDeadline.UnixMilli()
 		result.AutoReadyCancelled = runtime.autoReadyCancelled[recipientUserID]
 	}
+	if runtime.engine.Phase() == holdem.PhaseRunoutChoice {
+		state := runtime.engine.RunoutChoiceState()
+		result.RunoutChoice = &RunoutChoiceSnapshot{
+			EligiblePlayerIDs: append([]string(nil), state.EligiblePlayerIDs...),
+			Choices:           make(map[string]int, len(state.Choices)),
+			Deadline:          runtime.deadline.UnixMilli(),
+		}
+		for userID, choice := range state.Choices {
+			result.RunoutChoice.Choices[userID] = choice
+		}
+	}
 	userIDs := make([]string, 0, len(runtime.voluntarilyRevealedHands))
 	for userID := range runtime.voluntarilyRevealedHands {
 		userIDs = append(userIDs, userID)
@@ -812,10 +1097,47 @@ func snapshotForRuntime(runtime *runtime, roomValue room.Room, recipientUserID s
 		hand.HoleCards = append([]string(nil), hand.HoleCards...)
 		result.VoluntaryReveals = append(result.VoluntaryReveals, hand)
 	}
+	privateUserIDs := make([]string, 0, len(runtime.privateHoleCardViews[recipientUserID]))
+	for userID := range runtime.privateHoleCardViews[recipientUserID] {
+		privateUserIDs = append(privateUserIDs, userID)
+	}
+	sort.Strings(privateUserIDs)
+	for _, userID := range privateUserIDs {
+		hand := runtime.privateHoleCardViews[recipientUserID][userID]
+		hand.HoleCards = append([]string(nil), hand.HoleCards...)
+		result.PrivateReveals = append(result.PrivateReveals, hand)
+	}
+	for _, pending := range runtime.holeCardViewRequests {
+		if pending.TargetUserID == recipientUserID {
+			result.HoleCardRequests = append(result.HoleCardRequests, HoleCardViewRequestSnapshot{
+				RequestID: pending.RequestID, RequesterUserID: pending.RequesterUserID,
+				TargetUserID: pending.TargetUserID,
+			})
+		}
+	}
+	for _, pending := range runtime.seatSwapRequests {
+		if pending.TargetUserID == recipientUserID {
+			result.SeatSwapRequests = append(result.SeatSwapRequests, SeatSwapRequestSnapshot{
+				RequestID: pending.RequestID, RequesterUserID: pending.RequesterUserID,
+				TargetUserID: pending.TargetUserID,
+			})
+		}
+	}
+	sort.Slice(result.HoleCardRequests, func(left, right int) bool {
+		return result.HoleCardRequests[left].RequestID < result.HoleCardRequests[right].RequestID
+	})
+	sort.Slice(result.SeatSwapRequests, func(left, right int) bool {
+		return result.SeatSwapRequests[left].RequestID < result.SeatSwapRequests[right].RequestID
+	})
 	return result, nil
 }
 
 func voluntaryRevealPlayer(engine *holdem.Table, userID string) (holdem.Player, bool) {
+	// Voluntary public reveal belongs to the settlement window. Folded players
+	// must not be able to expose their cards while a hand is still in progress.
+	if engine.Phase() != holdem.PhaseWaitingNextHand {
+		return holdem.Player{}, false
+	}
 	for _, player := range engine.Players() {
 		if player.PlayerID != userID || !player.Participating || engine.HandID() == "" {
 			continue

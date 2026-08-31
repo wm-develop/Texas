@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/core/network/game_socket_client.dart';
 import 'package:poker_client/core/network/trtc_credential_client.dart';
@@ -10,6 +9,7 @@ import 'package:poker_client/core/platform/voice_chat_service.dart';
 import 'package:poker_client/core/platform/voice_chat_service_factory.dart';
 import 'package:poker_client/core/settings/app_settings.dart';
 import 'package:poker_client/core/settings/settings_dialog.dart';
+import 'package:poker_client/core/widgets/platform_number_field.dart';
 import 'package:poker_client/features/admin/presentation/admin_page.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
@@ -70,6 +70,9 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
   bool _rebuyDialogOpen = false;
   String? _autoRebuyHandId;
   bool _removedFromRoomHandled = false;
+  String? _autoReadySubmittedHandId;
+  final Set<String> _handledTableRequestIds = {};
+  bool _tableRequestDialogOpen = false;
 
   bool get _voiceJoined =>
       _voiceState == VoiceConnectionState.connected ||
@@ -103,9 +106,11 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
     });
     _tableClock = Timer.periodic(const Duration(milliseconds: 200), (_) {
       final snapshot = _gameSocket.snapshot;
+      _submitExpiredAutoReady(snapshot);
       if (mounted &&
           (snapshot?.currentAction?.deadline != null ||
-              snapshot?.autoReadyDeadline != null)) {
+              snapshot?.autoReadyDeadline != null ||
+              snapshot?.runoutChoice?.deadline != null)) {
         setState(() {});
       }
     });
@@ -147,7 +152,10 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
               );
               final handWidth = math.min(680.0, viewport.tableRect.width);
               final showSideChat = _chatVisible && viewport.supportsSideChat;
-              return Center(
+              return Align(
+                alignment: viewport.isCompactLandscape
+                    ? Alignment.bottomCenter
+                    : Alignment.center,
                 child: FittedBox(
                   fit: BoxFit.contain,
                   child: SizedBox.fromSize(
@@ -202,6 +210,7 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
                             ),
                             snapshot: _gameSocket.snapshot,
                             actionRemaining: _actionRemaining,
+                            onSeatTap: _handleSeatTap,
                           ),
                         ),
                         if (showSideChat)
@@ -221,7 +230,7 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
                         else
                           Positioned(
                             right: 24,
-                            bottom: 118,
+                            bottom: viewport.isCompactLandscape ? 86 : 118,
                             child: FilledButton.tonalIcon(
                               onPressed: viewport.supportsSideChat
                                   ? _toggleChat
@@ -232,7 +241,7 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
                           ),
                         Positioned(
                           left: viewport.tableRect.center.dx - handWidth / 2,
-                          bottom: 92,
+                          bottom: viewport.isCompactLandscape ? 76 : 92,
                           width: handWidth,
                           height: 66,
                           child: _HandCardsPanel(
@@ -243,7 +252,7 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
                         Positioned(
                           left: 24,
                           right: 24,
-                          bottom: 18,
+                          bottom: viewport.isCompactLandscape ? 2 : 18,
                           child: _ActionBar(
                             client: _gameSocket,
                             userId: widget.session.user.userId,
@@ -385,6 +394,7 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
     }
     _playTableSounds();
     _offerAutomaticRebuy();
+    _offerPendingTableRequest();
     if (error == null) _lastShownGameError = null;
     if (error != null && error != _lastShownGameError) {
       _lastShownGameError = error;
@@ -395,6 +405,156 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
           ..showSnackBar(SnackBar(content: Text(_gameErrorLabel(error))));
       });
     }
+  }
+
+  void _submitExpiredAutoReady(TableSnapshot? snapshot) {
+    final deadline = snapshot?.autoReadyDeadline;
+    if (snapshot == null || deadline == null) {
+      return;
+    }
+    final ownSeat = snapshot.seats
+        .where((seat) => seat.userId == widget.session.user.userId)
+        .firstOrNull;
+    if (deadline.isAfter(_gameSocket.serverNow) ||
+        snapshot.autoReadyCancelled ||
+        ownSeat == null ||
+        ownSeat.ready ||
+        ownSeat.stack <= 0 ||
+        _gameSocket.status != GameSocketStatus.joined ||
+        _autoReadySubmittedHandId == snapshot.handId) {
+      return;
+    }
+    _autoReadySubmittedHandId = snapshot.handId;
+    _gameSocket.setReady(true);
+  }
+
+  void _offerPendingTableRequest() {
+    if (_tableRequestDialogOpen) return;
+    final snapshot = _gameSocket.snapshot;
+    if (snapshot == null) return;
+    PendingTableRequest? request;
+    var holeCards = false;
+    for (final candidate in snapshot.holeCardViewRequests) {
+      if (!_handledTableRequestIds.contains(candidate.requestId)) {
+        request = candidate;
+        holeCards = true;
+        break;
+      }
+    }
+    if (request == null) {
+      for (final candidate in snapshot.seatSwapRequests) {
+        if (!_handledTableRequestIds.contains(candidate.requestId)) {
+          request = candidate;
+          break;
+        }
+      }
+    }
+    if (request == null) return;
+    _handledTableRequestIds.add(request.requestId);
+    _tableRequestDialogOpen = true;
+    final pending = request;
+    final requesterName = snapshot.seats
+        .where((seat) => seat.userId == pending.requesterUserId)
+        .map((seat) => seat.displayName)
+        .firstOrNull;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      final accepted = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          title: Text(holeCards ? '查看手牌申请' : '换位申请'),
+          content: Text(
+            holeCards
+                ? '${requesterName ?? '一名玩家'}已弃牌，申请提前查看你的手牌。是否同意？'
+                : '${requesterName ?? '一名玩家'}申请与你交换座位。是否同意？',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('拒绝'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('同意'),
+            ),
+          ],
+        ),
+      );
+      if (holeCards) {
+        _gameSocket.respondHoleCardsView(pending.requestId, accepted == true);
+      } else {
+        _gameSocket.respondSeatSwap(pending.requestId, accepted == true);
+      }
+      _tableRequestDialogOpen = false;
+      if (mounted) _offerPendingTableRequest();
+    });
+  }
+
+  Future<void> _handleSeatTap(TableSeat seat) async {
+    final snapshot = _gameSocket.snapshot;
+    if (snapshot == null || seat.isCurrentUser) return;
+    final waiting =
+        snapshot.phase == 'WAITING' || snapshot.phase == 'WAITING_NEXT_HAND';
+    if (waiting) {
+      final full = snapshot.seats.length >= widget.room.maxPlayers;
+      if (!seat.isEmpty && !full) {
+        _showTableHint('还有空座位，请直接点击想换到的空位');
+        return;
+      }
+      if (!seat.isEmpty && full) {
+        final confirmed = await _confirmTableAction(
+          '申请换位',
+          '向 ${seat.displayName} 发出交换座位申请？',
+        );
+        if (confirmed) _gameSocket.requestSeatChange(seat.number);
+        return;
+      }
+      final confirmed = await _confirmTableAction(
+        '更换座位',
+        '立即换到 ${seat.number} 号空位？',
+      );
+      if (confirmed) _gameSocket.requestSeatChange(seat.number);
+      return;
+    }
+    final ownSeat = snapshot.seats
+        .where((value) => value.userId == widget.session.user.userId)
+        .firstOrNull;
+    final target = snapshot.seats
+        .where((value) => value.userId == seat.userId)
+        .firstOrNull;
+    if (ownSeat?.folded != true || target?.participating != true) return;
+    final confirmed = await _confirmTableAction(
+      '申请查看手牌',
+      '向 ${seat.displayName} 申请提前查看他的手牌？只有对方同意后你才能看到。',
+    );
+    if (confirmed) _gameSocket.requestHoleCardsView(seat.userId);
+  }
+
+  Future<bool> _confirmTableAction(String title, String content) async =>
+      await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text(title),
+          content: Text(content),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('确定'),
+            ),
+          ],
+        ),
+      ) ??
+      false;
+
+  void _showTableHint(String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
   }
 
   void _settingsChanged() {
@@ -514,15 +674,20 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
       final revealed = [
         ...?snapshot?.settlement?.revealedHands,
         ...?snapshot?.voluntaryReveals,
+        ...?snapshot?.privateReveals,
       ].where((hand) => hand.userId == value.userId).firstOrNull;
       return TableSeat(
         number: seatNumber,
+        userId: value.userId,
         displayName: value.displayName,
         chips: value.stack,
         isCurrentUser: value.userId == widget.session.user.userId,
         isDealer: snapshot?.dealerSeat == seatNumber,
         isOwner: snapshot?.ownerUserId == value.userId,
         isSpeaking: _speakingUserIds.contains(value.userId),
+        isMicrophoneEnabled: _gameSocket.voiceMembers.any(
+          (member) => member.userId == value.userId && member.microphoneEnabled,
+        ),
         isReady: value.ready,
         isConnected: value.connected,
         isFolded: value.folded,
@@ -779,15 +944,29 @@ class _PokerTable extends StatelessWidget {
     required this.alignments,
     required this.snapshot,
     required this.actionRemaining,
+    required this.onSeatTap,
   });
 
   final List<TableSeat> seats;
   final List<Alignment> alignments;
   final TableSnapshot? snapshot;
   final Duration actionRemaining;
+  final ValueChanged<TableSeat> onSeatTap;
 
   @override
   Widget build(BuildContext context) {
+    final winnerAmounts = <String, int>{};
+    for (final award in snapshot?.settlement?.potAwards ?? const <PotAward>[]) {
+      for (final payout in award.payouts) {
+        winnerAmounts.update(
+          payout.userId,
+          (amount) => amount + payout.amount,
+          ifAbsent: () => payout.amount,
+        );
+      }
+    }
+    final showReadyStatus =
+        snapshot?.phase == 'WAITING' || snapshot?.phase == 'WAITING_NEXT_HAND';
     return Stack(
       clipBehavior: Clip.none,
       children: [
@@ -819,9 +998,15 @@ class _PokerTable extends StatelessWidget {
         for (var index = 0; index < seats.length; index++)
           Align(
             alignment: alignments[index],
-            child: _SeatCard(
-              seat: seats[index],
-              actionRemaining: actionRemaining,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => onSeatTap(seats[index]),
+              child: _SeatCard(
+                seat: seats[index],
+                actionRemaining: actionRemaining,
+                showReadyStatus: showReadyStatus,
+                winnerAmount: winnerAmounts[seats[index].userId] ?? 0,
+              ),
             ),
           ),
         for (var index = 0; index < seats.length; index++)
@@ -857,6 +1042,8 @@ class _BoardCenter extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final board = snapshot?.board ?? const <String>[];
+    final runoutBoards =
+        snapshot?.settlement?.runoutBoards ?? const <List<String>>[];
     final actor = snapshot?.currentAction;
     final actorName = snapshot?.seats
         .where((seat) => seat.userId == actor?.userId)
@@ -895,17 +1082,49 @@ class _BoardCenter extends StatelessWidget {
           ),
         ],
         SizedBox(height: snapshot?.settlement == null ? 16 : 10),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: List.generate(5, (index) {
-            final card = index < board.length ? board[index] : null;
-            return _PlayingCard(
-              rank: card == null ? '?' : _cardRank(card),
-              suit: card == null ? '' : _cardSuit(card),
-              red: card != null && (card.endsWith('h') || card.endsWith('d')),
-            );
-          }),
-        ),
+        if (runoutBoards.length == 2)
+          for (
+            var runoutIndex = 0;
+            runoutIndex < runoutBoards.length;
+            runoutIndex++
+          )
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  SizedBox(
+                    width: 48,
+                    child: Text(
+                      '第${runoutIndex + 1}次',
+                      style: const TextStyle(
+                        color: Color(0xFFF6D986),
+                        fontSize: 11,
+                      ),
+                    ),
+                  ),
+                  for (final card in runoutBoards[runoutIndex])
+                    _PlayingCard(
+                      rank: _cardRank(card),
+                      suit: _cardSuit(card),
+                      red: card.endsWith('h') || card.endsWith('d'),
+                      compact: true,
+                    ),
+                ],
+              ),
+            )
+        else
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: List.generate(5, (index) {
+              final card = index < board.length ? board[index] : null;
+              return _PlayingCard(
+                rank: card == null ? '?' : _cardRank(card),
+                suit: card == null ? '' : _cardSuit(card),
+                red: card != null && (card.endsWith('h') || card.endsWith('d')),
+              );
+            }),
+          ),
         if (snapshot?.settlement == null) ...[
           const SizedBox(height: 18),
           Text(
@@ -925,11 +1144,13 @@ class _PlayingCard extends StatelessWidget {
     required this.rank,
     required this.suit,
     this.red = false,
+    this.compact = false,
   });
 
   final String rank;
   final String suit;
   final bool red;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -942,10 +1163,10 @@ class _PlayingCard extends StatelessWidget {
       ),
       child: Container(
         key: ValueKey('$rank$suit'),
-        width: 58,
-        height: 78,
-        margin: const EdgeInsets.symmetric(horizontal: 4),
-        padding: const EdgeInsets.all(7),
+        width: compact ? 42 : 58,
+        height: compact ? 54 : 78,
+        margin: EdgeInsets.symmetric(horizontal: compact ? 2 : 4),
+        padding: EdgeInsets.all(compact ? 4 : 7),
         decoration: BoxDecoration(
           color: rank == '?'
               ? const Color(0xFF234E43)
@@ -960,7 +1181,7 @@ class _PlayingCard extends StatelessWidget {
             color: rank == '?'
                 ? Colors.white54
                 : (red ? const Color(0xFFC63D45) : Colors.black87),
-            fontSize: 18,
+            fontSize: compact ? 13 : 18,
             fontWeight: FontWeight.w700,
           ),
         ),
@@ -970,14 +1191,23 @@ class _PlayingCard extends StatelessWidget {
 }
 
 class _SeatCard extends StatelessWidget {
-  const _SeatCard({required this.seat, required this.actionRemaining});
+  const _SeatCard({
+    required this.seat,
+    required this.actionRemaining,
+    required this.showReadyStatus,
+    required this.winnerAmount,
+  });
 
   final TableSeat seat;
   final Duration actionRemaining;
+  final bool showReadyStatus;
+  final int winnerAmount;
 
   @override
   Widget build(BuildContext context) {
-    final borderColor = seat.isCurrentActor
+    final borderColor = winnerAmount > 0
+        ? const Color(0xFFFFD54F)
+        : seat.isCurrentActor
         ? const Color(0xFFFFA94D)
         : seat.isCurrentUser
         ? const Color(0xFFF4D477)
@@ -988,34 +1218,40 @@ class _SeatCard extends StatelessWidget {
     return AnimatedContainer(
       duration: const Duration(milliseconds: 240),
       curve: Curves.easeOut,
-      width: 148,
-      height: 92,
-      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+      width: 172,
+      height: 104,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       decoration: BoxDecoration(
         color: seat.isEmpty
             ? const Color(0x80112622)
             : seat.isFolded
-            ? const Color(0xEE252D2A)
+            ? const Color(0xFA070B0A)
+            : winnerAmount > 0
+            ? const Color(0xFF263518)
             : const Color(0xEE0D211D),
         borderRadius: BorderRadius.circular(13),
         border: Border.all(
           color: borderColor,
-          width: seat.isCurrentActor || seat.isCurrentUser ? 2 : 1,
+          width: winnerAmount > 0 || seat.isCurrentActor || seat.isCurrentUser
+              ? 2.5
+              : 1,
         ),
         boxShadow: [
           BoxShadow(
-            color: seat.isCurrentActor
+            color: winnerAmount > 0
+                ? const Color(0x99FFD54F)
+                : seat.isCurrentActor
                 ? const Color(0x66FFA94D)
                 : Colors.black38,
-            blurRadius: seat.isCurrentActor ? 16 : 8,
-            spreadRadius: seat.isCurrentActor ? 2 : 0,
+            blurRadius: winnerAmount > 0 || seat.isCurrentActor ? 18 : 8,
+            spreadRadius: winnerAmount > 0 || seat.isCurrentActor ? 3 : 0,
           ),
         ],
       ),
       child: Row(
         children: [
           CircleAvatar(
-            radius: 22,
+            radius: 24,
             backgroundColor: seat.isEmpty
                 ? Colors.white10
                 : const Color(0xFF315F51),
@@ -1044,7 +1280,7 @@ class _SeatCard extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                           fontWeight: FontWeight.w700,
-                          fontSize: 14,
+                          fontSize: 15,
                         ),
                       ),
                     ),
@@ -1076,8 +1312,17 @@ class _SeatCard extends StatelessWidget {
                           color: Color(0xFF6DE0A4),
                           size: 17,
                         ),
+                      )
+                    else if (seat.isMicrophoneEnabled)
+                      const Padding(
+                        padding: EdgeInsets.only(left: 3),
+                        child: Icon(
+                          Icons.mic,
+                          color: Color(0xFF6DE0A4),
+                          size: 17,
+                        ),
                       ),
-                    if (seat.isReady && !seat.isDealer)
+                    if (showReadyStatus && seat.isReady)
                       const Padding(
                         padding: EdgeInsets.only(left: 3),
                         child: Icon(
@@ -1086,14 +1331,14 @@ class _SeatCard extends StatelessWidget {
                           size: 15,
                         ),
                       ),
-                    if (seat.isParticipating)
+                    if (seat.isParticipating && !showReadyStatus)
                       Padding(
                         padding: const EdgeInsets.only(left: 3),
                         child: Text(
                           '⏱${seat.timeExtensions}',
                           style: const TextStyle(
                             color: Colors.white54,
-                            fontSize: 10,
+                            fontSize: 11,
                           ),
                         ),
                       ),
@@ -1102,7 +1347,7 @@ class _SeatCard extends StatelessWidget {
                 if (seat.isEmpty)
                   const Text(
                     '空座位',
-                    style: TextStyle(color: Colors.white60, fontSize: 12),
+                    style: TextStyle(color: Colors.white60, fontSize: 13),
                   )
                 else
                   Row(
@@ -1123,21 +1368,46 @@ class _SeatCard extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
                             color: Colors.white70,
-                            fontSize: 12,
+                            fontSize: 13,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
                       ),
                     ],
                   ),
-                if (!seat.isEmpty && seat.isCurrentActor)
+                if (!seat.isEmpty && winnerAmount > 0)
+                  Text(
+                    '🏆 赢家  +$winnerAmount',
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xFFFFD54F),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  )
+                else if (!seat.isEmpty && seat.isFolded)
+                  const Row(
+                    children: [
+                      Icon(Icons.block, color: Colors.redAccent, size: 15),
+                      SizedBox(width: 4),
+                      Text(
+                        '本手已弃牌',
+                        style: TextStyle(
+                          color: Colors.redAccent,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ],
+                  )
+                else if (!seat.isEmpty && seat.isCurrentActor)
                   Text(
                     '剩余 ${_remainingSeconds(actionRemaining)} 秒',
                     style: TextStyle(
                       color: _remainingSeconds(actionRemaining) <= 5
                           ? Colors.redAccent
                           : const Color(0xFFFFA94D),
-                      fontSize: 11,
+                      fontSize: 12,
                       fontWeight: FontWeight.w700,
                     ),
                   )
@@ -1147,7 +1417,7 @@ class _SeatCard extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       color: Color(0xFFF6D986),
-                      fontSize: 11,
+                      fontSize: 12,
                     ),
                   ),
               ],
@@ -1596,12 +1866,9 @@ class _RebuyAmountDialogState extends State<_RebuyAmountDialog> {
                       _controller.text = '$_amount';
                     },
             ),
-            TextField(
+            PlatformNumberField(
               controller: _controller,
-              keyboardType: TextInputType.number,
-              textInputAction: TextInputAction.done,
               scrollPadding: const EdgeInsets.only(bottom: 100),
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               decoration: InputDecoration(
                 labelText: '补码数量',
                 helperText: widget.available > 0
@@ -1661,8 +1928,12 @@ class _ActionBar extends StatelessWidget {
     final autoReadyRemaining = snapshot?.autoReadyDeadline?.difference(
       client.serverNow,
     );
-    final autoReadyPending =
-        autoReadyRemaining != null && autoReadyRemaining > Duration.zero;
+    final autoReadyPending = autoReadyRemaining != null;
+    final runoutChoice = snapshot?.runoutChoice;
+    final runoutRemaining = runoutChoice?.deadline?.difference(
+      client.serverNow,
+    );
+    final ownRunoutChoice = runoutChoice?.choices[userId];
     return Container(
       height: 70,
       padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -1713,7 +1984,9 @@ class _ActionBar extends StatelessWidget {
                           ? '取消准备'
                           : autoReadyPending &&
                                 !(snapshot?.autoReadyCancelled ?? false)
-                          ? '取消自动准备（${_remainingSeconds(autoReadyRemaining)}秒）'
+                          ? autoReadyRemaining > Duration.zero
+                                ? '取消自动准备（${_remainingSeconds(autoReadyRemaining)}秒）'
+                                : '正在自动准备…'
                           : '准备开始',
                     ),
                   ),
@@ -1727,6 +2000,40 @@ class _ActionBar extends StatelessWidget {
                     icon: const Icon(Icons.add_circle_outline),
                     label: const Text('补码'),
                   ),
+                ],
+              ),
+            )
+          else if (runoutChoice != null)
+            Expanded(
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    '全下发牌选择 · ${_remainingSeconds(runoutRemaining ?? Duration.zero)} 秒',
+                    style: const TextStyle(
+                      color: Color(0xFFF6D986),
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  if (!runoutChoice.eligiblePlayerIds.contains(userId))
+                    const Text('等待两名玩家选择')
+                  else if (ownRunoutChoice != null)
+                    Text(
+                      '已选择发 $ownRunoutChoice 次，等待对方',
+                      style: const TextStyle(color: Colors.white70),
+                    )
+                  else ...[
+                    OutlinedButton(
+                      onPressed: () => client.chooseRunoutCount(1),
+                      child: const Text('发一次'),
+                    ),
+                    const SizedBox(width: 10),
+                    FilledButton(
+                      onPressed: () => client.chooseRunoutCount(2),
+                      child: const Text('发两次'),
+                    ),
+                  ],
                 ],
               ),
             )
@@ -1947,12 +2254,9 @@ class _BetAmountDialogState extends State<_BetAmountDialog> {
                 label: '$_amount',
                 onChanged: (value) => _setAmount(value.round()),
               ),
-            TextField(
+            PlatformNumberField(
               controller: _controller,
-              keyboardType: TextInputType.number,
-              textInputAction: TextInputAction.done,
               scrollPadding: const EdgeInsets.only(bottom: 100),
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               decoration: InputDecoration(
                 labelText: '$actionLabel至',
                 border: const OutlineInputBorder(),
@@ -2105,7 +2409,8 @@ String _potAwardLabel(PotAward award, List<TableSeatSnapshot> seats) {
       })
       .join('、');
   final potName = award.potIndex == 0 ? '主池' : '边池 ${award.potIndex}';
-  return '$potName ${award.amount}：$names';
+  final runout = award.runoutIndex > 0 ? '第${award.runoutIndex}次 · ' : '';
+  return '$runout$potName ${award.amount}：$names';
 }
 
 String _gameErrorLabel(String code) => switch (code) {
@@ -2125,6 +2430,11 @@ String _gameErrorLabel(String code) => switch (code) {
   'maximum_buy_in_exceeded' => '本次补码会超过房间最大带入',
   'hand_in_progress' => '只能在两手牌之间补码',
   'rebuy_required' => '筹码已用完，请先补码再准备',
+  'hole_card_view_not_available' => '只有本手已弃牌的玩家才能申请查看仍在本手中的玩家手牌',
+  'hole_card_view_request_not_found' => '这条看牌申请已经失效',
+  'choose_empty_seat' => '牌桌未满时请点击空座位换位',
+  'seat_swap_request_not_found' => '这条换位申请已经失效',
+  'runout_choice_not_available' => '当前不在发牌次数选择阶段',
   _ when code.startsWith('invalid_server_message') => '收到的牌桌数据无法解析',
   _ => '牌桌操作失败（$code）',
 };
@@ -2148,6 +2458,7 @@ String _phaseLabel(String? phase) => switch (phase) {
   'FLOP' => '翻牌圈',
   'TURN' => '转牌圈',
   'RIVER' => '河牌圈',
+  'RUNOUT_CHOICE' => '全下，等待选择发牌次数',
   'SHOWDOWN' => '摊牌',
   _ => phase,
 };

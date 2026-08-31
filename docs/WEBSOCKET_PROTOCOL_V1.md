@@ -60,6 +60,11 @@
 | `table.ready.set` | 设置下一手准备状态 | `ready` |
 | `table.rebuy` | 两手之间从账户钱包补充牌桌筹码 | `amount` |
 | `table.hole_cards.reveal` | 符合条件时主动公开自己的底牌 | 空对象 |
+| `table.hole_cards.view.request` | 已弃牌玩家申请私下查看另一名参局玩家的底牌 | `targetUserId` |
+| `table.hole_cards.view.respond` | 被申请玩家同意或拒绝私下看牌 | `pendingRequestId`, `accept` |
+| `table.seat.change.request` | 两手之间移动到空座位，满桌时发起换位申请 | `targetSeat` |
+| `table.seat.swap.respond` | 被申请玩家同意或拒绝换位 | `pendingRequestId`, `accept` |
+| `table.runout.choose` | 两名未弃牌玩家完成全下/跟注且后续无需行动后，选择发一次或发两次 | `count`（1 或 2） |
 | `table.snapshot.request` | 主动请求完整快照 | `lastSequence?`, `reason` |
 | `table.action.submit` | 提交牌局动作 | `actionId`, `action`, `raiseTo?` |
 | `table.chat.send` | 发送文字、快捷语或表情 | `clientMessageId`, `kind`, `content` |
@@ -196,9 +201,11 @@
 - 最近一次已确认动作 `lastAction`，包含 `actionId`、`handId`、`userId`、`action` 和动作后的 `tableRevision`；客户端用它驱动一次性音效等反馈，不以未确认的本地点击代替。
 - 仅对接收者可见的本人底牌。
 - 已主动公开的底牌 `voluntaryReveals`，以及当前接收者的 `canShowHoleCards` 权限。
+- 仅对获准申请者可见的 `privateReveals`，以及仅对目标玩家可见的 `holeCardViewRequests`、`seatSwapRequests`。
+- 仅剩两名未弃牌玩家、至少一人全下且另一人已完成跟注或全下、投注行动已经闭合时的 `runoutChoice`；全下发生后、对手尚未响应期间不会提前进入选择。仅双方均选择 2 时，结算包含两块 `runoutBoards`，每个 `potAward` 通过 `runoutIndex` 标明所属牌面。
 - 两手之间的 `autoReadyDeadline` 和当前接收者的 `autoReadyCancelled` 状态。
 
-房主离桌后，服务端按成员加入时间、再按座位号将 `ownerUserId` 转移给最早加入的剩余成员；最后一名成员离桌才发送 `table.closed`。主动亮牌仅允许已弃牌玩家，或因其他玩家全部弃牌而获得本手胜利的玩家使用；公开状态持续到下一手开始。每手结算后，服务端设置 10 秒自动准备期限；客户端发送 `table.ready.set {"ready": false}` 可取消本轮自动准备，再发送 `ready: true` 可恢复准备。
+房主离桌后，服务端按成员加入时间、再按座位号将 `ownerUserId` 转移给最早加入的剩余成员；最后一名成员离桌才发送 `table.closed`。主动亮牌只允许在本手结算后由已弃牌玩家，或因其他玩家全部弃牌而获得本手胜利的玩家使用；公开状态持续到下一手开始。每手结算后，服务端设置 10 秒自动准备期限；短暂断线不等同于主动取消，客户端发送 `table.ready.set {"ready": false}` 才取消本轮自动准备，再发送 `ready: true` 可恢复准备。
 
 快照不得包含牌堆顺序、其他玩家未公开底牌、服务端随机数状态、TRTC 密钥或其他用户的鉴权信息。
 
@@ -224,6 +231,11 @@
 | `maximum_buy_in_exceeded` | 本次补码会超过房间最大带入 |
 | `rebuy_required` | 牌桌筹码为零，完成补码前不能准备下一手 |
 | `hole_cards_not_revealable` | 当前玩家、手牌或牌局阶段不允许主动公开底牌 |
+| `hole_card_view_not_available` | 当前不满足弃牌后私下看牌申请条件 |
+| `hole_card_view_request_not_found` | 私下看牌申请已处理或失效 |
+| `choose_empty_seat` | 牌桌未满时应直接选择空座位 |
+| `seat_swap_request_not_found` | 换位申请已处理或失效 |
+| `runout_choice_not_available` | 当前不在发牌次数选择阶段，或玩家无权选择 |
 | `chat_muted` | 玩家被禁言 |
 | `content_rejected` | 聊天内容不符合规则 |
 

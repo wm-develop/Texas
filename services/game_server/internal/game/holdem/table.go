@@ -20,6 +20,7 @@ const (
 	PhaseFlop            Phase = "FLOP"
 	PhaseTurn            Phase = "TURN"
 	PhaseRiver           Phase = "RIVER"
+	PhaseRunoutChoice    Phase = "RUNOUT_CHOICE"
 	PhaseShowdown        Phase = "SHOWDOWN"
 	PhaseSettlement      Phase = "SETTLEMENT"
 	PhaseWaitingNextHand Phase = "WAITING_NEXT_HAND"
@@ -110,6 +111,12 @@ type Settlement struct {
 	LedgerEntries  []ledger.Entry   `json:"ledgerEntries"`
 	Showdown       bool             `json:"showdown"`
 	RevealedHands  []RevealedHand   `json:"revealedHands"`
+	RunoutBoards   [][]string       `json:"runoutBoards,omitempty"`
+}
+
+type RunoutChoiceState struct {
+	EligiblePlayerIDs []string       `json:"eligiblePlayerIds"`
+	Choices           map[string]int `json:"choices"`
 }
 
 type RevealedHand struct {
@@ -134,6 +141,8 @@ type Table struct {
 	minRaiseIncrement int64
 	deck              *Deck
 	board             []Card
+	runoutBoards      [][]Card
+	runoutChoices     map[string]int
 	actionResults     map[string]ActionResult
 	handStartStacks   map[string]int64
 	lastSettlement    Settlement
@@ -218,6 +227,46 @@ func (table *Table) SetReady(playerID string, ready bool) error {
 	return nil
 }
 
+func (table *Table) MovePlayer(playerID string, targetSeat int) error {
+	if table.phase != PhaseWaiting && table.phase != PhaseWaitingNextHand {
+		return RuleError{Code: "hand_in_progress"}
+	}
+	if targetSeat <= 0 || targetSeat > table.config.MaxSeats {
+		return RuleError{Code: "invalid_seat"}
+	}
+	player := table.playerByID(playerID)
+	if player == nil {
+		return RuleError{Code: "not_seated"}
+	}
+	if player.Seat == targetSeat {
+		return nil
+	}
+	if _, occupied := table.players[targetSeat]; occupied {
+		return RuleError{Code: "seat_occupied"}
+	}
+	delete(table.players, player.Seat)
+	player.Seat = targetSeat
+	table.players[targetSeat] = player
+	table.revision++
+	return nil
+}
+
+func (table *Table) SwapPlayers(firstUserID, secondUserID string) error {
+	if table.phase != PhaseWaiting && table.phase != PhaseWaitingNextHand {
+		return RuleError{Code: "hand_in_progress"}
+	}
+	first := table.playerByID(firstUserID)
+	second := table.playerByID(secondUserID)
+	if first == nil || second == nil || first == second {
+		return RuleError{Code: "invalid_seat_swap"}
+	}
+	firstSeat, secondSeat := first.Seat, second.Seat
+	first.Seat, second.Seat = secondSeat, firstSeat
+	table.players[firstSeat], table.players[secondSeat] = second, first
+	table.revision++
+	return nil
+}
+
 func (table *Table) AddChips(playerID string, amount int64) error {
 	if table.phase != PhaseWaiting && table.phase != PhaseWaitingNextHand {
 		return RuleError{Code: "hand_in_progress"}
@@ -265,6 +314,8 @@ func (table *Table) StartHand(random IntnSource) error {
 	}
 	table.deck = deck
 	table.board = nil
+	table.runoutBoards = nil
+	table.runoutChoices = make(map[string]int)
 	table.handCounter++
 	table.handID = newHandID(table.config.TableID, table.handCounter)
 	table.actionResults = make(map[string]ActionResult)
@@ -341,6 +392,50 @@ func (table *Table) CurrentPlayerID() string {
 }
 func (table *Table) Board() []Card              { return append([]Card(nil), table.board...) }
 func (table *Table) LastSettlement() Settlement { return cloneSettlement(table.lastSettlement) }
+
+func (table *Table) RunoutChoiceState() RunoutChoiceState {
+	state := RunoutChoiceState{Choices: make(map[string]int, len(table.runoutChoices))}
+	if table.phase != PhaseRunoutChoice {
+		return state
+	}
+	for _, player := range table.players {
+		if player.Participating && !player.Folded {
+			state.EligiblePlayerIDs = append(state.EligiblePlayerIDs, player.PlayerID)
+		}
+	}
+	sort.Strings(state.EligiblePlayerIDs)
+	for playerID, choice := range table.runoutChoices {
+		state.Choices[playerID] = choice
+	}
+	return state
+}
+
+func (table *Table) ChooseRunoutCount(playerID string, count int) (bool, error) {
+	if table.phase != PhaseRunoutChoice || (count != 1 && count != 2) {
+		return false, RuleError{Code: "runout_choice_not_available"}
+	}
+	player := table.playerByID(playerID)
+	if player == nil || !player.Participating || player.Folded {
+		return false, RuleError{Code: "runout_choice_not_available"}
+	}
+	table.runoutChoices[playerID] = count
+	table.revision++
+	if count == 1 {
+		return true, table.completeRunout(1)
+	}
+	state := table.RunoutChoiceState()
+	if len(state.EligiblePlayerIDs) == 2 && len(state.Choices) == 2 {
+		return true, table.completeRunout(2)
+	}
+	return false, nil
+}
+
+func (table *Table) ResolveRunoutChoiceTimeout() error {
+	if table.phase != PhaseRunoutChoice {
+		return RuleError{Code: "runout_choice_not_available"}
+	}
+	return table.completeRunout(1)
+}
 
 func (table *Table) Players() []Player {
 	seats := table.allSeats()
@@ -509,6 +604,10 @@ func cloneSettlement(value Settlement) Settlement {
 	for index, hand := range value.RevealedHands {
 		result.RevealedHands[index] = hand
 		result.RevealedHands[index].HoleCards = append([]string(nil), hand.HoleCards...)
+	}
+	result.RunoutBoards = make([][]string, len(value.RunoutBoards))
+	for index, board := range value.RunoutBoards {
+		result.RunoutBoards[index] = append([]string(nil), board...)
 	}
 	return result
 }

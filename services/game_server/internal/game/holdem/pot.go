@@ -35,6 +35,7 @@ type Payout struct {
 
 type PotAward struct {
 	PotIndex        int      `json:"potIndex"`
+	RunoutIndex     int      `json:"runoutIndex,omitempty"`
 	Amount          int64    `json:"amount"`
 	WinnerPlayerIDs []string `json:"winnerPlayerIds"`
 	Payouts         []Payout `json:"payouts"`

@@ -25,6 +25,11 @@ const (
 	TypeTableHoleCardsReveal       MessageType = "table.hole_cards.reveal"
 	TypeTableHoleCardsRevealed     MessageType = "table.hole_cards.revealed"
 	TypeTableHoleCardsRevealReject MessageType = "table.hole_cards.reveal.rejected"
+	TypeTableHoleCardsViewRequest  MessageType = "table.hole_cards.view.request"
+	TypeTableHoleCardsViewRespond  MessageType = "table.hole_cards.view.respond"
+	TypeTableSeatChangeRequest     MessageType = "table.seat.change.request"
+	TypeTableSeatSwapRespond       MessageType = "table.seat.swap.respond"
+	TypeTableRunoutChoose          MessageType = "table.runout.choose"
 	TypeTableBoardDealt            MessageType = "table.board.dealt"
 	TypeTableHandSettled           MessageType = "table.hand.settled"
 	TypeTableTimeExtensionUse      MessageType = "table.time_extension.use"
@@ -89,6 +94,23 @@ type VoiceStateSetPayload struct {
 
 type RebuyPayload struct {
 	Amount int64 `json:"amount"`
+}
+
+type HoleCardsViewRequestPayload struct {
+	TargetUserID string `json:"targetUserId"`
+}
+
+type RequestResponsePayload struct {
+	PendingRequestID string `json:"pendingRequestId"`
+	Accept           bool   `json:"accept"`
+}
+
+type SeatChangeRequestPayload struct {
+	TargetSeat int `json:"targetSeat"`
+}
+
+type RunoutChoosePayload struct {
+	Count int `json:"count"`
 }
 
 type VoiceMemberState struct {

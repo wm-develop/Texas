@@ -202,16 +202,19 @@ class PotPayout {
 class PotAward {
   const PotAward({
     required this.potIndex,
+    required this.runoutIndex,
     required this.amount,
     required this.payouts,
   });
 
   final int potIndex;
+  final int runoutIndex;
   final int amount;
   final List<PotPayout> payouts;
 
   factory PotAward.fromJson(Map<String, dynamic> json) => PotAward(
     potIndex: json['potIndex'] as int,
+    runoutIndex: json['runoutIndex'] as int? ?? 0,
     amount: json['amount'] as int,
     payouts: (json['payouts'] as List<dynamic>)
         .map((value) => PotPayout.fromJson(value as Map<String, dynamic>))
@@ -225,12 +228,14 @@ class TableSettlement {
     required this.showdown,
     required this.revealedHands,
     required this.potAwards,
+    required this.runoutBoards,
   });
 
   final String handId;
   final bool showdown;
   final List<RevealedHand> revealedHands;
   final List<PotAward> potAwards;
+  final List<List<String>> runoutBoards;
 
   factory TableSettlement.fromJson(Map<String, dynamic> json) =>
       TableSettlement(
@@ -244,6 +249,53 @@ class TableSettlement {
         potAwards: (json['potAwards'] as List<dynamic>? ?? const [])
             .map((value) => PotAward.fromJson(value as Map<String, dynamic>))
             .toList(growable: false),
+        runoutBoards: (json['runoutBoards'] as List<dynamic>? ?? const [])
+            .map((value) => (value as List<dynamic>).cast<String>())
+            .toList(growable: false),
+      );
+}
+
+class RunoutChoiceSnapshot {
+  const RunoutChoiceSnapshot({
+    required this.eligiblePlayerIds,
+    required this.choices,
+    required this.deadline,
+  });
+
+  final List<String> eligiblePlayerIds;
+  final Map<String, int> choices;
+  final DateTime? deadline;
+
+  factory RunoutChoiceSnapshot.fromJson(Map<String, dynamic> json) =>
+      RunoutChoiceSnapshot(
+        eligiblePlayerIds:
+            (json['eligiblePlayerIds'] as List<dynamic>? ?? const [])
+                .cast<String>(),
+        choices: (json['choices'] as Map<String, dynamic>? ?? const {}).map(
+          (key, value) => MapEntry(key, value as int),
+        ),
+        deadline: (json['deadline'] as int? ?? 0) == 0
+            ? null
+            : DateTime.fromMillisecondsSinceEpoch(json['deadline'] as int),
+      );
+}
+
+class PendingTableRequest {
+  const PendingTableRequest({
+    required this.requestId,
+    required this.requesterUserId,
+    required this.targetUserId,
+  });
+
+  final String requestId;
+  final String requesterUserId;
+  final String targetUserId;
+
+  factory PendingTableRequest.fromJson(Map<String, dynamic> json) =>
+      PendingTableRequest(
+        requestId: json['requestId'] as String,
+        requesterUserId: json['requesterUserId'] as String,
+        targetUserId: json['targetUserId'] as String,
       );
 }
 
@@ -265,6 +317,10 @@ class TableSnapshot {
     required this.maxBuyIn,
     required this.settlement,
     required this.voluntaryReveals,
+    required this.privateReveals,
+    required this.holeCardViewRequests,
+    required this.seatSwapRequests,
+    required this.runoutChoice,
     required this.canShowHoleCards,
     required this.autoReadyDeadline,
     required this.autoReadyCancelled,
@@ -286,6 +342,10 @@ class TableSnapshot {
   final int maxBuyIn;
   final TableSettlement? settlement;
   final List<RevealedHand> voluntaryReveals;
+  final List<RevealedHand> privateReveals;
+  final List<PendingTableRequest> holeCardViewRequests;
+  final List<PendingTableRequest> seatSwapRequests;
+  final RunoutChoiceSnapshot? runoutChoice;
   final bool canShowHoleCards;
   final DateTime? autoReadyDeadline;
   final bool autoReadyCancelled;
@@ -324,6 +384,27 @@ class TableSnapshot {
     voluntaryReveals: (json['voluntaryReveals'] as List<dynamic>? ?? const [])
         .map((value) => RevealedHand.fromJson(value as Map<String, dynamic>))
         .toList(growable: false),
+    privateReveals: (json['privateReveals'] as List<dynamic>? ?? const [])
+        .map((value) => RevealedHand.fromJson(value as Map<String, dynamic>))
+        .toList(growable: false),
+    holeCardViewRequests:
+        (json['holeCardViewRequests'] as List<dynamic>? ?? const [])
+            .map(
+              (value) =>
+                  PendingTableRequest.fromJson(value as Map<String, dynamic>),
+            )
+            .toList(growable: false),
+    seatSwapRequests: (json['seatSwapRequests'] as List<dynamic>? ?? const [])
+        .map(
+          (value) =>
+              PendingTableRequest.fromJson(value as Map<String, dynamic>),
+        )
+        .toList(growable: false),
+    runoutChoice: json['runoutChoice'] == null
+        ? null
+        : RunoutChoiceSnapshot.fromJson(
+            json['runoutChoice'] as Map<String, dynamic>,
+          ),
     canShowHoleCards: json['canShowHoleCards'] as bool? ?? false,
     autoReadyDeadline: (json['autoReadyDeadline'] as int? ?? 0) == 0
         ? null

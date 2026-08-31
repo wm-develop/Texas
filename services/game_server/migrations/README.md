@@ -7,6 +7,8 @@ setting used by the administrator console. `000003_admin_account_management.up.s
 adds the auditable administrator wallet-adjustment ledger reason.
 `000004_chat_moderation.up.sql` adds persistent chat mute state; each change is
 committed atomically with its immutable administrator audit event. Matching
+`000005_runout_boards.up.sql` stores both public boards when heads-up all-in
+players unanimously choose to run the remaining cards twice. Matching
 `down` files are intended only for disposable development databases.
 
 Set `DATABASE_URL` in the repository-root `.env`, then run from

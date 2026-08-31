@@ -49,14 +49,19 @@ func (store *PostgresStore) Append(hand Hand) error {
 		_ = transaction.Rollback()
 		return fmt.Errorf("encode revealed hands: %w", err)
 	}
+	runoutBoards, err := json.Marshal(hand.RunoutBoards)
+	if err != nil {
+		_ = transaction.Rollback()
+		return fmt.Errorf("encode runout boards: %w", err)
+	}
 	_, err = transaction.ExecContext(
 		ctx,
 		`INSERT INTO hands (
 		 hand_id, room_id, room_code, dealer_seat, board_cards, pot_awards,
-		 revealed_hands, showdown, started_at, ended_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		 revealed_hands, runout_boards, showdown, started_at, ended_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		hand.HandID, hand.RoomID, hand.RoomCode, persistentDealerSeat(hand), board,
-		string(potAwards), string(revealedHands), hand.Showdown, hand.StartedAt, hand.EndedAt,
+		string(potAwards), string(revealedHands), string(runoutBoards), hand.Showdown, hand.StartedAt, hand.EndedAt,
 	)
 	if err != nil {
 		_ = transaction.Rollback()
@@ -150,16 +155,16 @@ func (store *PostgresStore) RecentForPlayer(userID string, limit int) []Hand {
 
 func (store *PostgresStore) loadHand(ctx context.Context, handID string) (Hand, error) {
 	var value Hand
-	var boardCards, potAwards, revealedHands []byte
+	var boardCards, potAwards, revealedHands, runoutBoards []byte
 	err := store.database.QueryRowContext(
 		ctx,
 		`SELECT hand_id, room_id, trim(room_code), dealer_seat, to_json(board_cards), pot_awards,
-		 revealed_hands, showdown, started_at, ended_at
+		 revealed_hands, runout_boards, showdown, started_at, ended_at
 		 FROM hands WHERE hand_id = $1`,
 		handID,
 	).Scan(
 		&value.HandID, &value.RoomID, &value.RoomCode, &value.DealerSeat, &boardCards,
-		&potAwards, &revealedHands, &value.Showdown, &value.StartedAt, &value.EndedAt,
+		&potAwards, &revealedHands, &runoutBoards, &value.Showdown, &value.StartedAt, &value.EndedAt,
 	)
 	if err != nil {
 		return Hand{}, err
@@ -172,6 +177,9 @@ func (store *PostgresStore) loadHand(ctx context.Context, handID string) (Hand, 
 	}
 	if err := json.Unmarshal(revealedHands, &value.RevealedHands); err != nil {
 		return Hand{}, fmt.Errorf("decode revealed hands: %w", err)
+	}
+	if err := json.Unmarshal(runoutBoards, &value.RunoutBoards); err != nil {
+		return Hand{}, fmt.Errorf("decode runout boards: %w", err)
 	}
 	rows, err := store.database.QueryContext(
 		ctx,

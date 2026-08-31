@@ -428,6 +428,69 @@ func (service *Service) SetReady(ctx context.Context, userID string, ready bool)
 	return Room{}, Error{Code: "permission_denied"}
 }
 
+func (service *Service) MoveSeat(ctx context.Context, userID string, targetSeat int) (Room, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	value, err := service.repository.ByUser(ctx, userID)
+	if err != nil {
+		return Room{}, Error{Code: "room_not_found"}
+	}
+	if targetSeat <= 0 || targetSeat > value.MaxPlayers {
+		return Room{}, Error{Code: "invalid_seat"}
+	}
+	memberIndex := -1
+	for index := range value.Members {
+		if value.Members[index].Seat == targetSeat && value.Members[index].UserID != userID {
+			return Room{}, Error{Code: "seat_occupied"}
+		}
+		if value.Members[index].UserID == userID {
+			memberIndex = index
+		}
+	}
+	if memberIndex < 0 {
+		return Room{}, Error{Code: "permission_denied"}
+	}
+	if value.Members[memberIndex].Seat == targetSeat {
+		return publicRoom(value), nil
+	}
+	value.Members[memberIndex].Seat = targetSeat
+	sort.Slice(value.Members, func(left, right int) bool { return value.Members[left].Seat < value.Members[right].Seat })
+	value.Revision++
+	if err := service.repository.Save(ctx, value); err != nil {
+		return Room{}, err
+	}
+	return publicRoom(value), nil
+}
+
+func (service *Service) SwapSeats(ctx context.Context, firstUserID, secondUserID string) (Room, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	value, err := service.repository.ByUser(ctx, firstUserID)
+	if err != nil {
+		return Room{}, Error{Code: "room_not_found"}
+	}
+	firstIndex, secondIndex := -1, -1
+	for index := range value.Members {
+		switch value.Members[index].UserID {
+		case firstUserID:
+			firstIndex = index
+		case secondUserID:
+			secondIndex = index
+		}
+	}
+	if firstIndex < 0 || secondIndex < 0 || firstUserID == secondUserID {
+		return Room{}, Error{Code: "invalid_seat_swap"}
+	}
+	value.Members[firstIndex].Seat, value.Members[secondIndex].Seat =
+		value.Members[secondIndex].Seat, value.Members[firstIndex].Seat
+	sort.Slice(value.Members, func(left, right int) bool { return value.Members[left].Seat < value.Members[right].Seat })
+	value.Revision++
+	if err := service.repository.Save(ctx, value); err != nil {
+		return Room{}, err
+	}
+	return publicRoom(value), nil
+}
+
 func (service *Service) Leave(ctx context.Context, userID string) (closed bool, err error) {
 	service.mu.Lock()
 	defer service.mu.Unlock()
@@ -476,7 +539,7 @@ func rulesForPreset(preset Preset) (Rules, bool) {
 	case PresetCasual:
 		return Rules{StartingChips: 1000, MaxBuyIn: 1000, SmallBlind: 10, BigBlind: 20, ActionSeconds: 30}, true
 	case PresetStandard:
-		return Rules{StartingChips: 2000, MaxBuyIn: 2000, SmallBlind: 10, BigBlind: 20, ActionSeconds: 20}, true
+		return Rules{StartingChips: 2000, MaxBuyIn: 2000, SmallBlind: 10, BigBlind: 20, ActionSeconds: 30}, true
 	case PresetDeep:
 		return Rules{StartingChips: 5000, MaxBuyIn: 5000, SmallBlind: 10, BigBlind: 20, ActionSeconds: 30}, true
 	default:

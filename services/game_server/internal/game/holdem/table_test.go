@@ -92,18 +92,98 @@ func TestFoldAwardsPotWithoutShowdown(t *testing.T) {
 	}
 }
 
-func TestAllInBlindsAutomaticallyRunBoard(t *testing.T) {
+func TestAllInBlindsOfferRunoutChoiceAndDefaultToOnce(t *testing.T) {
 	table := mustTable(t, Config{MaxSeats: 2, SmallBlind: 5, BigBlind: 10})
 	mustAddReady(t, table, "a", 1, 5)
 	mustAddReady(t, table, "b", 2, 5)
 	if err := table.StartHand(zeroRandom{}); err != nil {
 		t.Fatalf("StartHand: %v", err)
 	}
-	if table.Phase() != PhaseWaitingNextHand || len(table.Board()) != 5 {
+	if table.Phase() != PhaseRunoutChoice || len(table.Board()) != 0 {
 		t.Fatalf("phase=%s board=%d", table.Phase(), len(table.Board()))
+	}
+	if err := table.ResolveRunoutChoiceTimeout(); err != nil {
+		t.Fatalf("ResolveRunoutChoiceTimeout: %v", err)
+	}
+	if table.Phase() != PhaseWaitingNextHand || len(table.Board()) != 5 {
+		t.Fatalf("settled phase=%s board=%d", table.Phase(), len(table.Board()))
 	}
 	if table.TotalChips() != 10 {
 		t.Fatalf("chips = %d, want 10", table.TotalChips())
+	}
+}
+
+func TestHeadsUpAllInRunsTwiceOnlyWhenBothChooseTwice(t *testing.T) {
+	table := mustTable(t, Config{MaxSeats: 2, SmallBlind: 5, BigBlind: 10})
+	mustAddReady(t, table, "a", 1, 5)
+	mustAddReady(t, table, "b", 2, 5)
+	if err := table.StartHand(zeroRandom{}); err != nil {
+		t.Fatal(err)
+	}
+	settled, err := table.ChooseRunoutCount("a", 2)
+	if err != nil || settled {
+		t.Fatalf("first choice settled=%v err=%v", settled, err)
+	}
+	settled, err = table.ChooseRunoutCount("b", 2)
+	if err != nil || !settled || table.Phase() != PhaseWaitingNextHand {
+		t.Fatalf("second choice settled=%v phase=%s err=%v", settled, table.Phase(), err)
+	}
+	result := table.LastSettlement()
+	if len(result.RunoutBoards) != 2 || len(result.RunoutBoards[0]) != 5 || len(result.RunoutBoards[1]) != 5 {
+		t.Fatalf("runout boards=%#v", result.RunoutBoards)
+	}
+	var awarded int64
+	for _, award := range result.PotAwards {
+		if award.RunoutIndex != 1 && award.RunoutIndex != 2 {
+			t.Fatalf("award missing runout index: %#v", award)
+		}
+		awarded += award.Amount
+	}
+	if awarded != 10 || table.TotalChips() != 10 {
+		t.Fatalf("awarded=%d chips=%d", awarded, table.TotalChips())
+	}
+}
+
+func TestRunoutChoiceWaitsUntilOpponentCallsAllIn(t *testing.T) {
+	table := mustTable(t, Config{MaxSeats: 2, SmallBlind: 5, BigBlind: 10})
+	mustAddReady(t, table, "small", 1, 100)
+	mustAddReady(t, table, "big", 2, 100)
+	if err := table.StartHand(zeroRandom{}); err != nil {
+		t.Fatal(err)
+	}
+
+	mustAct(t, table, "small-all-in", ActionAllIn, 0)
+	if table.Phase() != PhasePreflop || table.CurrentSeat() != 2 {
+		t.Fatalf("choice opened before opponent responded: phase=%s current=%d", table.Phase(), table.CurrentSeat())
+	}
+
+	mustAct(t, table, "big-call-all-in", ActionCall, 0)
+	if table.Phase() != PhaseRunoutChoice || table.CurrentSeat() != 0 {
+		t.Fatalf("choice not opened after betting closed: phase=%s current=%d", table.Phase(), table.CurrentSeat())
+	}
+}
+
+func TestRunoutChoiceIsSkippedWhenOpponentFoldsToAllIn(t *testing.T) {
+	table := mustTable(t, Config{MaxSeats: 2, SmallBlind: 5, BigBlind: 10})
+	mustAddReady(t, table, "small", 1, 100)
+	mustAddReady(t, table, "big", 2, 100)
+	if err := table.StartHand(zeroRandom{}); err != nil {
+		t.Fatal(err)
+	}
+
+	mustAct(t, table, "small-all-in", ActionAllIn, 0)
+	mustAct(t, table, "big-fold", ActionFold, 0)
+	if table.Phase() != PhaseWaitingNextHand {
+		t.Fatalf("fold should settle immediately instead of opening choice: phase=%s", table.Phase())
+	}
+}
+
+func TestPlayerMayFoldWhenCheckIsAvailable(t *testing.T) {
+	table := mustTable(t, Config{MaxSeats: 2, SmallBlind: 5, BigBlind: 10})
+	player := &Player{PlayerID: "actor", Stack: 100}
+	options := table.actionOptions(player)
+	if !options.CanCheck || !options.CanFold || options.ToCall != 0 {
+		t.Fatalf("options=%#v", options)
 	}
 }
 

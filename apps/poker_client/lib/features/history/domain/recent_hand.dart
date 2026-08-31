@@ -6,6 +6,7 @@ class RecentHand {
     required this.board,
     required this.players,
     required this.showdown,
+    this.runoutBoards = const [],
   });
 
   factory RecentHand.fromJson(Map<String, dynamic> json) => RecentHand(
@@ -19,6 +20,9 @@ class RecentHand {
         )
         .toList(growable: false),
     showdown: json['showdown'] as bool? ?? false,
+    runoutBoards: (json['runoutBoards'] as List<dynamic>? ?? const [])
+        .map((value) => (value as List<dynamic>).cast<String>())
+        .toList(growable: false),
   );
 
   final String handId;
@@ -27,6 +31,7 @@ class RecentHand {
   final List<String> board;
   final List<RecentHandPlayer> players;
   final bool showdown;
+  final List<List<String>> runoutBoards;
 }
 
 class RecentHandPlayer {

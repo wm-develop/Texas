@@ -127,6 +127,38 @@ class GameSocketClient extends ChangeNotifier {
     _send('table.hole_cards.reveal', payload: const {});
   }
 
+  void requestHoleCardsView(String targetUserId) {
+    if (targetUserId.isEmpty || _recoveringSequenceGap) return;
+    _send(
+      'table.hole_cards.view.request',
+      payload: {'targetUserId': targetUserId},
+    );
+  }
+
+  void respondHoleCardsView(String pendingRequestId, bool accept) {
+    _send(
+      'table.hole_cards.view.respond',
+      payload: {'pendingRequestId': pendingRequestId, 'accept': accept},
+    );
+  }
+
+  void requestSeatChange(int targetSeat) {
+    if (targetSeat <= 0 || _recoveringSequenceGap) return;
+    _send('table.seat.change.request', payload: {'targetSeat': targetSeat});
+  }
+
+  void respondSeatSwap(String pendingRequestId, bool accept) {
+    _send(
+      'table.seat.swap.respond',
+      payload: {'pendingRequestId': pendingRequestId, 'accept': accept},
+    );
+  }
+
+  void chooseRunoutCount(int count) {
+    if ((count != 1 && count != 2) || _recoveringSequenceGap) return;
+    _send('table.runout.choose', payload: {'count': count});
+  }
+
   void submitAction(String action, {int? raiseTo}) {
     final snapshot = _snapshot;
     if (snapshot == null || snapshot.handId.isEmpty || actionPending) return;

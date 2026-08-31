@@ -83,8 +83,10 @@ func (table *Table) actionOptions(player *Player) ActionOptions {
 	allInRaiseTo := player.StreetBet + player.Stack
 	maxRaiseTo := roundDownToUnit(allInRaiseTo, table.config.SmallBlind)
 	options := ActionOptions{
-		ToCall:     toCall,
-		CanFold:    toCall > 0,
+		ToCall: toCall,
+		// Folding is always a legal choice while it is the player's turn,
+		// including when checking is also available.
+		CanFold:    true,
 		CanCheck:   toCall == 0,
 		CanCall:    toCall > 0 && player.Stack >= toCall,
 		CanAllIn:   player.Stack > 0 && (allInRaiseTo <= table.currentBet || player.RaiseAllowed),
@@ -205,6 +207,13 @@ func (table *Table) progressAfterAction(afterSeat int) error {
 		return table.settleHand()
 	}
 	if table.bettingRoundComplete() {
+		if table.shouldOfferRunoutChoice() {
+			table.phase = PhaseRunoutChoice
+			table.currentSeat = 0
+			table.runoutChoices = make(map[string]int)
+			table.revision++
+			return nil
+		}
 		return table.advanceStreetOrSettle()
 	}
 	table.currentSeat = table.nextActionSeat(afterSeat)
@@ -219,12 +228,31 @@ func (table *Table) progressWithoutAction() error {
 		return table.settleHand()
 	}
 	if table.bettingRoundComplete() {
+		if table.shouldOfferRunoutChoice() {
+			table.phase = PhaseRunoutChoice
+			table.currentSeat = 0
+			table.runoutChoices = make(map[string]int)
+			table.revision++
+			return nil
+		}
 		return table.advanceStreetOrSettle()
 	}
 	if table.currentSeat == 0 {
 		return errors.New("betting round requires an actor")
 	}
 	return nil
+}
+
+func (table *Table) shouldOfferRunoutChoice() bool {
+	if len(table.board) >= 5 || table.nonFoldedCount() != 2 {
+		return false
+	}
+	for _, player := range table.players {
+		if player.Participating && !player.Folded && player.AllIn {
+			return true
+		}
+	}
+	return false
 }
 
 func (table *Table) bettingRoundComplete() bool {

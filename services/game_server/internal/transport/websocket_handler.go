@@ -169,6 +169,16 @@ func (client *webSocketClient) route(ctx context.Context, message protocol.Envel
 		return client.submitAction(ctx, message)
 	case protocol.TypeTableHoleCardsReveal:
 		return client.showHoleCards(ctx, message)
+	case protocol.TypeTableHoleCardsViewRequest:
+		return client.requestHoleCardsView(ctx, message)
+	case protocol.TypeTableHoleCardsViewRespond:
+		return client.respondHoleCardsView(ctx, message)
+	case protocol.TypeTableSeatChangeRequest:
+		return client.requestSeatChange(ctx, message)
+	case protocol.TypeTableSeatSwapRespond:
+		return client.respondSeatSwap(ctx, message)
+	case protocol.TypeTableRunoutChoose:
+		return client.chooseRunout(ctx, message)
 	case protocol.TypeTableTimeExtensionUse:
 		return client.useTimeExtension(ctx, message)
 	case protocol.TypeTableRebuy:
@@ -375,6 +385,106 @@ func (client *webSocketClient) showHoleCards(ctx context.Context, message protoc
 		return client.sendError(message, protocol.TypeTableHoleCardsRevealReject, errorCode(err), 0)
 	}
 	if err := client.respond(message, protocol.TypeTableHoleCardsRevealed, map[string]bool{"revealed": true}); err != nil {
+		return err
+	}
+	return client.server.hub.broadcastSnapshots(ctx, client.server.tables, client.roomID, &snapshot)
+}
+
+func (client *webSocketClient) requestHoleCardsView(ctx context.Context, message protocol.Envelope) error {
+	if client.roomID == "" {
+		return client.sendError(message, protocol.TypeSystemError, "table_not_joined", 0)
+	}
+	var payload protocol.HoleCardsViewRequestPayload
+	if !decodePayload(message.Payload, &payload) {
+		return client.sendError(message, protocol.TypeSystemError, "invalid_request", 0)
+	}
+	snapshot, err := client.server.tables.RequestHoleCardView(
+		ctx, client.user.UserID, client.roomID, payload.TargetUserID, message.RequestID,
+	)
+	if err != nil {
+		return client.sendError(message, protocol.TypeSystemError, errorCode(err), 0)
+	}
+	if err := client.respond(message, protocol.TypeTableHoleCardsViewRequest, map[string]bool{"requested": true}); err != nil {
+		return err
+	}
+	return client.server.hub.broadcastSnapshots(ctx, client.server.tables, client.roomID, &snapshot)
+}
+
+func (client *webSocketClient) respondHoleCardsView(ctx context.Context, message protocol.Envelope) error {
+	if client.roomID == "" {
+		return client.sendError(message, protocol.TypeSystemError, "table_not_joined", 0)
+	}
+	var payload protocol.RequestResponsePayload
+	if !decodePayload(message.Payload, &payload) {
+		return client.sendError(message, protocol.TypeSystemError, "invalid_request", 0)
+	}
+	snapshot, err := client.server.tables.RespondHoleCardView(
+		ctx, client.user.UserID, client.roomID, payload.PendingRequestID, payload.Accept,
+	)
+	if err != nil {
+		return client.sendError(message, protocol.TypeSystemError, errorCode(err), 0)
+	}
+	if err := client.respond(message, protocol.TypeTableHoleCardsViewRespond, map[string]bool{"accepted": payload.Accept}); err != nil {
+		return err
+	}
+	return client.server.hub.broadcastSnapshots(ctx, client.server.tables, client.roomID, &snapshot)
+}
+
+func (client *webSocketClient) requestSeatChange(ctx context.Context, message protocol.Envelope) error {
+	if client.roomID == "" {
+		return client.sendError(message, protocol.TypeSystemError, "table_not_joined", 0)
+	}
+	var payload protocol.SeatChangeRequestPayload
+	if !decodePayload(message.Payload, &payload) {
+		return client.sendError(message, protocol.TypeSystemError, "invalid_request", 0)
+	}
+	snapshot, err := client.server.tables.RequestSeatChange(
+		ctx, client.user.UserID, client.roomID, payload.TargetSeat, message.RequestID,
+	)
+	if err != nil {
+		return client.sendError(message, protocol.TypeSystemError, errorCode(err), 0)
+	}
+	if err := client.respond(message, protocol.TypeTableSeatChangeRequest, map[string]bool{"requested": true}); err != nil {
+		return err
+	}
+	return client.server.hub.broadcastSnapshots(ctx, client.server.tables, client.roomID, &snapshot)
+}
+
+func (client *webSocketClient) respondSeatSwap(ctx context.Context, message protocol.Envelope) error {
+	if client.roomID == "" {
+		return client.sendError(message, protocol.TypeSystemError, "table_not_joined", 0)
+	}
+	var payload protocol.RequestResponsePayload
+	if !decodePayload(message.Payload, &payload) {
+		return client.sendError(message, protocol.TypeSystemError, "invalid_request", 0)
+	}
+	snapshot, err := client.server.tables.RespondSeatSwap(
+		ctx, client.user.UserID, client.roomID, payload.PendingRequestID, payload.Accept,
+	)
+	if err != nil {
+		return client.sendError(message, protocol.TypeSystemError, errorCode(err), 0)
+	}
+	if err := client.respond(message, protocol.TypeTableSeatSwapRespond, map[string]bool{"accepted": payload.Accept}); err != nil {
+		return err
+	}
+	return client.server.hub.broadcastSnapshots(ctx, client.server.tables, client.roomID, &snapshot)
+}
+
+func (client *webSocketClient) chooseRunout(ctx context.Context, message protocol.Envelope) error {
+	if client.roomID == "" {
+		return client.sendError(message, protocol.TypeSystemError, "table_not_joined", 0)
+	}
+	var payload protocol.RunoutChoosePayload
+	if !decodePayload(message.Payload, &payload) {
+		return client.sendError(message, protocol.TypeSystemError, "invalid_request", 0)
+	}
+	snapshot, err := client.server.tables.SubmitRunoutChoice(
+		ctx, client.user.UserID, client.roomID, payload.Count,
+	)
+	if err != nil {
+		return client.sendError(message, protocol.TypeSystemError, errorCode(err), 0)
+	}
+	if err := client.respond(message, protocol.TypeTableRunoutChoose, map[string]int{"count": payload.Count}); err != nil {
 		return err
 	}
 	return client.server.hub.broadcastSnapshots(ctx, client.server.tables, client.roomID, &snapshot)
@@ -727,6 +837,11 @@ func isIdempotentRequest(messageType protocol.MessageType) bool {
 		protocol.TypeTableReadySet,
 		protocol.TypeTableActionSubmit,
 		protocol.TypeTableHoleCardsReveal,
+		protocol.TypeTableHoleCardsViewRequest,
+		protocol.TypeTableHoleCardsViewRespond,
+		protocol.TypeTableSeatChangeRequest,
+		protocol.TypeTableSeatSwapRespond,
+		protocol.TypeTableRunoutChoose,
 		protocol.TypeTableTimeExtensionUse,
 		protocol.TypeTableRebuy,
 		protocol.TypeTableVoiceStateSet,
