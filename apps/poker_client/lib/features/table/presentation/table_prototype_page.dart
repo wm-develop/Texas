@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/core/network/game_socket_client.dart';
 import 'package:poker_client/core/network/trtc_credential_client.dart';
+import 'package:poker_client/core/platform/native_display_cutout.dart';
 import 'package:poker_client/core/platform/voice_chat_service.dart';
 import 'package:poker_client/core/platform/voice_chat_service_factory.dart';
 import 'package:poker_client/core/settings/app_settings.dart';
@@ -45,7 +46,8 @@ class TablePrototypePage extends StatefulWidget {
   State<TablePrototypePage> createState() => _TablePrototypePageState();
 }
 
-class _TablePrototypePageState extends State<TablePrototypePage> {
+class _TablePrototypePageState extends State<TablePrototypePage>
+    with WidgetsBindingObserver {
   static const _gameHttpServerUrl = String.fromEnvironment(
     'GAME_HTTP_SERVER_URL',
     defaultValue: 'http://127.0.0.1:8080',
@@ -81,6 +83,7 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
   final Set<String> _observedInteractionIds = {};
   final List<TablePlayerInteraction> _activeInteractions = [];
   final Map<String, Timer> _interactionTimers = {};
+  EdgeInsets _nativeDisplayCutout = EdgeInsets.zero;
 
   bool get _voiceJoined =>
       _voiceState == VoiceConnectionState.connected ||
@@ -89,6 +92,7 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _gameSocket = GameSocketClient(
       accessTokenProvider: widget.accessTokenProvider,
       roomId: widget.room.roomId,
@@ -123,11 +127,15 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
       }
     });
     widget.settings.addListener(_settingsChanged);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _settingsChanged());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _settingsChanged();
+      unawaited(_refreshDisplayCutout());
+    });
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _gameSocket
       ..removeListener(_refresh)
       ..dispose();
@@ -145,7 +153,33 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
   }
 
   @override
+  void didChangeMetrics() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_refreshDisplayCutout());
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_refreshDisplayCutout());
+    }
+  }
+
+  Future<void> _refreshDisplayCutout() async {
+    final next = await NativeDisplayCutout.read();
+    if (mounted && next != _nativeDisplayCutout) {
+      setState(() => _nativeDisplayCutout = next);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final mediaPadding = MediaQuery.paddingOf(context);
+    final remainingCutout = NativeDisplayCutout.remainingAfter(
+      _nativeDisplayCutout,
+      mediaPadding,
+    );
     return Scaffold(
       body: DecoratedBox(
         decoration: const BoxDecoration(
@@ -155,164 +189,176 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
           ),
         ),
         child: SafeArea(
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final viewport = TableViewportLayout.fromSize(
-                constraints.biggest,
-                chatVisible: _chatVisible,
-              );
-              final handWidth = math.min(680.0, viewport.tableRect.width);
-              final showSideChat = _chatVisible && viewport.supportsSideChat;
-              return Align(
-                alignment: viewport.isCompactLandscape
-                    ? Alignment.bottomCenter
-                    : Alignment.center,
-                child: FittedBox(
-                  fit: BoxFit.contain,
-                  child: SizedBox.fromSize(
-                    size: viewport.canvasSize,
-                    child: Stack(
-                      children: [
-                        Positioned(
-                          left: 24,
-                          top: 18,
-                          child: _RoomHeader(
-                            room: widget.room,
-                            currentPlayers:
-                                _gameSocket.snapshot?.seats.length ??
-                                widget.room.members.length,
-                            onLeave: _leaveTable,
-                            onSettings: () => showAppSettingsDialog(
-                              context,
-                              widget.settings,
-                              onOpenAdmin: widget.session.user.isAdmin
-                                  ? _openAdmin
-                                  : null,
-                            ),
-                          ),
-                        ),
-                        Positioned(
-                          left: 0,
-                          right: 0,
-                          top: 16,
-                          child: Center(
-                            child: _ConnectionStatusBar(client: _gameSocket),
-                          ),
-                        ),
-                        Positioned(
-                          right: 24,
-                          top: 16,
-                          child: _VoiceControls(
-                            voiceJoined: _voiceJoined,
-                            connectionState: _voiceState,
-                            microphoneEnabled: _microphoneEnabled,
-                            operationInProgress: _voiceOperationInProgress,
-                            speakingCount: _speakingUserIds
-                                .difference(_mutedVoiceUserIds)
-                                .length,
-                            members: _gameSocket.voiceMembers,
-                            speakingUserIds: _speakingUserIds,
-                            mutedUserIds: _mutedVoiceUserIds,
-                            currentUserId: widget.session.user.userId,
-                            displayName: widget.session.user.displayName,
-                            onJoinChanged: _setVoiceJoined,
-                            onMicrophoneChanged: _setMicrophoneEnabled,
-                            onUserMuted: _setVoiceUserMuted,
-                          ),
-                        ),
-                        Positioned.fromRect(
-                          rect: viewport.tableRect,
-                          child: _PokerTable(
-                            seats: _tableSeats,
-                            alignments: _seatAlignments(
-                              verticalRadius: viewport.seatVerticalRadius,
-                            ),
-                            snapshot: _gameSocket.snapshot,
-                            actionRemaining: _actionRemaining,
-                            onSeatTap: _handleSeatTap,
-                            onAvatarTap: _handleAvatarTap,
-                            interactions: _activeInteractions,
-                          ),
-                        ),
-                        if (showSideChat)
-                          Positioned(
-                            right: 18,
-                            top: 86,
-                            bottom: 104,
-                            width: 230,
-                            child: _ChatPanel(
-                              client: _gameSocket,
-                              currentUserId: widget.session.user.userId,
-                              blockedUserIds: _blockedUserIds,
-                              onBlockChanged: _setUserBlocked,
-                              onClose: _toggleChat,
-                            ),
-                          )
-                        else
-                          Positioned(
-                            right: 24,
-                            bottom: viewport.isCompactLandscape ? 86 : 118,
-                            child: FilledButton.tonalIcon(
-                              onPressed: viewport.supportsSideChat
-                                  ? _toggleChat
-                                  : _showCompactChat,
-                              icon: Badge(
-                                isLabelVisible: _unreadChatCount > 0,
-                                label: Text(
-                                  _unreadChatCount > 99
-                                      ? '99+'
-                                      : '$_unreadChatCount',
+          child: Padding(
+            padding: remainingCutout,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final viewport = TableViewportLayout.fromSize(
+                  constraints.biggest,
+                  chatVisible: _chatVisible,
+                );
+                final showSideChat = _chatVisible && viewport.supportsSideChat;
+                final roomHeader = _RoomHeader(
+                  room: widget.room,
+                  currentPlayers:
+                      _gameSocket.snapshot?.seats.length ??
+                      widget.room.members.length,
+                  compact: viewport.isCompactLandscape,
+                  onLeave: _leaveTable,
+                  onSettings: () => showAppSettingsDialog(
+                    context,
+                    widget.settings,
+                    onOpenAdmin: widget.session.user.isAdmin
+                        ? _openAdmin
+                        : null,
+                  ),
+                );
+                final connectionStatus = _ConnectionStatusBar(
+                  client: _gameSocket,
+                  compact: viewport.isCompactLandscape,
+                );
+                final voiceControls = _VoiceControls(
+                  voiceJoined: _voiceJoined,
+                  connectionState: _voiceState,
+                  microphoneEnabled: _microphoneEnabled,
+                  operationInProgress: _voiceOperationInProgress,
+                  speakingCount: _speakingUserIds
+                      .difference(_mutedVoiceUserIds)
+                      .length,
+                  members: _gameSocket.voiceMembers,
+                  speakingUserIds: _speakingUserIds,
+                  mutedUserIds: _mutedVoiceUserIds,
+                  currentUserId: widget.session.user.userId,
+                  displayName: widget.session.user.displayName,
+                  compact: viewport.isCompactLandscape,
+                  onJoinChanged: _setVoiceJoined,
+                  onMicrophoneChanged: _setMicrophoneEnabled,
+                  onUserMuted: _setVoiceUserMuted,
+                );
+                return Align(
+                  alignment: viewport.isCompactLandscape
+                      ? Alignment.bottomCenter
+                      : Alignment.center,
+                  child: FittedBox(
+                    fit: BoxFit.contain,
+                    child: SizedBox.fromSize(
+                      size: viewport.canvasSize,
+                      child: Stack(
+                        children: [
+                          if (viewport.isCompactLandscape)
+                            Positioned(
+                              left: 8,
+                              top: 8,
+                              width:
+                                  TableViewportLayout.compactLeftRailWidth - 16,
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  color: const Color(0x99102620),
+                                  borderRadius: BorderRadius.circular(14),
+                                  border: Border.all(color: Colors.white12),
                                 ),
-                                child: const Icon(Icons.chat_bubble_outline),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(9),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      roomHeader,
+                                      const Divider(height: 14),
+                                      connectionStatus,
+                                      const Divider(height: 14),
+                                      voiceControls,
+                                    ],
+                                  ),
+                                ),
                               ),
-                              label: Text(
-                                _unreadChatCount > 0
-                                    ? '文字聊天 · $_unreadChatCount 条新消息'
-                                    : '文字聊天',
-                              ),
+                            )
+                          else ...[
+                            Positioned(left: 24, top: 18, child: roomHeader),
+                            Positioned(
+                              left: 0,
+                              right: 0,
+                              top: 16,
+                              child: Center(child: connectionStatus),
                             ),
-                          ),
-                        Positioned(
-                          left: viewport.tableRect.center.dx - handWidth / 2,
-                          bottom: viewport.isCompactLandscape ? 76 : 92,
-                          width: handWidth,
-                          height: 66,
-                          child: _HandCardsPanel(
-                            client: _gameSocket,
-                            userId: widget.session.user.userId,
-                          ),
-                        ),
-                        Positioned(
-                          left: 24,
-                          right: 24,
-                          bottom: viewport.isCompactLandscape ? 2 : 18,
-                          child: _ActionBar(
-                            client: _gameSocket,
-                            userId: widget.session.user.userId,
-                            smallBlind: widget.room.rules.smallBlind,
-                            onRebuy: _showRebuyDialog,
-                          ),
-                        ),
-                        Positioned.fromRect(
-                          rect: Rect.fromLTRB(
-                            viewport.tableRect.left + 210,
-                            viewport.tableRect.top + 105,
-                            viewport.tableRect.right - 210,
-                            viewport.tableRect.bottom - 105,
-                          ),
-                          child: IgnorePointer(
-                            child: _BoardCenter(
+                            Positioned(
+                              right: 24,
+                              top: 16,
+                              child: voiceControls,
+                            ),
+                          ],
+                          Positioned.fromRect(
+                            rect: viewport.tableRect,
+                            child: _PokerTable(
+                              seats: _tableSeats,
+                              alignments: _seatAlignments(viewport),
+                              boardRect: viewport.boardRect.shift(
+                                -viewport.tableRect.topLeft,
+                              ),
                               snapshot: _gameSocket.snapshot,
                               actionRemaining: _actionRemaining,
+                              onSeatTap: _handleSeatTap,
+                              onAvatarTap: _handleAvatarTap,
+                              onUseTimeExtension: _gameSocket.useTimeExtension,
+                              interactions: _activeInteractions,
                             ),
                           ),
-                        ),
-                      ],
+                          if (showSideChat)
+                            Positioned(
+                              right: 18,
+                              top: 86,
+                              bottom: 104,
+                              width: 230,
+                              child: _ChatPanel(
+                                client: _gameSocket,
+                                currentUserId: widget.session.user.userId,
+                                blockedUserIds: _blockedUserIds,
+                                onBlockChanged: _setUserBlocked,
+                                onClose: _toggleChat,
+                              ),
+                            )
+                          else
+                            Positioned(
+                              right: 24,
+                              bottom: viewport.isCompactLandscape ? 86 : 118,
+                              child: FilledButton.tonalIcon(
+                                onPressed: viewport.supportsSideChat
+                                    ? _toggleChat
+                                    : _showCompactChat,
+                                icon: Badge(
+                                  isLabelVisible: _unreadChatCount > 0,
+                                  label: Text(
+                                    _unreadChatCount > 99
+                                        ? '99+'
+                                        : '$_unreadChatCount',
+                                  ),
+                                  child: const Icon(Icons.chat_bubble_outline),
+                                ),
+                                label: Text(
+                                  _unreadChatCount > 0
+                                      ? '文字聊天 · $_unreadChatCount 条新消息'
+                                      : '文字聊天',
+                                ),
+                              ),
+                            ),
+                          Positioned(
+                            left: viewport.isCompactLandscape ? 12 : 24,
+                            right: viewport.isCompactLandscape ? 12 : 24,
+                            bottom: viewport.isCompactLandscape ? 2 : 18,
+                            child: _ActionBar(
+                              client: _gameSocket,
+                              userId: widget.session.user.userId,
+                              smallBlind: widget.room.rules.smallBlind,
+                              onRebuy: _showRebuyDialog,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-              );
-            },
+                );
+              },
+            ),
           ),
         ),
       ),
@@ -879,6 +925,9 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
             lastActionTo: value.lastActionTo,
             isCurrentActor: snapshot?.currentAction?.userId == value.userId,
             revealedCards: revealed?.holeCards ?? const [],
+            holeCards: value.userId == widget.session.user.userId
+                ? snapshot?.holeCards ?? const []
+                : const [],
             handCategory: revealed?.category ?? '',
             timeExtensions: value.timeExtensions,
             isParticipating: value.participating,
@@ -887,17 +936,13 @@ class _TablePrototypePageState extends State<TablePrototypePage> {
         .toList(growable: false);
   }
 
-  List<Alignment> _seatAlignments({required double verticalRadius}) {
+  List<Alignment> _seatAlignments(TableViewportLayout viewport) {
     final seats = _tableSeats;
     final currentIndex = seats.indexWhere((seat) => seat.isCurrentUser);
     final anchor = currentIndex < 0 ? 0 : currentIndex;
     return List.generate(seats.length, (index) {
       final relativeIndex = (index - anchor) % seats.length;
-      final angle = math.pi / 2 + (math.pi * 2 * relativeIndex / seats.length);
-      return Alignment(
-        math.cos(angle) * 0.94,
-        math.sin(angle) * verticalRadius,
-      );
+      return viewport.seatAlignment(relativeIndex, seats.length);
     });
   }
 
@@ -931,15 +976,68 @@ class _RoomHeader extends StatelessWidget {
     required this.currentPlayers,
     required this.onLeave,
     required this.onSettings,
+    this.compact = false,
   });
 
   final FriendRoom room;
   final int currentPlayers;
   final Future<void> Function() onLeave;
   final VoidCallback onSettings;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
+    if (compact) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '好友牌桌',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+          ),
+          Text(
+            '$currentPlayers/10 人',
+            style: const TextStyle(
+              color: Color(0xFFF6D986),
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 5),
+          Text(
+            '房间 ${room.code}',
+            style: const TextStyle(color: Colors.white70, fontSize: 12),
+          ),
+          Text(
+            '盲注 ${room.rules.smallBlind}/${room.rules.bigBlind}',
+            style: const TextStyle(color: Colors.white60, fontSize: 12),
+          ),
+          Row(
+            children: [
+              IconButton(
+                onPressed: onLeave,
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints.tightFor(
+                  width: 34,
+                  height: 34,
+                ),
+                icon: const Icon(Icons.exit_to_app, size: 19),
+                tooltip: '离开房间',
+              ),
+              IconButton(
+                onPressed: onSettings,
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints.tightFor(
+                  width: 34,
+                  height: 34,
+                ),
+                icon: const Icon(Icons.settings_outlined, size: 19),
+                tooltip: '声音与语音设置',
+              ),
+            ],
+          ),
+        ],
+      );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -973,9 +1071,10 @@ class _RoomHeader extends StatelessWidget {
 }
 
 class _ConnectionStatusBar extends StatelessWidget {
-  const _ConnectionStatusBar({required this.client});
+  const _ConnectionStatusBar({required this.client, this.compact = false});
 
   final GameSocketClient client;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -998,14 +1097,40 @@ class _ConnectionStatusBar extends StatelessWidget {
           decoration: BoxDecoration(color: color, shape: BoxShape.circle),
         ),
         const SizedBox(width: 7),
-        Text(label),
-        const SizedBox(width: 8),
+        if (compact)
+          Expanded(
+            child: Text(
+              label,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 12),
+            ),
+          )
+        else
+          Text(label),
+        SizedBox(width: compact ? 2 : 8),
         if (client.status == GameSocketStatus.connected ||
             client.status == GameSocketStatus.authenticated ||
             client.status == GameSocketStatus.joined)
-          TextButton(
-            onPressed: client.sendPing,
-            child: Text(client.lastMessageType ?? '测试连接'),
+          if (compact)
+            IconButton(
+              onPressed: client.sendPing,
+              tooltip: client.lastMessageType ?? '测试连接',
+              visualDensity: VisualDensity.compact,
+              constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+              icon: const Icon(Icons.sync, size: 17),
+            )
+          else
+            TextButton(
+              onPressed: client.sendPing,
+              child: Text(client.lastMessageType ?? '测试连接'),
+            )
+        else if (compact)
+          IconButton(
+            onPressed: client.connect,
+            tooltip: '连接',
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+            icon: const Icon(Icons.refresh, size: 17),
           )
         else
           TextButton(onPressed: client.connect, child: const Text('连接')),
@@ -1029,6 +1154,7 @@ class _VoiceControls extends StatelessWidget {
     required this.onJoinChanged,
     required this.onMicrophoneChanged,
     required this.onUserMuted,
+    this.compact = false,
   });
 
   final bool voiceJoined;
@@ -1044,100 +1170,128 @@ class _VoiceControls extends StatelessWidget {
   final ValueChanged<bool> onJoinChanged;
   final ValueChanged<bool> onMicrophoneChanged;
   final void Function(String userId, bool muted) onUserMuted;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
+    final joinChip = FilterChip(
+      selected: voiceJoined,
+      onSelected: operationInProgress ? null : onJoinChanged,
+      avatar: Icon(voiceJoined ? Icons.headset : Icons.headset_off, size: 18),
+      label: Text(
+        compact
+            ? switch (connectionState) {
+                VoiceConnectionState.disconnected => '语音',
+                VoiceConnectionState.connecting => '加入中…',
+                VoiceConnectionState.connected => '已入语音',
+                VoiceConnectionState.reconnecting => '重连中…',
+              }
+            : switch (connectionState) {
+                VoiceConnectionState.disconnected => '加入语音',
+                VoiceConnectionState.connecting => '正在加入…',
+                VoiceConnectionState.connected => '已加入语音',
+                VoiceConnectionState.reconnecting => '语音重连中…',
+              },
+      ),
+    );
+    final microphoneChip = FilterChip(
+      selected: microphoneEnabled,
+      onSelected: voiceJoined && !operationInProgress
+          ? onMicrophoneChanged
+          : null,
+      avatar: Icon(microphoneEnabled ? Icons.mic : Icons.mic_off, size: 18),
+      label: Text(
+        compact
+            ? (microphoneEnabled ? '已开麦' : '麦克风')
+            : (microphoneEnabled ? '自由麦已开启' : '麦克风关闭'),
+      ),
+    );
+    final memberButton = PopupMenuButton<String>(
+      tooltip: '语音成员',
+      onSelected: (userId) =>
+          onUserMuted(userId, !mutedUserIds.contains(userId)),
+      icon: Badge(
+        label: Text('${members.length}'),
+        child: const Icon(Icons.groups_2_outlined, size: 20),
+      ),
+      itemBuilder: (context) => members.isEmpty
+          ? const [
+              PopupMenuItem<String>(enabled: false, child: Text('还没有人加入语音')),
+            ]
+          : [
+              for (final member in members)
+                PopupMenuItem<String>(
+                  value: member.userId,
+                  enabled: voiceJoined && member.userId != currentUserId,
+                  child: Row(
+                    children: [
+                      Icon(
+                        member.microphoneEnabled ? Icons.mic : Icons.mic_off,
+                        size: 17,
+                        color:
+                            speakingUserIds.contains(member.userId) &&
+                                !mutedUserIds.contains(member.userId)
+                            ? const Color(0xFF6DE0A4)
+                            : Colors.white54,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(child: Text(member.displayName)),
+                      if (member.userId == currentUserId)
+                        const Text('自己', style: TextStyle(fontSize: 11))
+                      else if (mutedUserIds.contains(member.userId))
+                        const Row(
+                          children: [
+                            Icon(Icons.volume_off, size: 15),
+                            SizedBox(width: 3),
+                            Text('已屏蔽', style: TextStyle(fontSize: 11)),
+                          ],
+                        )
+                      else if (speakingUserIds.contains(member.userId))
+                        const Text(
+                          '说话中',
+                          style: TextStyle(
+                            color: Color(0xFF6DE0A4),
+                            fontSize: 11,
+                          ),
+                        )
+                      else
+                        const Text('点击屏蔽', style: TextStyle(fontSize: 11)),
+                    ],
+                  ),
+                ),
+            ],
+    );
+    if (compact) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(spacing: 4, runSpacing: 4, children: [joinChip, microphoneChip]),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '$speakingCount 人说话',
+                  style: const TextStyle(color: Colors.white60, fontSize: 11),
+                ),
+              ),
+              memberButton,
+            ],
+          ),
+        ],
+      );
+    }
     return Row(
       children: [
-        FilterChip(
-          selected: voiceJoined,
-          onSelected: operationInProgress ? null : onJoinChanged,
-          avatar: Icon(
-            voiceJoined ? Icons.headset : Icons.headset_off,
-            size: 18,
-          ),
-          label: Text(switch (connectionState) {
-            VoiceConnectionState.disconnected => '加入语音',
-            VoiceConnectionState.connecting => '正在加入…',
-            VoiceConnectionState.connected => '已加入语音',
-            VoiceConnectionState.reconnecting => '语音重连中…',
-          }),
-        ),
+        joinChip,
         const SizedBox(width: 8),
-        FilterChip(
-          selected: microphoneEnabled,
-          onSelected: voiceJoined && !operationInProgress
-              ? onMicrophoneChanged
-              : null,
-          avatar: Icon(microphoneEnabled ? Icons.mic : Icons.mic_off, size: 18),
-          label: Text(microphoneEnabled ? '自由麦已开启' : '麦克风关闭'),
-        ),
+        microphoneChip,
         const SizedBox(width: 8),
         Text(
           '$displayName · $speakingCount 人说话',
           style: const TextStyle(color: Colors.white60, fontSize: 12),
         ),
         const SizedBox(width: 4),
-        PopupMenuButton<String>(
-          tooltip: '语音成员',
-          onSelected: (userId) =>
-              onUserMuted(userId, !mutedUserIds.contains(userId)),
-          icon: Badge(
-            label: Text('${members.length}'),
-            child: const Icon(Icons.groups_2_outlined, size: 20),
-          ),
-          itemBuilder: (context) => members.isEmpty
-              ? const [
-                  PopupMenuItem<String>(
-                    enabled: false,
-                    child: Text('还没有人加入语音'),
-                  ),
-                ]
-              : [
-                  for (final member in members)
-                    PopupMenuItem<String>(
-                      value: member.userId,
-                      enabled: voiceJoined && member.userId != currentUserId,
-                      child: Row(
-                        children: [
-                          Icon(
-                            member.microphoneEnabled
-                                ? Icons.mic
-                                : Icons.mic_off,
-                            size: 17,
-                            color:
-                                speakingUserIds.contains(member.userId) &&
-                                    !mutedUserIds.contains(member.userId)
-                                ? const Color(0xFF6DE0A4)
-                                : Colors.white54,
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(child: Text(member.displayName)),
-                          if (member.userId == currentUserId)
-                            const Text('自己', style: TextStyle(fontSize: 11))
-                          else if (mutedUserIds.contains(member.userId))
-                            const Row(
-                              children: [
-                                Icon(Icons.volume_off, size: 15),
-                                SizedBox(width: 3),
-                                Text('已屏蔽', style: TextStyle(fontSize: 11)),
-                              ],
-                            )
-                          else if (speakingUserIds.contains(member.userId))
-                            const Text(
-                              '说话中',
-                              style: TextStyle(
-                                color: Color(0xFF6DE0A4),
-                                fontSize: 11,
-                              ),
-                            )
-                          else
-                            const Text('点击屏蔽', style: TextStyle(fontSize: 11)),
-                        ],
-                      ),
-                    ),
-                ],
-        ),
+        memberButton,
       ],
     );
   }
@@ -1147,19 +1301,23 @@ class _PokerTable extends StatelessWidget {
   const _PokerTable({
     required this.seats,
     required this.alignments,
+    required this.boardRect,
     required this.snapshot,
     required this.actionRemaining,
     required this.onSeatTap,
     required this.onAvatarTap,
+    required this.onUseTimeExtension,
     required this.interactions,
   });
 
   final List<TableSeat> seats;
   final List<Alignment> alignments;
+  final Rect boardRect;
   final TableSnapshot? snapshot;
   final Duration actionRemaining;
   final ValueChanged<TableSeat> onSeatTap;
   final ValueChanged<TableSeat> onAvatarTap;
+  final VoidCallback onUseTimeExtension;
   final List<TablePlayerInteraction> interactions;
 
   @override
@@ -1200,21 +1358,43 @@ class _PokerTable extends StatelessWidget {
             ),
           ),
         ),
+        Positioned.fromRect(
+          rect: boardRect,
+          child: IgnorePointer(
+            child: _BoardCenter(
+              snapshot: snapshot,
+              actionRemaining: actionRemaining,
+            ),
+          ),
+        ),
         for (var index = 0; index < seats.length; index++)
           Align(
             alignment: alignments[index],
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () => onSeatTap(seats[index]),
-              child: _SeatCard(
-                seat: seats[index],
-                actionRemaining: actionRemaining,
-                showReadyStatus: showReadyStatus,
-                winnerAmount: winnerAmounts[seats[index].userId] ?? 0,
-                onAvatarTap: () => onAvatarTap(seats[index]),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(13),
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => onSeatTap(seats[index]),
+                child: _SeatCard(
+                  seat: seats[index],
+                  actionRemaining: actionRemaining,
+                  showReadyStatus: showReadyStatus,
+                  winnerAmount: winnerAmounts[seats[index].userId] ?? 0,
+                  onAvatarTap: () => onAvatarTap(seats[index]),
+                  onUseTimeExtension: onUseTimeExtension,
+                ),
               ),
             ),
           ),
+        for (var index = 0; index < seats.length; index++)
+          if (seats[index].streetBet > 0)
+            Align(
+              alignment: Alignment(
+                alignments[index].x * 0.54,
+                alignments[index].y * 0.58,
+              ),
+              child: _BetChip(amount: seats[index].streetBet),
+            ),
         for (final interaction in interactions)
           if (seats.any((seat) => seat.userId == interaction.targetUserId))
             Align(
@@ -1225,25 +1405,6 @@ class _PokerTable extends StatelessWidget {
               child: IgnorePointer(
                 child: _PlayerInteractionBurst(interaction: interaction),
               ),
-            ),
-        for (var index = 0; index < seats.length; index++)
-          if (seats[index].streetBet > 0)
-            Align(
-              alignment: Alignment(
-                alignments[index].x * 0.54,
-                alignments[index].y * 0.58,
-              ),
-              child: _BetChip(amount: seats[index].streetBet),
-            ),
-        for (var index = 0; index < seats.length; index++)
-          if (seats[index].revealedCards.isNotEmpty &&
-              !seats[index].isCurrentUser)
-            Align(
-              alignment: Alignment(
-                alignments[index].x * 0.66,
-                alignments[index].y * 0.54,
-              ),
-              child: _RevealedCardsBadge(seat: seats[index]),
             ),
       ],
     );
@@ -1271,7 +1432,7 @@ class _BoardCenter extends StatelessWidget {
         child: FittedBox(
           fit: BoxFit.scaleDown,
           child: Container(
-            width: runoutBoards.length == 2 ? 500 : 430,
+            width: runoutBoards.length == 2 ? 460 : 430,
             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
             decoration: BoxDecoration(
               color: const Color(0xF2126344),
@@ -1446,6 +1607,7 @@ class _SeatCard extends StatelessWidget {
     required this.showReadyStatus,
     required this.winnerAmount,
     required this.onAvatarTap,
+    required this.onUseTimeExtension,
   });
 
   final TableSeat seat;
@@ -1453,6 +1615,7 @@ class _SeatCard extends StatelessWidget {
   final bool showReadyStatus;
   final int winnerAmount;
   final VoidCallback onAvatarTap;
+  final VoidCallback onUseTimeExtension;
 
   @override
   Widget build(BuildContext context) {
@@ -1469,7 +1632,7 @@ class _SeatCard extends StatelessWidget {
     return AnimatedContainer(
       duration: const Duration(milliseconds: 240),
       curve: Curves.easeOut,
-      width: 208,
+      width: 216,
       height: 116,
       padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
       decoration: BoxDecoration(
@@ -1534,89 +1697,96 @@ class _SeatCard extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: FittedBox(
-                        fit: BoxFit.scaleDown,
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          seat.displayName,
-                          maxLines: 1,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w700,
-                            fontSize: 16,
-                          ),
-                        ),
-                      ),
-                    ),
-                    if (seat.isDealer)
-                      const Padding(
-                        padding: EdgeInsets.only(left: 3),
-                        child: Text(
-                          'D',
-                          style: TextStyle(color: Color(0xFFF4D477)),
-                        ),
-                      ),
-                    if (seat.isOwner)
-                      const Padding(
-                        padding: EdgeInsets.only(left: 4),
-                        child: Tooltip(
-                          message: '房主',
-                          child: Icon(
-                            Icons.workspace_premium,
-                            color: Color(0xFFF6D986),
-                            size: 17,
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Row(
-                  children: [
-                    if (seat.isSpeaking)
-                      const Icon(
-                        Icons.graphic_eq,
-                        color: Color(0xFF6DE0A4),
-                        size: 17,
-                      )
-                    else if (seat.isMicrophoneEnabled)
-                      const Icon(Icons.mic, color: Color(0xFF6DE0A4), size: 17),
-                    if (showReadyStatus && seat.isReady) ...[
-                      const SizedBox(width: 4),
-                      const Icon(
-                        Icons.check_circle,
-                        color: Color(0xFF6DE0A4),
-                        size: 16,
-                      ),
-                      const SizedBox(width: 3),
-                      const Text(
-                        '已准备',
-                        style: TextStyle(
-                          color: Color(0xFF6DE0A4),
-                          fontSize: 11,
-                        ),
-                      ),
-                    ],
-                    if (seat.isParticipating && !showReadyStatus) ...[
-                      const Spacer(),
-                      Text(
-                        '加时卡 ×${seat.timeExtensions}',
-                        style: const TextStyle(
-                          color: Colors.white54,
-                          fontSize: 11,
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-                if (seat.isEmpty)
-                  const Text(
-                    '空座位',
-                    style: TextStyle(color: Colors.white60, fontSize: 13),
+                if (seat.revealedCards.isNotEmpty)
+                  _SeatShowdownSummary(seat: seat, winnerAmount: winnerAmount)
+                else if (seat.isCurrentUser)
+                  _CurrentSeatSummary(
+                    seat: seat,
+                    showReadyStatus: showReadyStatus,
+                    onUseTimeExtension: onUseTimeExtension,
                   )
-                else
+                else ...[
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            seat.displayName,
+                            maxLines: 1,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 16,
+                            ),
+                          ),
+                        ),
+                      ),
+                      if (seat.isDealer)
+                        const Padding(
+                          padding: EdgeInsets.only(left: 3),
+                          child: Text(
+                            'D',
+                            style: TextStyle(color: Color(0xFFF4D477)),
+                          ),
+                        ),
+                      if (seat.isOwner)
+                        const Padding(
+                          padding: EdgeInsets.only(left: 4),
+                          child: Tooltip(
+                            message: '房主',
+                            child: Icon(
+                              Icons.workspace_premium,
+                              color: Color(0xFFF6D986),
+                              size: 17,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Row(
+                    children: [
+                      if (seat.isSpeaking)
+                        const Icon(
+                          Icons.graphic_eq,
+                          color: Color(0xFF6DE0A4),
+                          size: 17,
+                        )
+                      else if (seat.isMicrophoneEnabled)
+                        const Icon(
+                          Icons.mic,
+                          color: Color(0xFF6DE0A4),
+                          size: 17,
+                        ),
+                      if (showReadyStatus && seat.isReady) ...[
+                        const SizedBox(width: 4),
+                        const Icon(
+                          Icons.check_circle,
+                          color: Color(0xFF6DE0A4),
+                          size: 16,
+                        ),
+                        const SizedBox(width: 3),
+                        const Text(
+                          '已准备',
+                          style: TextStyle(
+                            color: Color(0xFF6DE0A4),
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                      if (seat.isParticipating && !showReadyStatus) ...[
+                        const Spacer(),
+                        Text(
+                          '加时卡 ×${seat.timeExtensions}',
+                          style: const TextStyle(
+                            color: Colors.white54,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
                   Row(
                     children: [
                       const Icon(
@@ -1642,54 +1812,225 @@ class _SeatCard extends StatelessWidget {
                       ),
                     ],
                   ),
-                if (!seat.isEmpty && winnerAmount > 0)
-                  Text(
-                    '🏆 赢家  +$winnerAmount',
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Color(0xFFFFD54F),
-                      fontSize: 12,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  )
-                else if (!seat.isEmpty && seat.isFolded)
-                  const Row(
-                    children: [
-                      Icon(Icons.block, color: Colors.redAccent, size: 15),
-                      SizedBox(width: 4),
-                      Text(
-                        '本手已弃牌',
-                        style: TextStyle(
-                          color: Colors.redAccent,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w800,
-                        ),
+                ],
+                if (seat.revealedCards.isEmpty)
+                  if (!seat.isEmpty && winnerAmount > 0)
+                    Text(
+                      '🏆 赢家  +$winnerAmount',
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xFFFFD54F),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
                       ),
-                    ],
-                  )
-                else if (!seat.isEmpty && seat.isCurrentActor)
-                  Text(
-                    '剩余 ${_remainingSeconds(actionRemaining)} 秒',
-                    style: TextStyle(
-                      color: _remainingSeconds(actionRemaining) <= 5
-                          ? Colors.redAccent
-                          : const Color(0xFFFFA94D),
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
+                    )
+                  else if (!seat.isEmpty && seat.isFolded)
+                    const Row(
+                      children: [
+                        Icon(Icons.block, color: Colors.redAccent, size: 15),
+                        SizedBox(width: 4),
+                        Text(
+                          '本手已弃牌',
+                          style: TextStyle(
+                            color: Colors.redAccent,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ],
+                    )
+                  else if (!seat.isEmpty && seat.isCurrentActor)
+                    Text(
+                      '剩余 ${_remainingSeconds(actionRemaining)} 秒',
+                      style: TextStyle(
+                        color: _remainingSeconds(actionRemaining) <= 5
+                            ? Colors.redAccent
+                            : const Color(0xFFFFA94D),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    )
+                  else if (!seat.isEmpty && seat.lastAction.isNotEmpty)
+                    Text(
+                      _actionLabel(seat.lastAction, seat.lastActionTo),
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xFFF6D986),
+                        fontSize: 12,
+                      ),
                     ),
-                  )
-                else if (!seat.isEmpty && seat.lastAction.isNotEmpty)
-                  Text(
-                    _actionLabel(seat.lastAction, seat.lastActionTo),
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Color(0xFFF6D986),
-                      fontSize: 12,
-                    ),
-                  ),
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CurrentSeatSummary extends StatelessWidget {
+  const _CurrentSeatSummary({
+    required this.seat,
+    required this.showReadyStatus,
+    required this.onUseTimeExtension,
+  });
+
+  final TableSeat seat;
+  final bool showReadyStatus;
+  final VoidCallback onUseTimeExtension;
+
+  @override
+  Widget build(BuildContext context) {
+    final canExtend =
+        seat.isCurrentActor && seat.timeExtensions > 0 && !showReadyStatus;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            if (seat.holeCards.isEmpty)
+              const Expanded(
+                child: Text(
+                  '等待发牌',
+                  style: TextStyle(color: Colors.white38, fontSize: 11),
+                ),
+              )
+            else ...[
+              for (var index = 0; index < seat.holeCards.length; index++) ...[
+                if (index > 0) const SizedBox(width: 3),
+                _MiniCard(
+                  label:
+                      '${_cardRank(seat.holeCards[index])}${_cardSuit(seat.holeCards[index])}',
+                  compact: true,
+                ),
+              ],
+              const Spacer(),
+            ],
+            IconButton(
+              key: const ValueKey('seat-time-extension'),
+              onPressed: canExtend ? onUseTimeExtension : null,
+              tooltip: '加时 +30秒（剩余 ${seat.timeExtensions} 张）',
+              padding: EdgeInsets.zero,
+              visualDensity: VisualDensity.compact,
+              constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+              icon: Badge(
+                label: Text('${seat.timeExtensions}'),
+                child: const Icon(Icons.timer_outlined, size: 17),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 2),
+        Row(
+          children: [
+            const Icon(Icons.paid, size: 14, color: Color(0xFFF6D986)),
+            const SizedBox(width: 4),
+            Text(
+              '${seat.chips}',
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            if (seat.isDealer)
+              const Padding(
+                padding: EdgeInsets.only(left: 5),
+                child: Text('D', style: TextStyle(color: Color(0xFFF4D477))),
+              ),
+            if (seat.isOwner)
+              const Padding(
+                padding: EdgeInsets.only(left: 4),
+                child: Tooltip(
+                  message: '房主',
+                  child: Icon(
+                    Icons.workspace_premium,
+                    color: Color(0xFFF6D986),
+                    size: 16,
+                  ),
+                ),
+              ),
+            if (showReadyStatus && seat.isReady) ...[
+              const Spacer(),
+              const Icon(
+                Icons.check_circle,
+                color: Color(0xFF6DE0A4),
+                size: 15,
+              ),
+            ],
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _SeatShowdownSummary extends StatelessWidget {
+  const _SeatShowdownSummary({required this.seat, required this.winnerAmount});
+
+  final TableSeat seat;
+  final int winnerAmount;
+
+  @override
+  Widget build(BuildContext context) {
+    return KeyedSubtree(
+      key: ValueKey('seat-showdown-${seat.userId}'),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            seat.displayName,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 2),
+          Row(
+            children: [
+              for (
+                var index = 0;
+                index < seat.revealedCards.length;
+                index++
+              ) ...[
+                if (index > 0) const SizedBox(width: 3),
+                _MiniCard(
+                  label:
+                      '${_cardRank(seat.revealedCards[index])}${_cardSuit(seat.revealedCards[index])}',
+                  compact: true,
+                ),
+              ],
+              if (winnerAmount > 0) ...[
+                const Spacer(),
+                const Icon(
+                  Icons.emoji_events,
+                  color: Color(0xFFFFD54F),
+                  size: 19,
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 2),
+          Text(
+            handCategoryLabel(seat.handCategory),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 10,
+              color: Color(0xFFF6D986),
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          if (winnerAmount > 0)
+            Text(
+              '赢家 +$winnerAmount',
+              style: const TextStyle(
+                color: Color(0xFFFFD54F),
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
         ],
       ),
     );
@@ -1772,46 +2113,6 @@ class _BetChip extends StatelessWidget {
           const Icon(Icons.paid, size: 13, color: Color(0xFFF6D986)),
           const SizedBox(width: 3),
           Text('$amount', style: const TextStyle(fontWeight: FontWeight.w700)),
-        ],
-      ),
-    );
-  }
-}
-
-class _RevealedCardsBadge extends StatelessWidget {
-  const _RevealedCardsBadge({required this.seat});
-
-  final TableSeat seat;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-      decoration: BoxDecoration(
-        color: const Color(0xE60A1C18),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: const Color(0xFFF6D986)),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final card in seat.revealedCards)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 2),
-                  child: _MiniCard(
-                    label: '${_cardRank(card)}${_cardSuit(card)}',
-                    compact: true,
-                  ),
-                ),
-            ],
-          ),
-          Text(
-            handCategoryLabel(seat.handCategory),
-            style: const TextStyle(fontSize: 9, color: Color(0xFFF6D986)),
-          ),
         ],
       ),
     );
@@ -2038,68 +2339,6 @@ class _ChatLine extends StatelessWidget {
   }
 }
 
-class _HandCardsPanel extends StatelessWidget {
-  const _HandCardsPanel({required this.client, required this.userId});
-
-  final GameSocketClient client;
-  final String userId;
-
-  @override
-  Widget build(BuildContext context) {
-    final snapshot = client.snapshot;
-    final ownSeat = snapshot?.seats
-        .where((seat) => seat.userId == userId)
-        .firstOrNull;
-    final ownTurn = snapshot?.currentAction?.userId == userId;
-    final cards = snapshot?.holeCards ?? const <String>[];
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-      decoration: BoxDecoration(
-        color: const Color(0xF20B211D),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: ownTurn ? const Color(0xFFFFA94D) : Colors.white24,
-          width: ownTurn ? 2 : 1,
-        ),
-        boxShadow: const [BoxShadow(color: Colors.black38, blurRadius: 10)],
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Text('你的手牌'),
-          const SizedBox(width: 10),
-          if (cards.isEmpty)
-            const Text('等待发牌', style: TextStyle(color: Colors.white38))
-          else
-            for (final card in cards) ...[
-              _MiniCard(label: '${_cardRank(card)}${_cardSuit(card)}'),
-              const SizedBox(width: 5),
-            ],
-          const SizedBox(width: 14),
-          OutlinedButton.icon(
-            onPressed:
-                ownTurn &&
-                    (ownSeat?.timeExtensions ?? 0) > 0 &&
-                    snapshot?.currentAction?.deadline != null
-                ? client.useTimeExtension
-                : null,
-            icon: const Icon(Icons.timer_outlined, size: 17),
-            label: Text('加时 +30秒 ×${ownSeat?.timeExtensions ?? 0}'),
-          ),
-          if (snapshot?.canShowHoleCards ?? false) ...[
-            const SizedBox(width: 10),
-            FilledButton.tonalIcon(
-              onPressed: client.showHoleCards,
-              icon: const Icon(Icons.visibility_outlined, size: 17),
-              label: const Text('展示手牌'),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
 class _RebuyAmountDialog extends StatefulWidget {
   const _RebuyAmountDialog({
     required this.automatic,
@@ -2322,6 +2561,14 @@ class _ActionBar extends StatelessWidget {
                     icon: const Icon(Icons.add_circle_outline),
                     label: const Text('补码'),
                   ),
+                  if (snapshot?.canShowHoleCards ?? false) ...[
+                    const SizedBox(width: 12),
+                    FilledButton.tonalIcon(
+                      onPressed: client.showHoleCards,
+                      icon: const Icon(Icons.visibility_outlined, size: 17),
+                      label: const Text('展示手牌'),
+                    ),
+                  ],
                 ],
               ),
             )

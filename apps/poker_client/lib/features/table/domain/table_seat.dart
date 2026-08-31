@@ -21,6 +21,7 @@ class TableSeat {
     this.lastActionTo = 0,
     this.isCurrentActor = false,
     this.revealedCards = const [],
+    this.holeCards = const [],
     this.handCategory = '',
     this.timeExtensions = 0,
     this.isParticipating = false,
@@ -47,6 +48,7 @@ class TableSeat {
   final int lastActionTo;
   final bool isCurrentActor;
   final List<String> revealedCards;
+  final List<String> holeCards;
   final String handCategory;
   final int timeExtensions;
   final bool isParticipating;

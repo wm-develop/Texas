@@ -13,6 +13,7 @@ void main() {
     expect(layout.canvasSize, const Size(1280, 720));
     expect(layout.supportsSideChat, isTrue);
     expect(layout.seatVerticalRadius, 0.88);
+    expect(layout.seatHorizontalRadius, 0.94);
     expect(layout.tableRect, const Rect.fromLTWH(104, 62, 912, 526));
   });
 
@@ -37,11 +38,62 @@ void main() {
     );
 
     expect(layout.isCompactLandscape, isTrue);
-    expect(layout.seatVerticalRadius, 0.70);
+    expect(layout.seatVerticalRadius, 0.80);
+    expect(layout.seatHorizontalRadius, 0.76);
     expect(layout.canvasSize.height, TableViewportLayout.compactDesignHeight);
     expect(layout.supportsSideChat, isFalse);
-    expect(layout.tableRect.width, TableViewportLayout.compactMaxTableWidth);
-    expect(layout.tableRect.height, 466);
+    expect(
+      layout.tableRect.width,
+      closeTo(
+        layout.canvasSize.width -
+            TableViewportLayout.compactLeftRailWidth -
+            TableViewportLayout.compactRightRailWidth,
+        0.001,
+      ),
+    );
+    expect(layout.tableRect.height, 532);
+    expect(layout.tableRect.top, 8);
+    expect(layout.boardRect.top, layout.tableRect.top + 128);
+    expect(layout.boardRect.bottom, layout.tableRect.bottom - 128);
+    expect(layout.boardRect.width, greaterThan(500));
+
+    // Enlarged 216x116 player cards remain outside the board's protected
+    // center region, including the top and local-player bottom positions.
+    final topSeatCenter =
+        layout.tableRect.center.dy -
+        layout.tableRect.height * layout.seatVerticalRadius / 2;
+    final bottomSeatCenter =
+        layout.tableRect.center.dy +
+        layout.tableRect.height * layout.seatVerticalRadius / 2;
+    expect(topSeatCenter + 58, lessThan(layout.boardRect.top));
+    expect(bottomSeatCenter - 58, greaterThan(layout.boardRect.bottom));
+
+    // Side seats stay clear of the compact information rail.
+    final leftSeatCenter =
+        layout.tableRect.center.dx -
+        layout.tableRect.width * layout.seatHorizontalRadius / 2;
+    expect(leftSeatCenter - 108, greaterThan(layout.tableRect.left));
+
+    for (var playerCount = 2; playerCount <= 10; playerCount++) {
+      for (var index = 0; index < playerCount; index++) {
+        final alignment = layout.seatAlignment(index, playerCount);
+        final center = Offset(
+          layout.tableRect.center.dx + alignment.x * layout.tableRect.width / 2,
+          layout.tableRect.center.dy +
+              alignment.y * layout.tableRect.height / 2,
+        );
+        final seatRect = Rect.fromCenter(
+          center: center,
+          width: 216,
+          height: 116,
+        );
+        expect(
+          seatRect.overlaps(layout.boardRect),
+          isFalse,
+          reason: '$playerCount 人牌桌的第 ${index + 1} 个座位遮挡公共牌区',
+        );
+      }
+    }
   });
 
   test('centers the table when the side chat is closed', () {

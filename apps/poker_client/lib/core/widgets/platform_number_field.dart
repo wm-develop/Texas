@@ -117,73 +117,121 @@ class _InAppNumberPadDialogState extends State<_InAppNumberPadDialog> {
   @override
   Widget build(BuildContext context) {
     const keys = <String>['1', '2', '3', '4', '5', '6', '7', '8', '9'];
-    return AlertDialog(
-      title: Text(widget.title),
-      content: SizedBox(
-        width: 330,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+    final mediaSize = MediaQuery.sizeOf(context);
+    final compactLandscape =
+        mediaSize.width > mediaSize.height && mediaSize.height < 520;
+    final keypad = GridView.count(
+      key: const ValueKey('ohos-number-keypad'),
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      crossAxisCount: 3,
+      mainAxisSpacing: 7,
+      crossAxisSpacing: 7,
+      childAspectRatio: compactLandscape ? 2.35 : 2.2,
+      children: [
+        for (final key in keys)
+          FilledButton.tonal(
+            key: ValueKey('ohos-number-key-$key'),
+            onPressed: () => _append(key),
+            child: Text(key),
+          ),
+        OutlinedButton(
+          key: const ValueKey('ohos-number-clear'),
+          onPressed: () => setState(() => _value = ''),
+          child: const Text('清空'),
+        ),
+        FilledButton.tonal(
+          key: const ValueKey('ohos-number-key-0'),
+          onPressed: () => _append('0'),
+          child: const Text('0'),
+        ),
+        OutlinedButton.icon(
+          key: const ValueKey('ohos-number-backspace'),
+          onPressed: _value.isEmpty
+              ? null
+              : () => setState(
+                  () => _value = _value.substring(0, _value.length - 1),
+                ),
+          icon: const Icon(Icons.backspace_outlined, size: 17),
+          label: const Text('退格'),
+        ),
+      ],
+    );
+    final valueAndActions = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(widget.title, style: Theme.of(context).textTheme.headlineSmall),
+        const SizedBox(height: 12),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            border: Border.all(color: const Color(0xFFD9B85F)),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(
+            _value.isEmpty ? '0' : _value,
+            key: const ValueKey('ohos-number-value'),
+            textAlign: TextAlign.right,
+            style: Theme.of(context).textTheme.headlineSmall,
+          ),
+        ),
+        if (compactLandscape) const Spacer() else const SizedBox(height: 18),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.end,
           children: [
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: BoxDecoration(
-                border: Border.all(color: const Color(0xFFD9B85F)),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                _value.isEmpty ? '0' : _value,
-                textAlign: TextAlign.right,
-                style: Theme.of(context).textTheme.headlineSmall,
-              ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('取消'),
             ),
-            const SizedBox(height: 12),
-            GridView.count(
-              shrinkWrap: true,
-              crossAxisCount: 3,
-              mainAxisSpacing: 8,
-              crossAxisSpacing: 8,
-              childAspectRatio: 2.2,
-              children: [
-                for (final key in keys)
-                  FilledButton.tonal(
-                    onPressed: () => _append(key),
-                    child: Text(key),
-                  ),
-                OutlinedButton(
-                  onPressed: () => setState(() => _value = ''),
-                  child: const Text('清空'),
-                ),
-                FilledButton.tonal(
-                  onPressed: () => _append('0'),
-                  child: const Text('0'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _value.isEmpty
-                      ? null
-                      : () => setState(
-                          () => _value = _value.substring(0, _value.length - 1),
-                        ),
-                  icon: const Icon(Icons.backspace_outlined, size: 17),
-                  label: const Text('退格'),
-                ),
-              ],
+            const SizedBox(width: 8),
+            FilledButton(
+              key: const ValueKey('ohos-number-confirm'),
+              onPressed: _value.isEmpty
+                  ? null
+                  : () => Navigator.of(context).pop(_value),
+              child: const Text('确定'),
             ),
           ],
         ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: _value.isEmpty
-              ? null
-              : () => Navigator.of(context).pop(_value),
-          child: const Text('确定'),
-        ),
       ],
+    );
+    return Dialog(
+      insetPadding: const EdgeInsets.all(12),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: compactLandscape ? 660 : 390,
+          maxHeight: mediaSize.height - 24,
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(18),
+          child: compactLandscape
+              ? SizedBox(
+                  height: (mediaSize.height - 60)
+                      .clamp(236.0, 310.0)
+                      .toDouble(),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      SizedBox(width: 230, child: valueAndActions),
+                      const SizedBox(width: 18),
+                      Expanded(child: Center(child: keypad)),
+                    ],
+                  ),
+                )
+              : SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      valueAndActions,
+                      const SizedBox(height: 12),
+                      keypad,
+                    ],
+                  ),
+                ),
+        ),
+      ),
     );
   }
 }
