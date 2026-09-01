@@ -1,0 +1,14 @@
+[Unit]
+Description=每日执行好友德州数据库备份
+Documentation=https://github.com/wm-develop/Texas/blob/main/docs/BACKUP_AND_RESTORE_GUIDE.md
+
+[Timer]
+# 每天 04:10 执行。牌局多在夜间，选在活动低谷。
+OnCalendar=*-*-* 04:10:00
+# 机器关机错过的任务，开机后补跑
+Persistent=true
+# 随机延迟，避免与其他定时任务同时抢占磁盘
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

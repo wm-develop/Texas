@@ -47,6 +47,7 @@
 - [阶段 2 验收记录](docs/PHASE_2_ACCEPTANCE.md)
 - [阶段 3：上线准备计划](docs/PHASE_3_PLAN.md)
 - [从零自建部署指南](docs/SELF_HOSTING_GUIDE.md)
+- [数据库备份与恢复指南](docs/BACKUP_AND_RESTORE_GUIDE.md)
 - [Android 发布签名配置指南](docs/ANDROID_SIGNING_GUIDE.md)
 - [生产环境更新手册](docs/PRODUCTION_UPDATE_GUIDE.md)
 - [v0.1.0 首次发布说明](docs/releases/v0.1.0.md)

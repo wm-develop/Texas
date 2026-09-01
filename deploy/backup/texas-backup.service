@@ -1,0 +1,13 @@
+[Unit]
+Description=好友德州 PostgreSQL 备份
+Documentation=https://github.com/wm-develop/Texas/blob/main/docs/BACKUP_AND_RESTORE_GUIDE.md
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/texas/bin/texas-backup.sh /opt/texas/backup.env
+# 失败时保留非零退出码，便于 systemctl 与监控发现
+TimeoutStartSec=1800
+Nice=10
+IOSchedulingClass=idle

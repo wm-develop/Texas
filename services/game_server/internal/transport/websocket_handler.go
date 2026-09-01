@@ -50,6 +50,7 @@ type webSocketClient struct {
 type tableHub struct {
 	mu        sync.Mutex
 	publishMu sync.Mutex
+	logger    *slog.Logger
 	clients   map[string]map[*webSocketClient]struct{}
 	buffers   map[string]*protocol.EventBuffer
 	voice     map[string]map[string]protocol.VoiceMemberState
@@ -64,6 +65,7 @@ func newWebSocketServer(
 		logger: logger, accounts: options.Accounts, rooms: options.Rooms,
 		tables: options.Tables, chat: options.Chat,
 		hub: &tableHub{
+			logger:  logger,
 			clients: make(map[string]map[*webSocketClient]struct{}),
 			buffers: make(map[string]*protocol.EventBuffer),
 			voice:   make(map[string]map[string]protocol.VoiceMemberState),
@@ -753,6 +755,7 @@ func (hub *tableHub) broadcastSnapshots(
 	})
 	sequence := marker.Sequence
 	clients := hub.clientsFor(roomID)
+	delivered := 0
 	for _, client := range clients {
 		var snapshot tablemanager.Snapshot
 		var err error
@@ -761,14 +764,44 @@ func (hub *tableHub) broadcastSnapshots(
 		} else {
 			snapshot, err = tables.Snapshot(ctx, client.user.UserID, roomID)
 			if err != nil {
+				// A snapshot that cannot be built leaves this client frozen on
+				// stale state. Never fail silently: a fault that hits every
+				// client stalls the whole table with no other visible symptom.
+				hub.logError(
+					"table snapshot generation failed", err,
+					"room_id", roomID, "user_id", client.user.UserID, "sequence", sequence,
+				)
 				continue
 			}
 		}
 		if err := client.write(snapshotEnvelope(snapshot, sequence, "")); err != nil {
+			hub.logError(
+				"table snapshot delivery failed", err,
+				"room_id", roomID, "user_id", client.user.UserID, "sequence", sequence,
+			)
 			continue
 		}
+		delivered++
+	}
+	if len(clients) > 0 && delivered == 0 {
+		// Every client missed this revision: the table is effectively frozen
+		// for everyone and needs operator attention, not just a per-client note.
+		hub.logError(
+			"table snapshot broadcast reached no client", nil,
+			"room_id", roomID, "sequence", sequence, "clients", len(clients),
+		)
 	}
 	return nil
+}
+
+func (hub *tableHub) logError(message string, err error, attributes ...any) {
+	if hub.logger == nil {
+		return
+	}
+	if err != nil {
+		attributes = append(attributes, "error", err)
+	}
+	hub.logger.Error(message, attributes...)
 }
 
 func (hub *tableHub) broadcast(roomID string, messageType protocol.MessageType, payload any) error {
@@ -779,6 +812,11 @@ func (hub *tableHub) broadcast(roomID string, messageType protocol.MessageType, 
 	message = hub.bufferFor(roomID).Append(message)
 	for _, client := range hub.clientsFor(roomID) {
 		if err := client.write(message); err != nil {
+			hub.logError(
+				"table event delivery failed", err,
+				"room_id", roomID, "user_id", client.user.UserID,
+				"type", string(messageType), "sequence", message.Sequence,
+			)
 			continue
 		}
 	}
