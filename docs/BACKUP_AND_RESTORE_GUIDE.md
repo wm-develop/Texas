@@ -62,7 +62,7 @@ TEXAS_DAILY_KEEP=14
 TEXAS_WEEKLY_KEEP=8
 
 # 异机复制命令。留空则只在本机保留（强烈建议配置，见第 5 节）
-# TEXAS_OFFSITE_CMD='coscli cp {} cos://texas/'
+# TEXAS_OFFSITE_CMD='/usr/local/bin/coscli cp {} cos://texas/'
 
 # 异机副本加密的 age 公钥。留空则不加密
 # TEXAS_AGE_RECIPIENT=age1xxxxxxxxxxxxxxxxxxxxx
@@ -306,15 +306,20 @@ sudo rclone lsd cos:           # 验证连通
 
 ```bash
 # coscli
-TEXAS_OFFSITE_CMD='coscli cp {} cos://texas/'
+TEXAS_OFFSITE_CMD='/usr/local/bin/coscli cp {} cos://texas/'
 
 # 或 rclone
-TEXAS_OFFSITE_CMD='rclone copy --config /root/.config/rclone/rclone.conf {} cos:texas-backups-1250000000'
+TEXAS_OFFSITE_CMD='/usr/bin/rclone copy --config /root/.config/rclone/rclone.conf {} cos:texas-backups-1250000000'
 ```
 
-> **注意参数顺序。** rclone 与 rsync 都是「源在前、目标在后」，必须用 `{}`
-> 明确指出文件位置。若省略 `{}`，脚本会把路径追加到命令末尾，对这两个工具
-> 而言等于把源和目标写反。
+> **注意两点。**
+>
+> 1. **参数顺序**：rclone 与 rsync 都是「源在前、目标在后」，必须用 `{}` 明确指出
+>    文件位置。若省略 `{}`，脚本会把路径追加到命令末尾，对这两个工具而言等于把
+>    源和目标写反。
+> 2. **用绝对路径写命令**：`sudo` 的 `secure_path` 与 systemd 的默认 PATH 通常都
+>    不包含 `/usr/local/bin`，交互式能跑通的命令在定时任务里会报
+>    `command not found`。用 `command -v coscli` 查到真实路径后填绝对路径。
 
 > 备份脚本用 `source` 读取该文件，被注释掉的行不会生效，脚本会打印
 > `未配置 TEXAS_OFFSITE_CMD，跳过异机复制（备份仅存在于本机）`。看到这句就说明这一行没生效。
@@ -347,10 +352,10 @@ sudo rclone ls cos:texas-backups-1250000000  # rclone
 
 ```bash
 # coscli
-TEXAS_OFFSITE_CMD='coscli cp {} cos://texas/'
+TEXAS_OFFSITE_CMD='/usr/local/bin/coscli cp {} cos://texas/'
 
 # rclone
-TEXAS_OFFSITE_CMD='rclone copy --config /root/.config/rclone/rclone.conf {} cos:texas-backups-1250000000'
+TEXAS_OFFSITE_CMD='/usr/bin/rclone copy --config /root/.config/rclone/rclone.conf {} cos:texas-backups-1250000000'
 
 # rsync 到另一台机器
 TEXAS_OFFSITE_CMD='rsync -a --chmod=600 -e "ssh -i /opt/texas/secrets/backup_key" {} backup@example.com:/backups/texas/'

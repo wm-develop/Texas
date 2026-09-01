@@ -106,15 +106,29 @@ if [[ -n "$OFFSITE_CMD" ]]; then
         UPLOAD="$TEMP_ENCRYPTED"
         log "已加密待上传副本"
     fi
+    # sudo 的 secure_path 与 systemd 的默认 PATH 通常都不含 /usr/local/bin，
+    # 交互式能跑通的命令在这里可能找不到。提前检查并给出可操作的提示。
+    OFFSITE_BINARY="${OFFSITE_CMD%% *}"
+    if ! command -v "$OFFSITE_BINARY" >/dev/null 2>&1; then
+        log "本机备份已生成且校验通过：$TARGET"
+        fail "异机复制命令 $OFFSITE_BINARY 不在 PATH 中。sudo 与 systemd 的 PATH 通常不含 /usr/local/bin，请在 TEXAS_OFFSITE_CMD 中改用绝对路径，例如 /usr/local/bin/coscli"
+    fi
+
     log "异机复制中"
     # 命令中含 {} 时替换为备份文件路径，否则把路径追加到末尾。
     # 前者用于 rclone / rsync 这类“源在前、目标在后”的工具，
     # 后者用于只接收一个文件参数的包装脚本。
     if [[ "$OFFSITE_CMD" == *"{}"* ]]; then
-        eval "${OFFSITE_CMD//\{\}/$(printf '%q' "$UPLOAD")}" || fail "异机复制失败"
+        eval "${OFFSITE_CMD//\{\}/$(printf '%q' "$UPLOAD")}" || {
+            log "本机备份已生成且校验通过：$TARGET"
+            fail "异机复制失败"
+        }
     else
         # shellcheck disable=SC2086
-        $OFFSITE_CMD "$UPLOAD" || fail "异机复制失败"
+        $OFFSITE_CMD "$UPLOAD" || {
+            log "本机备份已生成且校验通过：$TARGET"
+            fail "异机复制失败"
+        }
     fi
     [[ -n "$TEMP_ENCRYPTED" ]] && rm -f "$TEMP_ENCRYPTED"
     log "异机复制完成"
