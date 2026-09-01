@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/core/network/game_socket_client.dart';
@@ -17,6 +18,7 @@ import 'package:poker_client/features/lobby/domain/friend_room.dart';
 import 'package:poker_client/features/table/audio/table_action_sound_tracker.dart';
 import 'package:poker_client/features/table/audio/table_sound_effects.dart';
 import 'package:poker_client/features/table/domain/hand_category_label.dart';
+import 'package:poker_client/features/table/domain/runout_boards.dart';
 import 'package:poker_client/features/table/domain/table_seat.dart';
 import 'package:poker_client/features/table/domain/table_snapshot.dart';
 import 'package:poker_client/features/table/presentation/responsive_action_strip.dart';
@@ -173,6 +175,33 @@ class _TablePrototypePageState extends State<TablePrototypePage>
     }
   }
 
+  /// True on touch platforms where a soft keyboard can shrink the viewport.
+  /// There the table layout family is fixed by the device class instead of
+  /// the momentary window height, so opening the keyboard can never rebuild
+  /// the input field's subtree and immediately dismiss the keyboard again.
+  static bool get _isMobilePlatform =>
+      defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS ||
+      defaultTargetPlatform == TargetPlatform.ohos;
+
+  /// Viewport size that ignores the soft keyboard: on mobile it derives from
+  /// the full window size (which stays constant while the keyboard only adds
+  /// viewInsets) minus the safe-area and cutout paddings the body applies.
+  Size _stableViewportSize(BuildContext context, EdgeInsets remainingCutout) {
+    final mediaSize = MediaQuery.sizeOf(context);
+    final mediaPadding = MediaQuery.paddingOf(context);
+    return Size(
+      math.max(
+        1,
+        mediaSize.width - mediaPadding.horizontal - remainingCutout.horizontal,
+      ),
+      math.max(
+        1,
+        mediaSize.height - mediaPadding.vertical - remainingCutout.vertical,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final mediaPadding = MediaQuery.paddingOf(context);
@@ -193,9 +222,17 @@ class _TablePrototypePageState extends State<TablePrototypePage>
             padding: remainingCutout,
             child: LayoutBuilder(
               builder: (context, constraints) {
+                final stableSize = _isMobilePlatform
+                    ? _stableViewportSize(context, remainingCutout)
+                    : constraints.biggest;
                 final viewport = TableViewportLayout.fromSize(
-                  constraints.biggest,
+                  stableSize,
                   chatVisible: _chatVisible,
+                  // Phones stay on the compact layout, tablets on the regular
+                  // one, no matter how the window momentarily resizes.
+                  compactOverride: _isMobilePlatform
+                      ? MediaQuery.sizeOf(context).shortestSide < 600
+                      : null,
                 );
                 final showSideChat = _chatVisible && viewport.supportsSideChat;
                 final roomHeader = _RoomHeader(
@@ -545,7 +582,11 @@ class _TablePrototypePageState extends State<TablePrototypePage>
     final size = MediaQuery.sizeOf(context);
     final sideChatVisible =
         _chatVisible &&
-        TableViewportLayout.fromSize(size, chatVisible: true).supportsSideChat;
+        TableViewportLayout.fromSize(
+          size,
+          chatVisible: true,
+          compactOverride: _isMobilePlatform ? size.shortestSide < 600 : null,
+        ).supportsSideChat;
     if (!_compactChatOpen && !sideChatVisible) _unreadChatCount++;
   }
 
@@ -665,24 +706,15 @@ class _TablePrototypePageState extends State<TablePrototypePage>
     final waiting =
         snapshot.phase == 'WAITING' || snapshot.phase == 'WAITING_NEXT_HAND';
     if (waiting) {
-      final full = snapshot.seats.length >= 10;
-      if (seat.isCurrentUser && !full) {
-        await _showEmptySeatPicker(snapshot, seat.number);
-        return;
-      }
+      // 座位数量始终等于玩家数量，不存在可选的空位；换位只有一种方式：
+      // 点击目标玩家发起双方确认的换位申请。
       if (seat.isCurrentUser) return;
-      if (!full) {
-        _showTableHint('牌桌未坐满时，请点击自己的玩家框选择空座位');
-        return;
-      }
-      if (full) {
-        final confirmed = await _confirmTableAction(
-          '申请换位',
-          '向 ${seat.displayName} 发出交换座位申请？',
-        );
-        if (confirmed) _gameSocket.requestSeatChange(seat.number);
-        return;
-      }
+      final confirmed = await _confirmTableAction(
+        '申请换位',
+        '向 ${seat.displayName} 发出交换座位申请？',
+      );
+      if (confirmed) _gameSocket.requestSeatChange(seat.number);
+      return;
     }
     if (seat.isCurrentUser) return;
     final ownSeat = snapshot.seats
@@ -694,46 +726,9 @@ class _TablePrototypePageState extends State<TablePrototypePage>
     if (ownSeat?.folded != true || target?.participating != true) return;
     final confirmed = await _confirmTableAction(
       '申请查看手牌',
-      '向 ${seat.displayName} 申请提前查看他的手牌？只有对方同意后你才能看到。',
+      '向 ${seat.displayName} 申请私下查看对方的手牌？只有对方同意后你才能看到。',
     );
     if (confirmed) _gameSocket.requestHoleCardsView(seat.userId);
-  }
-
-  Future<void> _showEmptySeatPicker(
-    TableSnapshot snapshot,
-    int currentSeat,
-  ) async {
-    final occupied = snapshot.seats.map((seat) => seat.seat).toSet();
-    final available = [
-      for (var number = 1; number <= 10; number++)
-        if (!occupied.contains(number)) number,
-    ];
-    if (available.isEmpty) return;
-    final selected = await showDialog<int>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('选择空座位'),
-        content: Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            for (final number in available)
-              OutlinedButton(
-                onPressed: () => Navigator.of(context).pop(number),
-                child: Text('$number 号位'),
-              ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消'),
-          ),
-        ],
-      ),
-    );
-    if (selected == null || selected == currentSeat) return;
-    _gameSocket.requestSeatChange(selected);
   }
 
   Future<void> _handleAvatarTap(TableSeat seat) async {
@@ -783,12 +778,6 @@ class _TablePrototypePageState extends State<TablePrototypePage>
         ),
       ) ??
       false;
-
-  void _showTableHint(String message) {
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message)));
-  }
 
   void _settingsChanged() {
     if (!mounted) return;
@@ -883,7 +872,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('本手牌结束后才能离开并返还筹码')));
+      ).showSnackBar(const SnackBar(content: Text('弃牌后或本手牌结束后才能离开并返还筹码')));
     }
   }
 
@@ -1411,14 +1400,110 @@ class _PokerTable extends StatelessWidget {
   }
 }
 
-class _BoardCenter extends StatelessWidget {
+class _BoardCenter extends StatefulWidget {
   const _BoardCenter({required this.snapshot, required this.actionRemaining});
 
   final TableSnapshot? snapshot;
   final Duration actionRemaining;
 
   @override
+  State<_BoardCenter> createState() => _BoardCenterState();
+}
+
+/// 发两次的展示阶段：先完整展示第一块牌面 5 秒，然后仅让第一次发出的
+/// 公共牌（两块牌面的公共前缀之外的部分）渐隐，再淡入第二块牌面。
+enum _RunoutStage { firstBoard, fadingFirst, secondBoard }
+
+class _BoardCenterState extends State<_BoardCenter> {
+  static const _firstBoardHold = Duration(seconds: 5);
+  static const _fadeDuration = Duration(milliseconds: 600);
+
+  Timer? _stageTimer;
+  String _animatedHandId = '';
+  _RunoutStage _stage = _RunoutStage.firstBoard;
+
+  @override
+  void didUpdateWidget(covariant _BoardCenter oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _syncRunoutStage();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _syncRunoutStage();
+  }
+
+  @override
+  void dispose() {
+    _stageTimer?.cancel();
+    super.dispose();
+  }
+
+  void _syncRunoutStage() {
+    final settlement = widget.snapshot?.settlement;
+    if (settlement == null || settlement.runoutBoards.length != 2) {
+      _stageTimer?.cancel();
+      _stageTimer = null;
+      _animatedHandId = '';
+      _stage = _RunoutStage.firstBoard;
+      return;
+    }
+    if (settlement.handId == _animatedHandId) return;
+    _animatedHandId = settlement.handId;
+    _stage = _RunoutStage.firstBoard;
+    _stageTimer?.cancel();
+    _stageTimer = Timer(_firstBoardHold, () {
+      if (!mounted) return;
+      setState(() => _stage = _RunoutStage.fadingFirst);
+      _stageTimer = Timer(_fadeDuration, () {
+        if (!mounted) return;
+        setState(() => _stage = _RunoutStage.secondBoard);
+      });
+    });
+  }
+
+  List<Widget> _runoutBoardRow(List<List<String>> runoutBoards) {
+    final sharedPrefix = sharedRunoutPrefixLength(runoutBoards);
+    final showSecond = _stage == _RunoutStage.secondBoard;
+    final sourceBoard = showSecond ? runoutBoards[1] : runoutBoards[0];
+    return [
+      Padding(
+        padding: const EdgeInsets.only(bottom: 2),
+        child: Text(
+          showSecond ? '第2次' : '第1次',
+          style: const TextStyle(
+            color: Color(0xFFF6D986),
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ),
+      Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: List.generate(5, (index) {
+          final card = index < sourceBoard.length ? sourceBoard[index] : null;
+          final playingCard = _PlayingCard(
+            rank: card == null ? '?' : _cardRank(card),
+            suit: card == null ? '' : _cardSuit(card),
+            red: card != null && (card.endsWith('h') || card.endsWith('d')),
+          );
+          if (index < sharedPrefix) return playingCard;
+          // 前缀之外的牌：第一块渐隐，第二块通过 AnimatedSwitcher 淡入。
+          return AnimatedOpacity(
+            duration: _fadeDuration,
+            opacity: _stage == _RunoutStage.fadingFirst ? 0 : 1,
+            child: playingCard,
+          );
+        }),
+      ),
+    ];
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final snapshot = widget.snapshot;
+    final actionRemaining = widget.actionRemaining;
     final board = snapshot?.board ?? const <String>[];
     final runoutBoards =
         snapshot?.settlement?.runoutBoards ?? const <List<String>>[];
@@ -1432,7 +1517,7 @@ class _BoardCenter extends StatelessWidget {
         child: FittedBox(
           fit: BoxFit.scaleDown,
           child: Container(
-            width: runoutBoards.length == 2 ? 460 : 430,
+            width: 430,
             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
             decoration: BoxDecoration(
               color: const Color(0xF2126344),
@@ -1468,11 +1553,11 @@ class _BoardCenter extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (snapshot?.settlement != null) ...[
+                if (snapshot != null && snapshot.settlement != null) ...[
                   const SizedBox(height: 6),
-                  for (final award in snapshot!.settlement!.potAwards)
+                  for (final award in snapshot.settlement!.potAwards)
                     Text(
-                      _potAwardLabel(award, snapshot!.seats),
+                      _potAwardLabel(award, snapshot.seats),
                       style: const TextStyle(
                         color: Color(0xFFF6D986),
                         fontSize: 12,
@@ -1481,42 +1566,13 @@ class _BoardCenter extends StatelessWidget {
                     ),
                   const SizedBox(height: 5),
                   Text(
-                    _phaseLabel(snapshot!.phase),
+                    _phaseLabel(snapshot.phase),
                     style: const TextStyle(color: Colors.white70),
                   ),
                 ],
                 SizedBox(height: snapshot?.settlement == null ? 16 : 10),
                 if (runoutBoards.length == 2)
-                  for (
-                    var runoutIndex = 0;
-                    runoutIndex < runoutBoards.length;
-                    runoutIndex++
-                  )
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 2),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          SizedBox(
-                            width: 48,
-                            child: Text(
-                              '第${runoutIndex + 1}次',
-                              style: const TextStyle(
-                                color: Color(0xFFF6D986),
-                                fontSize: 11,
-                              ),
-                            ),
-                          ),
-                          for (final card in runoutBoards[runoutIndex])
-                            _PlayingCard(
-                              rank: _cardRank(card),
-                              suit: _cardSuit(card),
-                              red: card.endsWith('h') || card.endsWith('d'),
-                              compact: true,
-                            ),
-                        ],
-                      ),
-                    )
+                  ..._runoutBoardRow(runoutBoards)
                 else
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -1550,17 +1606,11 @@ class _BoardCenter extends StatelessWidget {
 }
 
 class _PlayingCard extends StatelessWidget {
-  const _PlayingCard({
-    required this.rank,
-    required this.suit,
-    this.red = false,
-    this.compact = false,
-  });
+  const _PlayingCard({required this.rank, required this.suit, this.red = false});
 
   final String rank;
   final String suit;
   final bool red;
-  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -1573,10 +1623,10 @@ class _PlayingCard extends StatelessWidget {
       ),
       child: Container(
         key: ValueKey('$rank$suit'),
-        width: compact ? 42 : 58,
-        height: compact ? 54 : 78,
-        margin: EdgeInsets.symmetric(horizontal: compact ? 2 : 4),
-        padding: EdgeInsets.all(compact ? 4 : 7),
+        width: 58,
+        height: 78,
+        margin: const EdgeInsets.symmetric(horizontal: 4),
+        padding: const EdgeInsets.all(7),
         decoration: BoxDecoration(
           color: rank == '?'
               ? const Color(0xFF234E43)
@@ -1591,7 +1641,7 @@ class _PlayingCard extends StatelessWidget {
             color: rank == '?'
                 ? Colors.white54
                 : (red ? const Color(0xFFC63D45) : Colors.black87),
-            fontSize: compact ? 13 : 18,
+            fontSize: 18,
             fontWeight: FontWeight.w700,
           ),
         ),
@@ -2142,9 +2192,32 @@ class _ChatPanelState extends State<_ChatPanel> {
   final _controller = TextEditingController();
 
   @override
+  void initState() {
+    super.initState();
+    // The panel can live inside a dialog route, where the page's own
+    // setState never reaches it. Listen to the socket directly so incoming
+    // and just-sent messages render immediately.
+    widget.client.addListener(_onClientChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant _ChatPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.client, widget.client)) {
+      oldWidget.client.removeListener(_onClientChanged);
+      widget.client.addListener(_onClientChanged);
+    }
+  }
+
+  @override
   void dispose() {
+    widget.client.removeListener(_onClientChanged);
     _controller.dispose();
     super.dispose();
+  }
+
+  void _onClientChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
@@ -2189,16 +2262,21 @@ class _ChatPanelState extends State<_ChatPanel> {
                         style: TextStyle(color: Colors.white38),
                       ),
                     )
+                  // reverse 列表让视口固定在最新消息：index 0 渲染在底部，
+                  // 新消息到达时无需手动滚动；向上滚动查看历史时位置不被打断。
                   : ListView.builder(
+                      reverse: true,
                       itemCount: messages.length,
-                      itemBuilder: (context, index) => _ChatLine(
-                        name: messages[index].displayName,
-                        message: messages[index].content,
-                        canBlock:
-                            messages[index].userId != widget.currentUserId,
-                        onBlock: () =>
-                            widget.onBlockChanged(messages[index].userId, true),
-                      ),
+                      itemBuilder: (context, index) {
+                        final message = messages[messages.length - 1 - index];
+                        return _ChatLine(
+                          name: message.displayName,
+                          message: message.content,
+                          canBlock: message.userId != widget.currentUserId,
+                          onBlock: () =>
+                              widget.onBlockChanged(message.userId, true),
+                        );
+                      },
                     ),
             ),
             TextField(
@@ -2987,7 +3065,7 @@ String _gameErrorLabel(String code) => switch (code) {
   'rebuy_required' => '筹码已用完，请先补码再准备',
   'hole_card_view_not_available' => '只有本手已弃牌的玩家才能申请查看仍在本手中的玩家手牌',
   'hole_card_view_request_not_found' => '这条看牌申请已经失效',
-  'choose_empty_seat' => '牌桌未满时请点击空座位换位',
+  'invalid_seat_swap' => '不能与该目标交换座位',
   'seat_swap_request_not_found' => '这条换位申请已经失效',
   'runout_choice_not_available' => '当前不在发牌次数选择阶段',
   'invalid_player_interaction' => '请选择同桌的其他玩家进行互动',

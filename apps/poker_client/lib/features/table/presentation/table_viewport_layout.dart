@@ -65,15 +65,21 @@ class TableViewportLayout {
     tableRect.bottom - 128,
   );
 
+  /// [compactOverride] pins the phone/tablet layout family regardless of the
+  /// momentary window height. Mobile platforms pass a device-derived value so
+  /// a keyboard-shrunk viewport can never flip the layout mid-input; resizable
+  /// desktop/web windows keep the height-based heuristic by passing null.
   factory TableViewportLayout.fromSize(
     Size availableSize, {
     required bool chatVisible,
+    bool? compactOverride,
   }) {
     final safeWidth = math.max(1.0, availableSize.width);
     final safeHeight = math.max(1.0, availableSize.height);
     final viewportAspect = safeWidth / safeHeight;
     final canvasAspect = viewportAspect.clamp(minCanvasAspect, maxCanvasAspect);
-    final isCompactLandscape = safeHeight <= 520 && viewportAspect >= 1.7;
+    final isCompactLandscape =
+        compactOverride ?? (safeHeight <= 520 && viewportAspect >= 1.7);
     final canvasHeight = isCompactLandscape
         ? compactDesignHeight
         : designHeight;

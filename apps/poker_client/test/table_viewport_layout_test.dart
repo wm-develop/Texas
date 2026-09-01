@@ -129,4 +129,30 @@ void main() {
     );
     expect(portrait.supportsSideChat, isFalse);
   });
+
+  test('compactOverride 固定布局族，键盘压缩高度不会切换布局', () {
+    // 平板横屏被键盘压缩到 520 以下时，高度启发式会误判为紧凑布局；
+    // 设备级 override 必须保持普通布局不变。
+    final tabletWithKeyboard = TableViewportLayout.fromSize(
+      const Size(1280, 480),
+      chatVisible: true,
+      compactOverride: false,
+    );
+    expect(tabletWithKeyboard.isCompactLandscape, isFalse);
+
+    // 手机即使窗口高度暂时变大，也保持紧凑布局。
+    final phoneOverride = TableViewportLayout.fromSize(
+      const Size(920, 700),
+      chatVisible: true,
+      compactOverride: true,
+    );
+    expect(phoneOverride.isCompactLandscape, isTrue);
+
+    // 不传 override 时保留原有高度启发式。
+    final heuristic = TableViewportLayout.fromSize(
+      const Size(920, 420),
+      chatVisible: true,
+    );
+    expect(heuristic.isCompactLandscape, isTrue);
+  });
 }

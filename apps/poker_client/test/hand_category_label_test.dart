@@ -7,4 +7,9 @@ void main() {
     expect(handCategoryLabel('two_pair'), '两对');
     expect(handCategoryLabel('ONE_PAIR / straight_flush'), '一对 / 同花顺');
   });
+
+  test('私下看牌与主动亮牌显示中文而非内部枚举', () {
+    expect(handCategoryLabel('private_view'), '私下查看');
+    expect(handCategoryLabel('voluntary'), '主动亮牌');
+  });
 }

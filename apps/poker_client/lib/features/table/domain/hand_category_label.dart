@@ -8,6 +8,7 @@ String handCategoryLabel(String category) {
 String _singleHandCategoryLabel(String category) =>
     switch (category.trim().toLowerCase()) {
       'voluntary' => '主动亮牌',
+      'private_view' => '私下查看',
       'high_card' => '高牌',
       'one_pair' => '一对',
       'two_pair' => '两对',

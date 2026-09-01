@@ -1,8 +1,10 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:tencent_rtc_sdk/trtc_cloud.dart';
 import 'package:tencent_rtc_sdk/trtc_cloud_def.dart';
 import 'package:tencent_rtc_sdk/trtc_cloud_listener.dart';
+import 'package:tencent_rtc_sdk/tx_device_manager.dart';
 
 import 'microphone_permission.dart';
 import 'voice_chat_service.dart';
@@ -128,7 +130,23 @@ class TrtcVoiceChatService implements VoiceChatService {
       _cloud?.stopLocalAudio();
       await _switchRole(TRTCRoleType.audience);
     }
+    _pinSpeakerAudioRoute();
     _microphoneEnabled = enabled;
+  }
+
+  /// HarmonyOS switches the playback route to the low-volume earpiece shortly
+  /// after the local microphone starts (audience → anchor), which sounds like
+  /// remote audio dying entirely. Re-pin the loudspeaker route after every
+  /// role change there. Android and Windows keep their validated default
+  /// behaviour untouched.
+  void _pinSpeakerAudioRoute() {
+    if (defaultTargetPlatform != TargetPlatform.ohos) return;
+    try {
+      _cloud?.getDeviceManager().setAudioRoute(TXAudioRoute.speakerPhone);
+    } on Object {
+      // Best effort: the audio route is a playback convenience and must never
+      // break joining or microphone toggling.
+    }
   }
 
   @override
@@ -163,6 +181,7 @@ class TrtcVoiceChatService implements VoiceChatService {
         if (result >= 0) {
           _joined = true;
           _setState(VoiceConnectionState.connected);
+          _pinSpeakerAudioRoute();
           if (completer != null && !completer.isCompleted) completer.complete();
           return;
         }

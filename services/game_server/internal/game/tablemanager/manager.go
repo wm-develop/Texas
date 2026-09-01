@@ -49,6 +49,10 @@ type runtime struct {
 	persistedHandID          string
 	actions                  []history.Action
 	lastAction               *ConfirmedActionSnapshot
+	// pendingCashOuts holds userID → display name for folded players who left
+	// the room mid-hand. Their wallet refund runs after the settlement writes
+	// the post-hand stacks; the display name keeps hand history readable.
+	pendingCashOuts map[string]string
 }
 
 const (
@@ -218,7 +222,12 @@ func (manager *Manager) Join(ctx context.Context, userID string, roomID string) 
 		return Snapshot{}, err
 	}
 	if err := runtime.engine.SetConnected(userID, true); err != nil {
-		return Snapshot{}, err
+		// A member joining mid-hand has no engine seat yet; they connect as a
+		// pending spectator and take their seat when the hand settles.
+		var ruleError holdem.RuleError
+		if !errors.As(err, &ruleError) || ruleError.Code != "not_seated" {
+			return Snapshot{}, err
+		}
 	}
 	return snapshotForRuntime(runtime, roomValue, userID)
 }
@@ -548,8 +557,8 @@ func (manager *Manager) RequestSeatChange(
 		}
 		return snapshotForRuntime(runtime, roomValue, requesterUserID)
 	}
-	if len(roomValue.Members) != roomValue.MaxPlayers || targetUserID == requesterUserID || requestID == "" {
-		return Snapshot{}, holdem.RuleError{Code: "choose_empty_seat"}
+	if targetUserID == requesterUserID || requestID == "" {
+		return Snapshot{}, holdem.RuleError{Code: "invalid_seat_swap"}
 	}
 	runtime.seatSwapRequests[requestID] = seatSwapRequest{
 		RequestID: requestID, RequesterUserID: requesterUserID, TargetUserID: targetUserID,
@@ -686,14 +695,36 @@ func (manager *Manager) Leave(ctx context.Context, userID string) (bool, error) 
 		return false, err
 	}
 	runtime := manager.existingRuntime(roomValue.RoomID)
+	deferCashOut := false
 	if runtime != nil {
 		runtime.mu.Lock()
 		defer runtime.mu.Unlock()
 		if runtime.engine.Phase() != holdem.PhaseWaiting && runtime.engine.Phase() != holdem.PhaseWaitingNextHand {
-			return false, holdem.RuleError{Code: "hand_in_progress"}
+			var player *holdem.Player
+			players := runtime.engine.Players()
+			for index := range players {
+				if players[index].PlayerID == userID {
+					player = &players[index]
+					break
+				}
+			}
+			switch {
+			case player == nil || !player.Participating:
+				// Pending members and players sitting out this hand hold no
+				// chips in the pot; they can settle and leave immediately.
+			case player.Folded:
+				// A folded player's stack is fixed until settlement, but the
+				// bankroll table balance still reflects the pre-hand stack.
+				// Defer the cash-out until the settlement writes the post-hand
+				// stacks, otherwise chips committed to the pot would be
+				// returned twice.
+				deferCashOut = true
+			default:
+				return false, holdem.RuleError{Code: "hand_in_progress"}
+			}
 		}
 	}
-	if manager.bankroll != nil {
+	if manager.bankroll != nil && !deferCashOut {
 		requestID := "cashout:" + roomValue.RoomID + ":" + userID
 		if _, err := manager.bankroll.CashOut(ctx, userID, roomValue.RoomID, requestID); err != nil {
 			return false, err
@@ -705,11 +736,31 @@ func (manager *Manager) Leave(ctx context.Context, userID string) (bool, error) 
 	}
 	if runtime != nil {
 		_ = runtime.engine.RequestLeave(userID)
+		if deferCashOut && !closed {
+			displayName := ""
+			for _, member := range roomValue.Members {
+				if member.UserID == userID {
+					displayName = member.DisplayName
+					break
+				}
+			}
+			if runtime.pendingCashOuts == nil {
+				runtime.pendingCashOuts = make(map[string]string)
+			}
+			runtime.pendingCashOuts[userID] = displayName
+		}
 		if closed && runtime.timer != nil {
 			runtime.timer.Stop()
 		}
 	}
 	if closed {
+		if deferCashOut && manager.bankroll != nil {
+			// The room can only close mid-hand in degenerate cases; without an
+			// upcoming settlement the deferred cash-out must run now so the
+			// table balance is not stranded.
+			requestID := "cashout:" + roomValue.RoomID + ":" + userID
+			_, _ = manager.bankroll.CashOut(ctx, userID, roomValue.RoomID, requestID)
+		}
 		if runtime != nil && runtime.readyTimer != nil {
 			runtime.readyTimer.Stop()
 		}
@@ -983,9 +1034,20 @@ func (manager *Manager) persistSettlementLocked(runtime *runtime, roomValue room
 		if _, err := manager.rooms.UpdateStacks(context.Background(), roomValue.RoomID, settlement.StacksByPlayer); err != nil {
 			return err
 		}
+		// Folded players who left mid-hand now have their post-hand stack in
+		// the table balance; move it back to their wallet idempotently.
+		for userID := range runtime.pendingCashOuts {
+			requestID := "cashout:" + roomValue.RoomID + ":" + userID
+			if _, err := manager.bankroll.CashOut(context.Background(), userID, roomValue.RoomID, requestID); err != nil {
+				return err
+			}
+		}
 	}
 	if _, exists := manager.history.Hand(settlement.HandID); !exists {
-		displayNames := make(map[string]string, len(roomValue.Members))
+		displayNames := make(map[string]string, len(roomValue.Members)+len(runtime.pendingCashOuts))
+		for userID, displayName := range runtime.pendingCashOuts {
+			displayNames[userID] = displayName
+		}
 		for _, member := range roomValue.Members {
 			displayNames[member.UserID] = member.DisplayName
 		}
@@ -1021,6 +1083,7 @@ func (manager *Manager) persistSettlementLocked(runtime *runtime, roomValue room
 			return err
 		}
 	}
+	runtime.pendingCashOuts = nil
 	runtime.persistedHandID = settlement.HandID
 	return nil
 }
@@ -1040,8 +1103,16 @@ func syncMembers(engine *holdem.Table, roomValue room.Room) error {
 	for _, player := range players {
 		byID[player.PlayerID] = player
 	}
+	betweenHands := engine.Phase() == holdem.PhaseWaiting || engine.Phase() == holdem.PhaseWaitingNextHand
 	for _, member := range roomValue.Members {
 		if _, exists := byID[member.UserID]; !exists {
+			// New members can only take an engine seat between hands. A member
+			// joining mid-hand stays as a pending spectator until the current
+			// hand settles; failing here would break snapshots for the whole
+			// table until the hand ends.
+			if !betweenHands {
+				continue
+			}
 			if err := engine.AddPlayer(member.UserID, member.Seat, member.Stack); err != nil {
 				return err
 			}
@@ -1049,7 +1120,7 @@ func syncMembers(engine *holdem.Table, roomValue room.Room) error {
 				return err
 			}
 		}
-		if engine.Phase() == holdem.PhaseWaiting || engine.Phase() == holdem.PhaseWaitingNextHand {
+		if betweenHands {
 			if err := engine.SetReady(member.UserID, member.Ready); err != nil {
 				return err
 			}
@@ -1204,6 +1275,27 @@ func snapshotFor(
 		if player.PlayerID == recipientUserID && player.Participating {
 			result.HoleCards = []string{player.HoleCards[0].String(), player.HoleCards[1].String()}
 		}
+	}
+	// Members who joined mid-hand have no engine seat yet. Surface them as
+	// pending spectators so every client can see the newcomer waiting for the
+	// next hand.
+	engineSeats := make(map[int]struct{}, len(players))
+	engineUsers := make(map[string]struct{}, len(players))
+	for _, player := range players {
+		engineSeats[player.Seat] = struct{}{}
+		engineUsers[player.PlayerID] = struct{}{}
+	}
+	for _, member := range roomValue.Members {
+		if _, seated := engineUsers[member.UserID]; seated {
+			continue
+		}
+		if _, occupied := engineSeats[member.Seat]; occupied {
+			continue
+		}
+		result.Seats = append(result.Seats, SeatSnapshot{
+			UserID: member.UserID, DisplayName: member.DisplayName, Seat: member.Seat,
+			Stack: member.Stack, Ready: member.Ready, Connected: true,
+		})
 	}
 	sort.Slice(result.Seats, func(left, right int) bool { return result.Seats[left].Seat < result.Seats[right].Seat })
 	if engine.CurrentSeat() != 0 {
