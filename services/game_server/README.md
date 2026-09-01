@@ -2,6 +2,8 @@
 
 Go 实现的权威牌局服务，提供账号、娱乐筹码钱包/虚拟充值、好友房、最近牌局、管理员治理、TRTC 凭证 REST API，以及牌桌、房主转移、主动亮牌、自动准备、补码、聊天和语音状态 WebSocket 协议。
 
+当前生产形态是单实例模块化单体。PostgreSQL 负责持久化业务数据，运行中的牌桌、路由和在线状态仍由当前进程持有；Redis 尚未接入，不能通过同时启动多个服务容器获得安全的横向扩展。完整边界见[项目现状](../../docs/PROJECT_STATUS.md)。
+
 好友房只在最后一名成员离桌后关闭；当前房主离桌时，按成员加入时间和座位号将房主身份转移给最早加入的剩余玩家。每手结算后服务端启动 10 秒自动准备倒计时，在线且有牌桌筹码的玩家到期自动准备，期间可显式取消。弃牌玩家与非摊牌获胜者可以在下一手开始前主动公开自己的底牌。
 
 ## 本地启动
@@ -34,7 +36,7 @@ DATABASE_AUTO_MIGRATE=false
 
 服务启动时会验证迁移版本和校验和；版本缺失或 SQL 漂移时拒绝启动。开发环境也可将 `DATABASE_AUTO_MIGRATE=true`，生产环境建议保持 `false` 并独立执行迁移命令。
 
-`000002_admin_console` 增加账号角色与服务器注册开关，`000003_admin_account_management` 增加管理员筹码调整账本类型，`000004_chat_moderation` 增加持久化文字禁言状态。升级已有数据库后必须先执行 `migrate up`，再启动新版本游戏服务。
+`000002_admin_console` 增加账号角色与服务器注册开关，`000003_admin_account_management` 增加管理员筹码调整账本类型，`000004_chat_moderation` 增加持久化文字禁言状态，`000005_runout_boards` 增加发两次牌面与结算，`000006_dynamic_room_capacity` 将房间改为动态扩展至最多 10 人。升级已有数据库后必须先执行 `migrate up`，再启动新版本游戏服务。
 
 ## 管理员治理
 
@@ -76,7 +78,7 @@ docker compose -f .\deploy\docker-compose.dev.yml up -d
 
 服务镜像定义位于 `services/game_server/Dockerfile`。Redis 当前仅作为下一步多实例路由的开发依赖，尚未接入游戏运行时。
 
-香港生产环境的数据库迁移、服务容器更新、应用回滚和 Web 静态文件发布步骤见[生产环境更新手册](../../docs/PRODUCTION_UPDATE_GUIDE.md)。
+生产环境的数据库迁移、服务容器更新、应用回滚和 Web 静态文件发布步骤见[生产环境更新手册](../../docs/PRODUCTION_UPDATE_GUIDE.md)。
 
 ## 当前限制
 

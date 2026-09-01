@@ -4,6 +4,8 @@
 
 本项目不会在 GitHub Release 中直接提供 Web、Windows、Android 或 HarmonyOS 安装包。不同部署者需要使用自己的服务地址、TRTC 应用和平台签名，因此应从对应 Git 标签自行构建。
 
+部署前先阅读[项目现状](PROJECT_STATUS.md)中的当前限制：本版本只能安全地以单游戏服务实例运行，PostgreSQL 不等于进行中牌桌的完整故障恢复。
+
 ## 1. 部署结构
 
 推荐使用两个启用 HTTPS 的域名：
@@ -46,7 +48,8 @@ mkdir -p /opt/texas/repository /opt/texas/secrets /opt/texas/backups
 chmod 700 /opt/texas/secrets
 git clone https://github.com/wm-develop/Texas.git /opt/texas/repository
 cd /opt/texas/repository
-git checkout v0.1.0
+git tag --list --sort=version:refname
+git checkout v0.1.1   # 或替换为准备部署的更新标签
 ```
 
 如果 `repository` 已经存在且不是空目录，不要再次执行 `git clone`。应先确认其中是否已有仓库，再使用 `git status` 和 `git remote -v` 检查。

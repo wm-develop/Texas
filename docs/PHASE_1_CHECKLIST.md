@@ -1,5 +1,7 @@
 # 阶段 1：规则与协议清单
 
+> 历史完成记录。后续增加的发两次、换位、私下看牌等协议能力见[当前协议](WEBSOCKET_PROTOCOL_V1.md)，当前项目状态见[项目现状](PROJECT_STATUS.md)。
+
 目标：完成服务端权威规则引擎、WebSocket 协议 v1 和自动牌局模拟器；连续模拟十万手，无筹码守恒错误和无法结束的牌局。
 
 ## 规则规格和协议
@@ -69,7 +71,7 @@
 ## 当前验证命令
 
 ```powershell
-cd C:\Programming\Texas\services\game_server
-& 'C:\Programming\Texas\.toolchains\go\bin\go.exe' test ./...
-& 'C:\Programming\Texas\.toolchains\go\bin\go.exe' vet ./...
+cd <仓库根>\services\game_server
+& '..\..\.toolchains\go\bin\go.exe' test ./...
+& '..\..\.toolchains\go\bin\go.exe' vet ./...
 ```

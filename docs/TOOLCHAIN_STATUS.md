@@ -1,6 +1,8 @@
 # 开发环境与工具链状态
 
-> 检查日期：2026-08-24
+> 最近完整工具版本盘点：2026-08-24；项目文档复核：2026-09-01
+>
+> 本文记录原维护者 Windows 开发机的已验证组合，不代表新维护者必须使用相同绝对路径。接手者应先运行 `flutter doctor -v`、`flutter devices`、`go version` 并记录自己的环境。
 
 ## 已可用
 
@@ -23,17 +25,21 @@
 | Go | 官方便携版 `1.27.0 windows/amd64` |
 | Web 调试 | Microsoft Edge 可用 |
 
-Flutter 实际位于：
+路径说明：下面记录的是 2026-08-24 盘点时那台开发机的位置，**仅供参考，不是项目约定**。仓库和 Flutter 都可以放在任意目录，接手后请以自己的实际路径为准。
+
+Flutter OH 当时位于（示例）：
 
 ```text
 C:\Programming\env\flutter_flutter
 ```
 
-Go 便携工具链位于：
+Go 便携工具链跟随仓库，始终位于仓库内的忽略目录：
 
 ```text
-C:\Programming\Texas\.toolchains\go
+<仓库根>\.toolchains\go
 ```
+
+这是唯一一条与位置有关的稳定约定：`.toolchains` 是仓库相对路径，跟着检出目录走。
 
 Go 下载包已使用官方 SHA256 校验：
 
@@ -45,7 +51,7 @@ f0c0a0d33ba94f4d2c5dbc887334ce678b21813504ddb3aafcb06e60a5a667c4
 
 | 项目 | 影响 | 后续动作 |
 |---|---|---|
-| Docker | 暂时不能启动 PostgreSQL/Redis 容器 | 阶段 3 开始持久化与多实例开发前安装 |
+| Windows 本地 Docker | 2026-08-24 盘点时未安装 | 可使用外部测试 PostgreSQL；继续数据库/Redis 开发时建议安装 Docker Desktop |
 | Chrome | Flutter Doctor 未发现 Chrome | 当前用 Edge，不构成阻塞 |
 | Android 正式签名 | 当前 APK 使用调试签名 | 发布前配置 keystore；不影响阶段 0 真机联调 |
 
@@ -71,7 +77,9 @@ f0c0a0d33ba94f4d2c5dbc887334ce678b21813504ddb3aafcb06e60a5a667c4
 - Web 已接入 `trtc-sdk-v5 5.19.1`；自动化桥接测试、Release 构建以及 Edge 与 Android 双向通话均通过。
 - Web 加入语音时默认不申请麦克风权限；开启自由麦时才申请，关闭后浏览器释放麦克风占用。
 - Web 退出语音后牌局 WebSocket 继续保持“服务端已连接”。
-- 两端均已锁定为横屏方向；当前视觉样式仍属于技术原型，后续单独优化。
+- 两端均已锁定为横屏方向；此条记录的是 2026-08-24 的技术原型，后续已完成多轮移动牌桌布局优化。
+- 后续版本已改为移动端应用级全屏，并通过 Android `WindowInsets.displayCutout` 与 HarmonyOS `getWindowAvoidArea(TYPE_CUTOUT)` 获取真实挖孔区域。
+- HarmonyOS 后续已加入横屏数字输入面板并扩展手机、平板、PC/二合一设备声明；这些改动仍需在新设备上逐项冒烟。
 
 ## 已确认的兼容性约束
 

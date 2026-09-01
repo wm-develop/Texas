@@ -1,6 +1,8 @@
 # 生产环境更新手册
 
-本文用于每次发布后更新“好友德州”的香港生产环境，覆盖 PostgreSQL 数据库迁移、Go 游戏服务更新和 Flutter Web 更新。当前生产域名与目录如下：
+本文用于每次发布后更新“好友德州”的单实例生产环境，覆盖 PostgreSQL 数据库迁移、Go 游戏服务更新和 Flutter Web 更新。示例域名与目录如下：
+
+开始前应先查看[项目现状](PROJECT_STATUS.md)和对应版本 Release 说明，确认本次改动涉及数据库、游戏服务还是客户端。本文描述通用单实例更新流程，不代表项目已具备多实例故障接管。
 
 | 项目 | 当前值 |
 | --- | --- |
@@ -174,12 +176,27 @@ curl -i http://127.0.0.1:8080/readyz
 
 ## 四、编译和发布客户端
 
-Web、Windows、Android 和 HarmonyOS 共用同一套 Dart 代码及生产服务地址。所有正式构建都在 Windows 开发机的客户端目录执行：
+Web、Windows、Android 和 HarmonyOS 共用同一套 Dart 代码及生产服务地址。所有正式构建都在 Windows 开发机的客户端目录执行。
+
+本节所有 PowerShell 命令使用三个路径变量。**每次新开 PowerShell 会话时先执行一次**，并把值改成本机实际路径：
 
 ```powershell
-cd C:\Programming\Texas\apps\poker_client
+# 仓库检出目录，按本机实际路径修改
+$repo    = 'D:\Workspace\Texas'
+# Flutter OH 安装目录，按本机实际路径修改
+$flutter = 'D:\Workspace\flutter_flutter\bin\flutter.bat'
+# Android platform-tools 中的 adb，仅安装 APK 到真机时需要
+$adb     = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
+
+$client  = "$repo\apps\poker_client"
+```
+
+仓库自带的便携 Go 工具链固定在 `$repo\.toolchains\go`，跟随检出目录，不需要单独配置。
+
+```powershell
+cd $client
 $env:GIT_LFS_SKIP_SMUDGE = '1'
-& 'C:\Programming\env\flutter_flutter\bin\flutter.bat' pub get
+& $flutter pub get
 ```
 
 `GIT_LFS_SKIP_SMUDGE` 只跳过 HarmonyOS 音频插件仓库中与应用构建无关的示例工程大文件；实际插件源码和四个平台实现仍会完整下载。新电脑首次解析依赖时必须保留这一行，后续构建也可以一直保留。
@@ -198,7 +215,7 @@ HTTP API：https://api.example.com
 编译命令：
 
 ```powershell
-& 'C:\Programming\env\flutter_flutter\bin\flutter.bat' build web --release `
+& $flutter build web --release `
   --dart-define=GAME_SERVER_URL=wss://api.example.com/ws `
   --dart-define=GAME_HTTP_SERVER_URL=https://api.example.com
 ```
@@ -206,7 +223,7 @@ HTTP API：https://api.example.com
 构建产物位于：
 
 ```text
-C:\Programming\Texas\apps\poker_client\build\web
+<仓库根>\apps\poker_client\build\web
 ```
 
 #### 上传到宝塔静态站点
@@ -242,7 +259,7 @@ https://web.example.com
 编译命令：
 
 ```powershell
-& 'C:\Programming\env\flutter_flutter\bin\flutter.bat' build windows --release `
+& $flutter build windows --release `
   --dart-define=GAME_SERVER_URL=wss://api.example.com/ws `
   --dart-define=GAME_HTTP_SERVER_URL=https://api.example.com
 ```
@@ -250,14 +267,14 @@ https://web.example.com
 完整产物目录：
 
 ```text
-C:\Programming\Texas\apps\poker_client\build\windows\x64\runner\Release
+<仓库根>\apps\poker_client\build\windows\x64\runner\Release
 ```
 
 发布或复制时必须包含 `Release` 目录里的 EXE、DLL 和 `data` 等全部文件，不能只复制 `poker_client.exe`。需要发送压缩包时，可以将整个目录压缩：
 
 ```powershell
-$windowsRelease = 'C:\Programming\Texas\apps\poker_client\build\windows\x64\runner\Release'
-$windowsZip = 'C:\Programming\Texas\apps\poker_client\build\Poker_windows_x64.zip'
+$windowsRelease = "$client\build\windows\x64\runner\Release"
+$windowsZip = "$client\build\Poker_windows_x64.zip"
 Compress-Archive -Path "$windowsRelease\*" -DestinationPath $windowsZip -Force
 ```
 
@@ -266,7 +283,7 @@ Compress-Archive -Path "$windowsRelease\*" -DestinationPath $windowsZip -Force
 编译 APK：
 
 ```powershell
-& 'C:\Programming\env\flutter_flutter\bin\flutter.bat' build apk --release `
+& $flutter build apk --release `
   --dart-define=GAME_SERVER_URL=wss://api.example.com/ws `
   --dart-define=GAME_HTTP_SERVER_URL=https://api.example.com
 ```
@@ -274,7 +291,7 @@ Compress-Archive -Path "$windowsRelease\*" -DestinationPath $windowsZip -Force
 产物位置：
 
 ```text
-C:\Programming\Texas\apps\poker_client\build\app\outputs\flutter-apk\app-release.apk
+<仓库根>\apps\poker_client\build\app\outputs\flutter-apk\app-release.apk
 ```
 
 当前 Flutter OH/TRTC 插件组合的 Android Release 已在项目中关闭 R8 和资源裁剪，否则安装包可能启动闪退。不要在未经完整真机验证时重新开启。当前 `android/app/build.gradle.kts` 仍使用调试签名生成 Release APK，适合熟人测试；正式对外分发前应配置独立的 Android 发布签名。
@@ -282,8 +299,8 @@ C:\Programming\Texas\apps\poker_client\build\app\outputs\flutter-apk\app-release
 覆盖安装到已连接的 Android 设备可以使用：
 
 ```powershell
-& 'C:\Users\Admin\AppData\Local\Android\Sdk\platform-tools\adb.exe' install -r `
-  'C:\Programming\Texas\apps\poker_client\build\app\outputs\flutter-apk\app-release.apk'
+& $adb install -r `
+  "$client\build\app\outputs\flutter-apk\app-release.apk"
 ```
 
 ### HarmonyOS
@@ -293,7 +310,7 @@ C:\Programming\Texas\apps\poker_client\build\app\outputs\flutter-apk\app-release
 编译已签名 HAP：
 
 ```powershell
-& 'C:\Programming\env\flutter_flutter\bin\flutter.bat' build hap --release `
+& $flutter build hap --release `
   --dart-define=GAME_SERVER_URL=wss://api.example.com/ws `
   --dart-define=GAME_HTTP_SERVER_URL=https://api.example.com
 ```
@@ -301,7 +318,7 @@ C:\Programming\Texas\apps\poker_client\build\app\outputs\flutter-apk\app-release
 产物位置：
 
 ```text
-C:\Programming\Texas\apps\poker_client\build\ohos\hap\entry-default-signed.hap
+<仓库根>\apps\poker_client\build\ohos\hap\entry-default-signed.hap
 ```
 
 如果只生成未签名 HAP，或构建提示签名材料不存在，应回到 DevEco Studio 重新完成自动签名后再编译。安装前确认手机允许调试/安装该签名应用。

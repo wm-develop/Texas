@@ -82,3 +82,4 @@ services/game_server/*.prof
 
 # docs
 docs/PRODUCTION_UPDATE_GUIDE_local.md
+CLAUDE.md
