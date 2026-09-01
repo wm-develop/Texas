@@ -202,6 +202,97 @@ TEXAS_OFFSITE_CMD='rclone copy --config /root/.config/rclone/rclone.conf oss:tex
 
 > 在配置好 ① 之前，请把"数据库可能全部丢失"当作当前真实存在的风险，而不是理论风险。
 
+### 完整示例：腾讯云 COS
+
+以下是从零配置到验证的全过程。阿里云 OSS 步骤基本相同，只需在 `rclone config` 中把 provider 换成 `Alibaba`、endpoint 换成对应的 OSS 域名。
+
+**1. 创建存储桶**
+
+在 COS 控制台新建存储桶，记下完整桶名（形如 `texas-backups-1250000000`，末尾是 APPID）和所属地域（如 `ap-guangzhou`）。
+
+- 访问权限必须选**私有读写**。
+- 建议开启版本控制，可防止误覆盖。
+
+**2. 创建专用子账号（不要用主账号密钥）**
+
+在访问管理 CAM 中新建子用户，只授予这一个桶的读写权限。策略示例（把桶名和地域换成自己的）：
+
+```json
+{
+  "version": "2.0",
+  "statement": [
+    {
+      "effect": "allow",
+      "action": [
+        "cos:PutObject",
+        "cos:GetObject",
+        "cos:HeadObject",
+        "cos:GetBucket"
+      ],
+      "resource": [
+        "qcs::cos:ap-guangzhou:uid/1250000000:texas-backups-1250000000/*",
+        "qcs::cos:ap-guangzhou:uid/1250000000:texas-backups-1250000000/"
+      ]
+    }
+  ]
+}
+```
+
+生成该子用户的 SecretId / SecretKey。**这对密钥等同于备份数据的访问权限，不要提交到仓库、不要写进任何文档。**
+
+**3. 在服务器上安装并配置 rclone**
+
+```bash
+curl https://rclone.org/install.sh | sudo bash
+sudo rclone config
+```
+
+交互式选择：`n` 新建 → 名称填 `cos` → 存储类型选 `s3` → provider 选 `TencentCOS` → 按提示粘贴 SecretId 与 SecretKey → endpoint 填 `cos.ap-guangzhou.myqcloud.com`（换成自己的地域）→ 其余默认。
+
+密钥在这一步由你亲手输入，之后保存在 `/root/.config/rclone/rclone.conf`，请确认权限：
+
+```bash
+sudo chmod 600 /root/.config/rclone/rclone.conf
+```
+
+**4. 验证连通**
+
+```bash
+sudo rclone lsd cos:
+sudo rclone ls cos:texas-backups-1250000000
+```
+
+能列出桶且不报错即为成功。
+
+**5. 写入配置并去掉注释**
+
+编辑 `/opt/texas/backup.env`，确保这一行**没有行首的 `#`**：
+
+```bash
+TEXAS_OFFSITE_CMD='rclone copy --config /root/.config/rclone/rclone.conf cos:texas-backups-1250000000'
+```
+
+> 备份脚本用 `source` 读取该文件，被注释掉的行不会生效，脚本会打印
+> `未配置 TEXAS_OFFSITE_CMD，跳过异机复制（备份仅存在于本机）`。看到这句就说明这一行没生效。
+
+**6. 跑一次验证**
+
+```bash
+sudo /opt/texas/bin/texas-backup.sh
+```
+
+输出应包含 `异机复制中` 与 `异机复制完成`。随后确认远端确实收到：
+
+```bash
+sudo rclone ls cos:texas-backups-1250000000
+```
+
+### 远端保留策略（容易遗漏）
+
+脚本的轮转只清理**本机**目录。`rclone copy` 只上传不删除，因此远端会**无限累积**每一份备份。请在 COS 控制台为该桶添加生命周期规则，例如「对象创建 60 天后删除」，让远端保留独立于本机管理。
+
+这样本机保留 14 天、远端保留 60 天，两级保留互不影响，反而比同步删除更安全——本机被误删不会连带清空远端。
+
 ### 命令格式
 
 `TEXAS_OFFSITE_CMD` 会以备份文件路径为唯一参数被调用，可以是任何命令。示例：
