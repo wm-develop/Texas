@@ -1,8 +1,22 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+// Release signing is configured through android/key.properties, which is git
+// ignored and never committed. Every maintainer machine must use the SAME
+// keystore, otherwise the produced APKs cannot upgrade each other on a device.
+// When the file is absent the build falls back to the debug keystore so that
+// local development still works; such an APK is NOT suitable for distribution.
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("key.properties")
+val hasReleaseKeystore = keystorePropertiesFile.exists()
+if (hasReleaseKeystore) {
+    keystorePropertiesFile.inputStream().use { keystoreProperties.load(it) }
 }
 
 android {
@@ -30,11 +44,32 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                // No key.properties on this machine: keep debug signing so that
+                // `flutter run --release` works. Debug keystores are generated
+                // per machine, so these APKs cannot be installed over an APK
+                // built elsewhere.
+                logger.warn(
+                    "android/key.properties not found; the Release APK is signed " +
+                        "with the local debug keystore and must not be distributed."
+                )
+                signingConfigs.getByName("debug")
+            }
 
             // Several native Flutter plugins used by the Android client (most
             // notably the TRTC SDK) register classes dynamically. R8 cannot see
