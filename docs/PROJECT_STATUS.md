@@ -114,10 +114,10 @@ TRTC：牌桌语音
 - 备份与恢复已提供可执行方案（`deploy/backup/` 脚本与[备份恢复指南](BACKUP_AND_RESTORE_GUIDE.md)：定时备份、归档校验、保留轮转、异机复制与恢复演练），但**需在生产服务器上完成安装与首次演练后才算生效**。指标/告警和 24 小时故障注入仍未形成闭环。
 - REST、WebSocket、登录和 TRTC 凭证尚缺完整的分层限流与可信代理策略。
 - 举报、账号注销、隐私提示和语音加入/退出元数据尚未完成。
-- 没有 GitHub Actions；构建、迁移、发布和回滚目前依靠文档化的人工流程。
+- 已有 GitHub Actions（`.github/workflows/ci.yml`）：服务端 gofmt/vet/test 与 -race、客户端 analyze/test、shellcheck 与仓库卫生检查。构建、迁移、发布和回滚仍是文档化的人工流程。
 - Android Release 签名已支持通过 `android/key.properties` 配置独立发布密钥（缺失时回退调试签名并告警），维护者需按[Android 发布签名配置指南](ANDROID_SIGNING_GUIDE.md)完成一次性配置；HarmonyOS 签名依赖维护者本机配置；iOS 未验证。
-- 客户端牌桌主页面体积很大，`table_prototype_page.dart` 已超过 100 KB（约 3000 行），继续叠加功能前应拆分控制器、布局和弹窗。
-- Flutter 测试目录（16 个文件、48 项）覆盖的是快照解析、动作栏、挖孔、数字面板等边缘件，**没有任何牌桌布局或图层回归测试**。牌桌遮挡问题已返工多轮，仍只能靠人工多端冒烟兜底。
+- 客户端牌桌页已按职责拆分：`table_prototype_page.dart` 从 3180 行降至约 970 行，组件分入 `table_labels`、`table_card_widgets`、`table_status_widgets`、`table_board_center`、`table_seat_widgets`、`table_chat_panel`、`table_action_bar`、`table_rebuy_dialog`、`table_canvas`。提取出的组件为公开类，可被 Widget 测试直接覆盖。
+- Flutter 测试为 18 个文件、71 项，其中 `table_layout_regression_test.dart` 覆盖 2～10 人座位排布、紧凑横屏布局、玩家框内手牌与中文牌型、图层顺序（下注筹码须绘制于玩家框之后）以及公共牌区域几何。该测试已验证能捕获图层顺序写反的回归。真机多端冒烟仍不可省略。
 - 客户端版本已统一为 `0.2.0`：`pubspec.yaml` 为 `0.2.0+2`，Android/Windows 自动取自 pubspec，HarmonyOS 需在 `ohos/AppScope/app.json5` 手动同步（当前 `versionCode` 为 `2000`）。
 - `internal/protocol/messages.go` 中 `system.hello`、`table.hand.started`、`table.hole_cards.dealt`、`table.board.dealt`、`table.hand.settled` 五个常量没有任何发送点，属于早期事件驱动设计的残留死代码，待清理。`revisionFromError` 比较的 `stale_table_revision` 也与规则引擎实际产生的 `stale_revision` 不匹配，该分支恒不命中（两个分支都返回 0，当前无功能影响）。
 
