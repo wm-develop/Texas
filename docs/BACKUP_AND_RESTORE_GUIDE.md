@@ -171,7 +171,9 @@ sudo /opt/texas/bin/texas-restore-drill.sh /opt/texas/backups/weekly/texas_20260
 
 结论：备份可恢复，且恢复出的数据账目自洽。本次未发现需要处理的问题。
 
-遗留项：当时尚未配置有效的异机副本，备份仅存在于生产服务器本机（见第 5 节）。
+遗留项：演练当时尚未配置有效的异机副本，备份仅存在于生产服务器本机。
+
+同日后续已补齐：单份备份实测 204 KB；使用 coscli 上传至腾讯云 COS 的异机复制已验证成功。配置过程中确认了两个易踩的坑——`TEXAS_OFFSITE_CMD` 必须用 `{}` 指明文件位置（否则 rclone/rsync 的源与目标会写反），且命令必须写绝对路径（`sudo` 的 `secure_path` 与 systemd 默认 PATH 均不含 `/usr/local/bin`）。
 
 > 注意：首次演练的 RPO 为 0 只是因为备份刚刚手动生成。启用每日定时备份后，
 > 常态最坏 RPO 约为 24 小时。
@@ -428,6 +430,10 @@ docker exec -i texas-postgres psql -U texas -d texas -X -q -f - \
 
 - [ ] 手动执行 `texas-backup.sh` 成功，生成 `.dump` 与 `.sha256`
 - [ ] `systemctl list-timers` 中能看到 `texas-backup.timer` 的下次执行时间
+- [ ] **`systemctl start texas-backup.service` 手动触发一次成功**，并在
+      `journalctl -u texas-backup.service` 中确认出现 `异机复制完成` 与 `全部完成`
+      （systemd 的 PATH 与交互式 shell 不同，必须实测而非假定）
+- [ ] 对象存储侧已配置生命周期规则，远端不会无限累积
 - [ ] 执行 `texas-restore-drill.sh` 全部检查 `PASS`，并记录了 RPO/RTO
 - [ ] 已配置 `TEXAS_OFFSITE_CMD`，异机位置确实收到了副本
 - [ ] 如启用加密，已在另一台机器上验证私钥能解开副本
