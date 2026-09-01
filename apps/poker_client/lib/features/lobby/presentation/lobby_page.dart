@@ -131,11 +131,14 @@ class _LobbyPageState extends State<LobbyPage> {
             radius: 1.2,
           ),
         ),
-        child: LayoutBuilder(
-          builder: (context, viewport) {
+        child: Builder(
+          builder: (context) {
+            // 与登录页相同：布局档位用不随键盘变化的窗口尺寸判定，避免
+            // 键盘压缩 body 高度导致布局翻转、输入框失焦、键盘收回。
+            final windowSize = MediaQuery.sizeOf(context);
             final compactLandscape =
-                viewport.maxHeight <= 600 &&
-                viewport.maxWidth >= viewport.maxHeight * 1.35;
+                windowSize.height <= 600 &&
+                windowSize.width >= windowSize.height * 1.35;
             return Center(
               child: SingleChildScrollView(
                 padding: compactLandscape

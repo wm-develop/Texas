@@ -50,10 +50,15 @@ class _AuthPageState extends State<AuthPage> {
             radius: 1.2,
           ),
         ),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final compact = constraints.maxHeight < 560;
-            final horizontal = compact && constraints.maxWidth >= 640;
+        child: Builder(
+          builder: (context) {
+            // 布局档位必须用不随键盘变化的窗口尺寸判定：Scaffold 会为软键盘
+            // 压缩 body 约束，若据此在紧凑/横排布局间切换，输入框会因子树
+            // 重建而失焦、键盘立刻收回，在 Android/HarmonyOS 平板上形成
+            // “键盘抽搐”循环。MediaQuery.sizeOf 在键盘弹出时保持不变。
+            final windowSize = MediaQuery.sizeOf(context);
+            final compact = windowSize.height < 560;
+            final horizontal = compact && windowSize.width >= 640;
             return Center(
               child: SingleChildScrollView(
                 padding: EdgeInsets.all(compact ? 12 : 24),
