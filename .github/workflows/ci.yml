@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支上的新推送取消仍在跑的旧任务，避免排队浪费
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    name: Go 游戏服务
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/game_server
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: services/game_server/go.mod
+          cache-dependency-path: services/game_server/go.sum
+
+      - name: 检查 gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未通过 gofmt："
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        # -count=1 禁用测试缓存
+        run: go test ./... -count=1
+
+      - name: go test -race
+        # 单独一步：牌桌是单写者模型，一旦被破坏必须暴露。
+        # 与上一步分开便于区分「功能失败」和「数据竞争」。
+        # 该检查需要 cgo，Windows 开发机通常无法本地运行，以 CI 结果为准。
+        run: go test ./... -count=1 -race
+
+  client:
+    name: Flutter 客户端
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/poker_client
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl xz-utils libglu1-mesa
+        working-directory: .
+
+      - name: 缓存 Flutter OH 与 pub
+        id: flutter-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/flutter
+            ~/.pub-cache
+          # 分支名变化或依赖变化时失效
+          key: flutter-oh-3.41.9-dev-${{ hashFiles('apps/poker_client/pubspec.yaml') }}
+          restore-keys: flutter-oh-3.41.9-dev-
+
+      - name: 安装 Flutter OH
+        # 本项目使用 CPF-Flutter 的 OpenHarmony 分支，标准 Flutter 无法解析
+        # ohos 平台插件，必须克隆同一分支
+        run: |
+          if [ ! -d "${{ github.workspace }}/flutter/bin" ]; then
+            git clone -b oh-3.41.9-dev --single-branch \
+              https://gitcode.com/CPF-Flutter/flutter_flutter.git \
+              "${{ github.workspace }}/flutter"
+          fi
+          echo "${{ github.workspace }}/flutter/bin" >> "$GITHUB_PATH"
+        working-directory: .
+
+      - name: 输出工具链版本
+        run: flutter --version
+
+      - name: 解析依赖
+        # 跳过 HarmonyOS 音频插件仓库中与构建无关的示例工程大文件
+        env:
+          GIT_LFS_SKIP_SMUDGE: 1
+        run: flutter pub get
+
+      - name: flutter analyze
+        run: flutter analyze
+
+      - name: flutter test
+        run: flutter test
+
+  hygiene:
+    name: 仓库卫生与脚本检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: 检查 shell 脚本
+        # 备份与恢复脚本直接操作生产数据，静态检查是必须的最低保障。
+        # 限定 warning 及以上，避免风格类提示阻塞流水线。
+        run: shellcheck --severity=warning deploy/backup/*.sh scripts/*.sh
+
+      - name: 敏感文件、密钥与文档链接
+        run: ./scripts/check-repo-hygiene.sh
