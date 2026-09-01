@@ -107,8 +107,15 @@ if [[ -n "$OFFSITE_CMD" ]]; then
         log "已加密待上传副本"
     fi
     log "异机复制中"
-    # shellcheck disable=SC2086
-    $OFFSITE_CMD "$UPLOAD" || fail "异机复制失败"
+    # 命令中含 {} 时替换为备份文件路径，否则把路径追加到末尾。
+    # 前者用于 rclone / rsync 这类“源在前、目标在后”的工具，
+    # 后者用于只接收一个文件参数的包装脚本。
+    if [[ "$OFFSITE_CMD" == *"{}"* ]]; then
+        eval "${OFFSITE_CMD//\{\}/$(printf '%q' "$UPLOAD")}" || fail "异机复制失败"
+    else
+        # shellcheck disable=SC2086
+        $OFFSITE_CMD "$UPLOAD" || fail "异机复制失败"
+    fi
     [[ -n "$TEMP_ENCRYPTED" ]] && rm -f "$TEMP_ENCRYPTED"
     log "异机复制完成"
 else

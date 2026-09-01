@@ -62,7 +62,7 @@ TEXAS_DAILY_KEEP=14
 TEXAS_WEEKLY_KEEP=8
 
 # 异机复制命令。留空则只在本机保留（强烈建议配置，见第 5 节）
-# TEXAS_OFFSITE_CMD='rclone copy --config /opt/texas/rclone.conf'
+# TEXAS_OFFSITE_CMD='coscli cp {} cos://texas/'
 
 # 异机副本加密的 age 公钥。留空则不加密
 # TEXAS_AGE_RECIPIENT=age1xxxxxxxxxxxxxxxxxxxxx
@@ -186,13 +186,7 @@ sudo /opt/texas/bin/texas-restore-drill.sh /opt/texas/backups/weekly/texas_20260
 
 **① 对象存储（推荐）**。阿里云 OSS、腾讯云 COS、Backblaze B2、Cloudflare R2 都可以，`rclone` 全部支持。本项目数据库很小（万级账本记录量级下，单份备份通常只有几 MB），**每月成本通常不到一元**。云厂商侧自带多副本冗余，与你的服务器完全独立。若服务器与对象存储在同一云厂商，还可以走内网端点，不消耗公网流量。
 
-```bash
-rclone config          # 交互式添加 remote，例如命名为 oss
-# 验证连通
-rclone lsd oss:
-# 写入 /opt/texas/backup.env
-TEXAS_OFFSITE_CMD='rclone copy --config /root/.config/rclone/rclone.conf oss:texas-backups'
-```
+具体到腾讯云 COS 的完整步骤见下一小节。
 
 **② 定时拉回本地电脑**。在自己的电脑上做计划任务，从服务器 `scp`/`rsync` 拉取最新备份。缺点是依赖电脑开机，容易断档，适合作为 ① 的补充而非唯一手段。
 
@@ -254,42 +248,78 @@ JSON 中三处占位符必须替换：地域 `ap-guangzhou`、两处 APPID `1250
 
 生成该子用户的 SecretId / SecretKey。**这对密钥等同于备份数据的访问权限，不要提交到仓库、不要写进任何文档。**
 
-**3. 在服务器上安装并配置 rclone**
+**3. 在服务器上安装上传工具**
+
+两个工具任选其一。国内服务器推荐 coscli：它由腾讯云自己的域名分发，不会像 rclone 官方安装脚本那样卡在境外下载上。
+
+*方式一：coscli（腾讯云官方，国内下载快）*
 
 ```bash
-curl https://rclone.org/install.sh | sudo bash
-sudo rclone config
+sudo curl -fsSL -o /usr/local/bin/coscli \n    https://cosbrowser.cloud.tencent.com/software/coscli/coscli-linux-amd64
+sudo chmod +x /usr/local/bin/coscli
+coscli --version
 ```
 
-交互式选择：`n` 新建 → 名称填 `cos` → 存储类型选 `s3` → provider 选 `TencentCOS` → 按提示粘贴 SecretId 与 SecretKey → endpoint 填 `cos.ap-guangzhou.myqcloud.com`（换成自己的地域）→ 其余默认。
+创建 `/root/.cos.yaml`（把地域、桶名和密钥换成自己的）：
 
-密钥在这一步由你亲手输入，之后保存在 `/root/.config/rclone/rclone.conf`，请确认权限：
+```yaml
+cos:
+  base:
+    secretid: 你的SecretId
+    secretkey: 你的SecretKey
+  buckets:
+    - name: texas-backups-1250000000
+      alias: texas
+      region: ap-guangzhou
+```
+
+```bash
+sudo chmod 600 /root/.cos.yaml
+coscli ls cos://texas          # 验证连通
+```
+
+*方式二：rclone*
+
+`curl https://rclone.org/install.sh | sudo bash` 在国内服务器上常常卡住——脚本本身能下载，但它内部会去 `downloads.rclone.org` 取二进制包，该域名在国内可能极慢或不通。改为手动安装：
+
+```bash
+# 优先尝试系统源
+sudo yum install -y rclone     # CentOS/RHEL，需已启用 EPEL
+sudo apt install -y rclone     # Debian/Ubuntu
+
+# 系统源没有时，从 GitHub Release 手动下载对应架构的 zip 解压
+# 解压后：sudo install -m 755 rclone /usr/local/bin/rclone
+```
+
+装好后 `sudo rclone config`：`n` 新建 → 名称 `cos` → 类型 `s3` → provider 选 `TencentCOS` → 粘贴 SecretId 与 SecretKey → endpoint 填 `cos.ap-guangzhou.myqcloud.com`（换成自己的地域）→ 其余默认。
+
+密钥由你亲手输入，保存在 `/root/.config/rclone/rclone.conf`，务必收紧权限：
 
 ```bash
 sudo chmod 600 /root/.config/rclone/rclone.conf
+sudo rclone lsd cos:           # 验证连通
 ```
 
-**4. 验证连通**
+**4. 写入配置并去掉注释**
+
+编辑 `/opt/texas/backup.env`。`{}` 会被替换为本次备份文件的路径：
 
 ```bash
-sudo rclone lsd cos:
-sudo rclone ls cos:texas-backups-1250000000
+# coscli
+TEXAS_OFFSITE_CMD='coscli cp {} cos://texas/'
+
+# 或 rclone
+TEXAS_OFFSITE_CMD='rclone copy --config /root/.config/rclone/rclone.conf {} cos:texas-backups-1250000000'
 ```
 
-能列出桶且不报错即为成功。
-
-**5. 写入配置并去掉注释**
-
-编辑 `/opt/texas/backup.env`，确保这一行**没有行首的 `#`**：
-
-```bash
-TEXAS_OFFSITE_CMD='rclone copy --config /root/.config/rclone/rclone.conf cos:texas-backups-1250000000'
-```
+> **注意参数顺序。** rclone 与 rsync 都是「源在前、目标在后」，必须用 `{}`
+> 明确指出文件位置。若省略 `{}`，脚本会把路径追加到命令末尾，对这两个工具
+> 而言等于把源和目标写反。
 
 > 备份脚本用 `source` 读取该文件，被注释掉的行不会生效，脚本会打印
 > `未配置 TEXAS_OFFSITE_CMD，跳过异机复制（备份仅存在于本机）`。看到这句就说明这一行没生效。
 
-**6. 跑一次验证**
+**5. 跑一次验证**
 
 ```bash
 sudo /opt/texas/bin/texas-backup.sh
@@ -298,7 +328,8 @@ sudo /opt/texas/bin/texas-backup.sh
 输出应包含 `异机复制中` 与 `异机复制完成`。随后确认远端确实收到：
 
 ```bash
-sudo rclone ls cos:texas-backups-1250000000
+coscli ls cos://texas                        # coscli
+sudo rclone ls cos:texas-backups-1250000000  # rclone
 ```
 
 ### 远端保留策略（容易遗漏）
@@ -309,14 +340,23 @@ sudo rclone ls cos:texas-backups-1250000000
 
 ### 命令格式
 
-`TEXAS_OFFSITE_CMD` 会以备份文件路径为唯一参数被调用，可以是任何命令。示例：
+`TEXAS_OFFSITE_CMD` 支持两种写法：
+
+- **含 `{}`**：`{}` 被替换为本次备份文件的路径。适用于 rclone、rsync、coscli 等「源在前、目标在后」的工具。
+- **不含 `{}`**：文件路径被追加到命令末尾。适用于只接收一个文件参数的包装脚本。
 
 ```bash
-# rclone 到对象存储
-TEXAS_OFFSITE_CMD='rclone copy --config /opt/texas/rclone.conf'
+# coscli
+TEXAS_OFFSITE_CMD='coscli cp {} cos://texas/'
+
+# rclone
+TEXAS_OFFSITE_CMD='rclone copy --config /root/.config/rclone/rclone.conf {} cos:texas-backups-1250000000'
 
 # rsync 到另一台机器
-TEXAS_OFFSITE_CMD='rsync -a --chmod=600 -e "ssh -i /opt/texas/secrets/backup_key" backup@example.com:/backups/texas/'
+TEXAS_OFFSITE_CMD='rsync -a --chmod=600 -e "ssh -i /opt/texas/secrets/backup_key" {} backup@example.com:/backups/texas/'
+
+# 自定义包装脚本（脚本内用 $1 取文件路径）
+TEXAS_OFFSITE_CMD=/opt/texas/bin/offsite-upload.sh
 ```
 
 ### 加密
