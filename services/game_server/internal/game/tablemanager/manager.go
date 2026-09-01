@@ -61,6 +61,9 @@ const (
 	standardActionDuration = 30 * time.Second
 	headsUpActionDuration  = 60 * time.Second
 	autoReadyDelay         = 10 * time.Second
+	// 发两次的结算在客户端分两块牌面先后展示（第一块停留 5 秒再切换），
+	// 自动准备相应延长，保证玩家能看完两块牌面的结果。
+	runoutAutoReadyDelay = 15 * time.Second
 )
 
 type ScheduledTimer interface {
@@ -839,11 +842,15 @@ func (manager *Manager) scheduleAutoReadyLocked(runtime *runtime) {
 	if runtime.readyTimer != nil {
 		runtime.readyTimer.Stop()
 	}
+	delay := autoReadyDelay
+	if len(runtime.engine.LastSettlement().RunoutBoards) == 2 {
+		delay = runoutAutoReadyDelay
+	}
 	runtime.readyTimerGeneration++
-	runtime.autoReadyDeadline = manager.now().Add(autoReadyDelay)
+	runtime.autoReadyDeadline = manager.now().Add(delay)
 	runtime.autoReadyCancelled = make(map[string]bool)
 	generation := runtime.readyTimerGeneration
-	runtime.readyTimer = manager.afterFunc(autoReadyDelay, func() {
+	runtime.readyTimer = manager.afterFunc(delay, func() {
 		manager.handleAutoReady(runtime.roomID, generation)
 	})
 }

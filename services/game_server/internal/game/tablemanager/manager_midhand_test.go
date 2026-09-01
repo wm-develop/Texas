@@ -367,3 +367,83 @@ func TestSeatSwapRequestWorksWithoutFullTable(t *testing.T) {
 		t.Fatalf("owner should now hold seat %d, got %#v", guestSeat, seats)
 	}
 }
+
+// A double-runout settlement needs extra time on the client to present both
+// boards (the first board holds for five seconds), so auto-ready stretches to
+// fifteen seconds instead of ten.
+func TestDoubleRunoutSettlementSchedulesLongerAutoReady(t *testing.T) {
+	ctx := context.Background()
+	chips, err := bankroll.NewService(bankroll.NewMemoryRepository(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, userID := range []string{"owner", "guest"} {
+		if _, err := chips.TopUp(ctx, userID, "topup-"+userID, 1_000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hasher, err := security.NewPasswordHasher(1_000, cryptorand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rooms, err := room.NewService(room.NewMemoryRepository(), hasher, room.ServiceConfig{Bankroll: chips})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both stacks are below the big blind, so the hand starts with forced
+	// all-in blinds and goes straight to the runout choice.
+	created, err := rooms.CreateConfigured(ctx, room.Participant{UserID: "owner", DisplayName: "房主"}, room.CreateOptions{
+		Preset: room.PresetStandard, MaxPlayers: 2, SmallBlind: 10, BigBlind: 20,
+		MaxBuyIn: 2_000, BuyIn: 10, RequestID: "create-owner",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rooms.JoinWithBuyIn(ctx, room.Participant{UserID: "guest", DisplayName: "好友"}, room.JoinOptions{
+		Code: created.Code, BuyIn: 10, RequestID: "join-guest",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(9_000, 0)
+	scheduled := make(map[time.Duration]func())
+	manager, err := NewWithConfig(rooms, zeroRandom{}, ManagerConfig{
+		Bankroll: chips,
+		Now:      func() time.Time { return now },
+		AfterFunc: func(duration time.Duration, callback func()) ScheduledTimer {
+			scheduled[duration] = callback
+			return &fakeScheduledTimer{}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, userID := range []string{"owner", "guest"} {
+		if _, err := manager.Join(ctx, userID, created.RoomID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := manager.SetReady(ctx, userID, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inChoice, err := manager.Snapshot(ctx, "owner", created.RoomID)
+	if err != nil || inChoice.RunoutChoice == nil {
+		t.Fatalf("expected runout choice phase, snapshot=%#v err=%v", inChoice, err)
+	}
+	if _, err := manager.SubmitRunoutChoice(ctx, "owner", created.RoomID, 2); err != nil {
+		t.Fatal(err)
+	}
+	settled, err := manager.SubmitRunoutChoice(ctx, "guest", created.RoomID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settled.Settlement == nil || len(settled.Settlement.RunoutBoards) != 2 {
+		t.Fatalf("expected double runout settlement, got %#v", settled.Settlement)
+	}
+	if scheduled[runoutAutoReadyDelay] == nil {
+		t.Fatal("double runout should schedule the 15s auto-ready callback")
+	}
+	expected := now.Add(runoutAutoReadyDelay).UnixMilli()
+	if settled.AutoReadyDeadline != expected {
+		t.Fatalf("auto-ready deadline=%d, expected %d", settled.AutoReadyDeadline, expected)
+	}
+}

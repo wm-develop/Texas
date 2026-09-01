@@ -1412,11 +1412,10 @@ class _BoardCenter extends StatefulWidget {
 
 /// 发两次的展示阶段：先完整展示第一块牌面 5 秒，然后仅让第一次发出的
 /// 公共牌（两块牌面的公共前缀之外的部分）渐隐，再淡入第二块牌面。
-enum _RunoutStage { firstBoard, fadingFirst, secondBoard }
+enum _RunoutStage { firstBoard, stackedBoards }
 
 class _BoardCenterState extends State<_BoardCenter> {
   static const _firstBoardHold = Duration(seconds: 5);
-  static const _fadeDuration = Duration(milliseconds: 600);
 
   Timer? _stageTimer;
   String _animatedHandId = '';
@@ -1455,23 +1454,21 @@ class _BoardCenterState extends State<_BoardCenter> {
     _stageTimer?.cancel();
     _stageTimer = Timer(_firstBoardHold, () {
       if (!mounted) return;
-      setState(() => _stage = _RunoutStage.fadingFirst);
-      _stageTimer = Timer(_fadeDuration, () {
-        if (!mounted) return;
-        setState(() => _stage = _RunoutStage.secondBoard);
-      });
+      setState(() => _stage = _RunoutStage.stackedBoards);
     });
   }
 
+  /// 发两次的展示：先完整展示第一块牌面 5 秒；之后本次发出的牌（公共
+  /// 前缀之外的部分）收起为顶部点数条，第二次的牌叠放在其下覆盖主体，
+  /// 两次结果同时可读。已在场的公共牌全程保持原样。
   List<Widget> _runoutBoardRow(List<List<String>> runoutBoards) {
     final sharedPrefix = sharedRunoutPrefixLength(runoutBoards);
-    final showSecond = _stage == _RunoutStage.secondBoard;
-    final sourceBoard = showSecond ? runoutBoards[1] : runoutBoards[0];
+    final stacked = _stage == _RunoutStage.stackedBoards;
     return [
       Padding(
         padding: const EdgeInsets.only(bottom: 2),
         child: Text(
-          showSecond ? '第2次' : '第1次',
+          stacked ? '第1次(上) / 第2次(下)' : '第1次',
           style: const TextStyle(
             color: Color(0xFFF6D986),
             fontSize: 12,
@@ -1481,19 +1478,33 @@ class _BoardCenterState extends State<_BoardCenter> {
       ),
       Row(
         mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.end,
         children: List.generate(5, (index) {
-          final card = index < sourceBoard.length ? sourceBoard[index] : null;
-          final playingCard = _PlayingCard(
-            rank: card == null ? '?' : _cardRank(card),
-            suit: card == null ? '' : _cardSuit(card),
-            red: card != null && (card.endsWith('h') || card.endsWith('d')),
-          );
-          if (index < sharedPrefix) return playingCard;
-          // 前缀之外的牌：第一块渐隐，第二块通过 AnimatedSwitcher 淡入。
-          return AnimatedOpacity(
-            duration: _fadeDuration,
-            opacity: _stage == _RunoutStage.fadingFirst ? 0 : 1,
-            child: playingCard,
+          String? cardAt(List<String> board) =>
+              index < board.length ? board[index] : null;
+          final firstCard = cardAt(runoutBoards[0]);
+          if (index < sharedPrefix || !stacked) {
+            return _PlayingCard(
+              rank: firstCard == null ? '?' : _cardRank(firstCard),
+              suit: firstCard == null ? '' : _cardSuit(firstCard),
+              red:
+                  firstCard != null &&
+                  (firstCard.endsWith('h') || firstCard.endsWith('d')),
+            );
+          }
+          final secondCard = cardAt(runoutBoards[1]);
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (firstCard != null) _FirstRunoutTab(card: firstCard),
+              _PlayingCard(
+                rank: secondCard == null ? '?' : _cardRank(secondCard),
+                suit: secondCard == null ? '' : _cardSuit(secondCard),
+                red:
+                    secondCard != null &&
+                    (secondCard.endsWith('h') || secondCard.endsWith('d')),
+              ),
+            ],
           );
         }),
       ),
@@ -1598,6 +1609,46 @@ class _BoardCenterState extends State<_BoardCenter> {
                 ],
               ],
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 发两次进入叠放展示后，第一次发出的牌收起成这条顶部点数条，
+/// 第二次的牌叠在它下方；玩家仍能同时读到两次的点数与花色。
+class _FirstRunoutTab extends StatelessWidget {
+  const _FirstRunoutTab({required this.card});
+
+  final String card;
+
+  @override
+  Widget build(BuildContext context) {
+    final red = card.endsWith('h') || card.endsWith('d');
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 400),
+      curve: Curves.easeOut,
+      builder: (context, value, child) =>
+          Opacity(opacity: value, child: child),
+      child: Container(
+        width: 58,
+        height: 24,
+        margin: const EdgeInsets.symmetric(horizontal: 4),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: const Color(0xFFE8E2D3),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
+          border: Border.all(color: Colors.white30),
+        ),
+        child: Text(
+          '${_cardRank(card)} ${_cardSuit(card)}',
+          style: TextStyle(
+            height: 1,
+            color: red ? const Color(0xFFC63D45) : Colors.black87,
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
           ),
         ),
       ),
