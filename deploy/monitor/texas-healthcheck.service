@@ -1,0 +1,9 @@
+[Unit]
+Description=好友德州服务健康巡检
+Documentation=https://github.com/wm-develop/Texas/blob/main/docs/OPERATIONS_GUIDE.md
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/texas/bin/texas-healthcheck.sh
+TimeoutStartSec=60

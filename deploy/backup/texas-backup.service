@@ -3,6 +3,9 @@ Description=好友德州 PostgreSQL 备份
 Documentation=https://github.com/wm-develop/Texas/blob/main/docs/BACKUP_AND_RESTORE_GUIDE.md
 After=docker.service
 Requires=docker.service
+# 备份失败（含异机复制失败）时触发告警单元。备份静默失败会在轮转后
+# 悄无声息地耗尽所有可用副本，必须第一时间知道。
+OnFailure=texas-alert@%n.service
 
 [Service]
 Type=oneshot

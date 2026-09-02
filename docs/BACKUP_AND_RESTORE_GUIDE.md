@@ -415,14 +415,18 @@ curl -i http://127.0.0.1:8080/readyz
 
 ## 7. 日常对账
 
-`texas-verify.sql` 是只读的，可以直接对生产库运行，不必等到演练：
+`texas-verify.sql` 是只读的，可以直接对生产库运行，不必等到演练。仓库提供了封装好的脚本与每周一定时任务：
 
 ```bash
-docker exec -i texas-postgres psql -U texas -d texas -X -q -f - \
-    < /opt/texas/bin/texas-verify.sql
+sudo /opt/texas/bin/texas-reconcile.sh          # 手动执行
+sudo systemctl enable --now texas-reconcile.timer   # 每周一 05:00 自动执行
 ```
 
-建议每周执行一次。若 `ledger_conservation` 或 `settlement_per_hand` 出现 `FAIL`，说明存在筹码不守恒——**立刻记录现场并排查代码，不要直接改数据把账"调平"**，那会掩盖真正的缺陷。
+任一项 `FAIL` 即以非零码退出并通过 `OnFailure=` 触发告警（告警配置见[运行保障指南](OPERATIONS_GUIDE.md)）。
+
+若 `ledger_conservation` 或 `settlement_per_hand` 出现 `FAIL`，说明存在筹码不守恒——**立刻做一次备份保留现场并排查代码，不要直接改数据把账"调平"**，那会掩盖真正的缺陷。
+
+备份任务本身也已接入告警：`texas-backup.service` 失败（含异机复制失败）会立即通知；健康巡检还会在最近备份超过 36 小时时告警，防止备份静默停跑后被轮转清空。
 
 ## 8. 检查清单
 

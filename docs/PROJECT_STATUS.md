@@ -111,8 +111,8 @@ TRTC：牌桌语音
 
 - Redis 尚未接入；不支持多游戏服务实例、权威牌桌租约、实例故障自动接管或无损热迁移。
 - 运行中的牌桌状态主要在内存中。数据库保留业务记录，但服务进程异常退出后不能完整恢复进行中的一手牌。
-- 备份与恢复已提供可执行方案（`deploy/backup/` 脚本与[备份恢复指南](BACKUP_AND_RESTORE_GUIDE.md)：定时备份、归档校验、保留轮转、异机复制与恢复演练），但**需在生产服务器上完成安装与首次演练后才算生效**。指标/告警和 24 小时故障注入仍未形成闭环。
-- REST、WebSocket、登录和 TRTC 凭证尚缺完整的分层限流与可信代理策略。
+- 备份、恢复演练、账本对账、健康巡检与告警均已提供可执行方案（`deploy/backup/`、`deploy/monitor/`，见[备份恢复指南](BACKUP_AND_RESTORE_GUIDE.md)与[运行保障指南](OPERATIONS_GUIDE.md)）；生产服务器已完成备份安装与首次演练，对账定时任务与告警通道**需在服务器上安装并验证通知能送达后才算生效**。24 小时故障注入尚未做。
+- 分层限流已实现：登录/注册/刷新按 IP、密码错误按用户名、房间与钱包操作按用户、TRTC 凭证按用户、单 IP WebSocket 并发上限；`TRUSTED_PROXIES` 提供可信代理解析。`/metrics` 以 Bearer 令牌保护，暴露 HTTP、WebSocket、牌桌动作、活跃牌桌、快照广播失败与限流计数。**生产环境需配置 `TRUSTED_PROXIES` 与 `METRICS_TOKEN` 后才生效**。
 - 举报、账号注销、隐私提示和语音加入/退出元数据尚未完成。
 - 已有 GitHub Actions（`.github/workflows/ci.yml`）：服务端 gofmt/vet/test 与 -race、客户端 analyze/test、shellcheck 与仓库卫生检查。构建、迁移、发布和回滚仍是文档化的人工流程。
 - Android Release 签名已支持通过 `android/key.properties` 配置独立发布密钥（缺失时回退调试签名并告警），维护者需按[Android 发布签名配置指南](ANDROID_SIGNING_GUIDE.md)完成一次性配置；HarmonyOS 签名依赖维护者本机配置；iOS 未验证。
@@ -123,11 +123,12 @@ TRTC：牌桌语音
 
 ## 7. 推荐下一步
 
-1. 先稳定 v0.1.x：补齐真实设备矩阵、牌桌关键交互回归测试、崩溃日志和发布冒烟清单。
-2. 拆分牌桌页面并增加布局/图层/倒计时的可测试边界，降低后续 UI 修改风险。
-3. 建立 CI：Go 格式、vet、测试；Flutter analyze/test；密钥扫描和文档链接检查。
-4. 建立 PostgreSQL 自动备份、异机保存、恢复演练和账本对账。
+截至 2026-09-01，备份/演练/对账、成员生命周期属性测试、CI、牌桌页拆分与布局回归、分层限流、`/metrics` 与告警脚本均已落地。剩余顺序：
+
+1. 在生产服务器上完成运行保障的安装与验证：`TRUSTED_PROXIES`、`METRICS_TOKEN`、告警 webhook、对账与巡检定时任务，并实际触发一次告警确认送达。
+2. 举报、账号注销与隐私提示。账本追加不可变且外键 `ON DELETE RESTRICT`，注销只能是软删除加脱敏，需先明确产品规则。
+3. 清理 `internal/protocol/messages.go` 的死常量与 `revisionFromError` 的失效分支；继续从 `_TablePrototypePageState` 抽出连接/命令控制器。
+4. 24 小时稳定性与弱网验收、发布冒烟清单。
 5. 再设计 Redis 路由、单写者租约、牌桌快照恢复和多实例故障模型；不要直接把进程内状态复制到 Redis。
-6. 补齐分层限流、指标告警、举报/注销/隐私等上线治理能力。
 
 详细接手入口见[项目交接文档](PROJECT_HANDOVER.md)，完整开发演进见[开发历程](DEVELOPMENT_HISTORY.md)。

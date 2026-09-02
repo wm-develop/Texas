@@ -38,6 +38,7 @@ HarmonyOS 本机签名配置|apps/poker_client/ohos/build-profile.json5
 本地生产手册（含真实地址）|docs/PRODUCTION_UPDATE_GUIDE_local.md
 rclone 配置|**/rclone.conf
 COS 配置|**/.cos.yaml
+告警 webhook 配置|**/alert.env
 PATTERNS
 
 # --- 2. 已跟踪文件中的疑似明文密钥 --------------------------------------------

@@ -343,6 +343,8 @@ DATABASE_AUTO_MIGRATE=false
 ALLOWED_ORIGINS=https://web.example.com
 AUTH_ACCESS_TOKEN_TTL_SECONDS=900
 AUTH_REFRESH_TOKEN_TTL_SECONDS=2592000
+TRUSTED_PROXIES=172.17.0.1
+METRICS_TOKEN=替换为至少16位随机字符串
 ```
 
 `ALLOWED_ORIGINS` 必须使用英文逗号分隔完整来源，不能带路径、中文标点或末尾多余逗号。修改环境文件后必须重新创建游戏服务容器，单纯 `docker restart` 不会让容器重新读取修改后的 `--env-file`。

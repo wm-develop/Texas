@@ -1,0 +1,11 @@
+[Unit]
+Description=每 5 分钟巡检好友德州服务与备份新鲜度
+Documentation=https://github.com/wm-develop/Texas/blob/main/docs/OPERATIONS_GUIDE.md
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

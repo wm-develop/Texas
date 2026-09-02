@@ -382,7 +382,7 @@
 |---|---|
 | `chat_muted` | 玩家被管理员禁言 |
 | `content_rejected` | 聊天内容不符合规则 |
-| `rate_limited` | 聊天频率过高（每人每 10 秒最多 5 条） |
+| `rate_limited` | 聊天频率过高（每人每 10 秒最多 5 条）。同一错误码也用于 REST 与 WebSocket 握手的分层限流：HTTP 状态 `429` 并带 `Retry-After`，覆盖登录/注册/刷新（按 IP）、密码错误（按用户名）、房间与钱包操作（按用户）、TRTC 凭证（按用户）以及单 IP 并发连接数，参数见[运行保障指南](OPERATIONS_GUIDE.md) |
 | `invalid_message` | 消息结构或长度不合法 |
 | `invalid_player_interaction` | 互动请求参数不合法（含对自己发送） |
 | `player_not_at_table` | 互动目标不在同一牌桌 |

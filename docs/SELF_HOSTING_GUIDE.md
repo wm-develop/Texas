@@ -115,7 +115,14 @@ TRTC_SDK_APP_ID=替换为自己的SDKAppID
 TRTC_SECRET_KEY=替换为自己的SecretKey
 TRTC_USER_SIG_EXPIRE_SECONDS=3600
 TRTC_DEBUG_TOKEN=替换为随机调试口令
+
+# nginx 到容器的来源地址，让按 IP 的限流认出真实客户端；见运行保障指南
+TRUSTED_PROXIES=172.17.0.1
+# 至少 16 位随机字符串，启用带令牌保护的 /metrics；留空则不暴露该端点
+METRICS_TOKEN=替换为随机字符串
 ```
+
+`TRUSTED_PROXIES` 不填时，代理后的所有玩家会被算成同一个 IP 而互相触发限流；`METRICS_TOKEN` 可用 `openssl rand -hex 24` 生成。限流参数保持默认即可，可选项与含义见[运行保障指南](OPERATIONS_GUIDE.md)。
 
 注意：
 

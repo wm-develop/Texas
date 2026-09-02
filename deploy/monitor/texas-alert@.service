@@ -1,0 +1,9 @@
+[Unit]
+Description=好友德州告警：%i 执行失败
+Documentation=https://github.com/wm-develop/Texas/blob/main/docs/OPERATIONS_GUIDE.md
+
+[Service]
+Type=oneshot
+# %i 为触发方单元名，例如 texas-backup.service
+ExecStart=/opt/texas/bin/texas-alert.sh %i
+TimeoutStartSec=60

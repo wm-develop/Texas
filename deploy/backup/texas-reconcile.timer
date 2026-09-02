@@ -1,0 +1,12 @@
+[Unit]
+Description=每周执行好友德州账本对账
+Documentation=https://github.com/wm-develop/Texas/blob/main/docs/BACKUP_AND_RESTORE_GUIDE.md
+
+[Timer]
+# 每周一 05:00，错开每日 04:10 的备份
+OnCalendar=Mon *-*-* 05:00:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target
