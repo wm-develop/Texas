@@ -200,7 +200,11 @@ METRICS_TOKEN=<至少16位随机字符串>
 openssl rand -hex 24
 ```
 
-## 7. 检查清单
+## 7. 生产验证记录
+
+2026-09-01：`TRUSTED_PROXIES=127.0.0.1,172.20.0.0/16`（`texas-internal` 网段）与 `METRICS_TOKEN` 已配置并重建容器；`/metrics` 无令牌 401、带令牌 200；钉钉群机器人（自定义关键词「好友德州」）经手动触发与 `texas-alert@manual-test.service` 两条链路均收到消息；对账、巡检定时任务已启用，首次对账全部 PASS。
+
+## 8. 检查清单
 
 - [ ] `TRUSTED_PROXIES` 已填入 nginx 到容器的真实来源地址，且 nginx 转发了 `X-Forwarded-For`
 - [ ] 在两台不同网络的设备上同时登录，确认不会互相触发限流
