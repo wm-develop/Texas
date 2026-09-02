@@ -114,11 +114,10 @@ class TableViewportLayout {
 
   /// 第 [relativeIndex] 个座位的中心，沿 [seatCenterRect] 的周长**等距**分布。
   ///
-  /// 之前按角度把座位投影到最近的边上，间距并不均匀：10 人桌底边会挤下三个
-  /// 玩家框，相邻两框中心只差 159 像素而框宽 216，直接重叠。等距分布让间距
-  /// 恒为「周长 / 人数」，10 人时仍留有余量。
+  /// 等距是必要的：按角度把座位投影到最近一条边会让间距忽宽忽窄，
+  /// 10 人桌底边曾因此挤下三个玩家框而直接重叠。
   ///
-  /// 起点是底边中点（本人座位），沿屏幕向左推进，与原先的座位顺序一致。
+  /// 起点是底边中点（本人座位），沿屏幕向左推进。
   Offset seatCenter(int relativeIndex, int seatCount) {
     final rect = seatCenterRect;
     final half = rect.width / 2;
@@ -190,10 +189,11 @@ class TableViewportLayout {
         ? compactDesignHeight
         : designHeight;
     final canvasSize = Size(canvasHeight * canvasAspect, canvasHeight);
-    // 右栏恒定占用后，只有画布足够宽才容得下「聊天 + 牌桌 + 下注区」三者：
-    // 牌桌至少要能放下 5 张公共牌（boardRect 左右各内缩 240，故需 810），
-    // 加上左右两栏即 810 + 264 + 232。达不到时聊天改为弹窗，与手机一致。
-    final supportsSideChat = !isCompactLandscape && canvasSize.width >= 1320;
+    // 右栏恒定占用后，只有画布足够宽才容得下「聊天 + 牌桌 + 下注区」三者。
+    // 门槛由最苛刻的情况决定：10 人桌要把 216 宽的玩家框沿桌沿排开而互不
+    // 重叠，牌桌不能太窄。1320 时 9 人桌就会在拐角处叠住，因此取 1560；
+    // 达不到时聊天改为弹窗，与手机一致。
+    final supportsSideChat = !isCompactLandscape && canvasSize.width >= 1560;
     final reserveChat = chatVisible && supportsSideChat;
     // 两种布局族都是「左信息、右操作」：右栏恒为下注区，左栏在大屏上留给
     // 聊天面板；聊天收起时左右对称，牌桌保持居中。

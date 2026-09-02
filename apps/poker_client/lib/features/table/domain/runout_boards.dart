@@ -12,3 +12,7 @@ int sharedRunoutPrefixLength(List<List<String>> boards) {
   }
   return length;
 }
+
+/// 发两次时单块牌面的长度。两块牌面张数相同，取第一块即可。
+int runoutBoardLength(List<List<String>> boards) =>
+    boards.isEmpty ? 0 : boards.first.length;

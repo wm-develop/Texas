@@ -17,6 +17,19 @@ final _layouts = <String, TableViewportLayout>{
     const Size(1600, 720),
     chatVisible: false,
   ),
+  // 1560 是聊天停靠的门槛，牌桌在这里最窄，最容易出现遮挡
+  '桌面 1560x720 聊天停靠': TableViewportLayout.fromSize(
+    const Size(1560, 720),
+    chatVisible: true,
+  ),
+  '桌面 1700x760 聊天停靠': TableViewportLayout.fromSize(
+    const Size(1700, 760),
+    chatVisible: true,
+  ),
+  '手机 1180x540': TableViewportLayout.fromSize(
+    const Size(1180, 540),
+    chatVisible: false,
+  ),
   '手机 920x420': TableViewportLayout.fromSize(
     const Size(920, 420),
     chatVisible: true,
@@ -30,7 +43,11 @@ final _layouts = <String, TableViewportLayout>{
 
 /// supportsSideChat 只表示画布放得下聊天栏，不代表它已经展开；
 /// 只有真正停靠时左栏才被占用。
-const _chatDocked = {'桌面 2000x900 聊天停靠'};
+const _chatDocked = {
+  '桌面 2000x900 聊天停靠',
+  '桌面 1560x720 聊天停靠',
+  '桌面 1700x760 聊天停靠',
+};
 
 void main() {
   test('preserves the desktop composition', () {

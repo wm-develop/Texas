@@ -3,6 +3,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:poker_client/features/table/domain/table_seat.dart';
 import 'package:poker_client/features/table/presentation/table_card_widgets.dart';
 import 'package:poker_client/features/table/presentation/table_deal_controller.dart';
+import 'package:poker_client/features/table/domain/table_snapshot.dart';
+import 'package:poker_client/features/table/presentation/table_board_center.dart';
 import 'package:poker_client/features/table/presentation/table_seat_widgets.dart';
 
 TableSeat _seat({
@@ -130,5 +132,68 @@ void main() {
     );
     expect(find.byType(TableMiniCard), findsNWidgets(2));
     expect(find.byType(TableMiniCardBack), findsNothing);
+  });
+  group('发两次的发牌演出', () {
+    TableSnapshot runoutSnapshot() => TableSnapshot.fromJson({
+      'roomId': 'room_1',
+      'roomCode': '123456',
+      'tableRevision': 9,
+      'phase': 'SETTLEMENT',
+      'handId': 'hand_1',
+      'board': const ['As', 'Kd', 'Qh', 'Jc', 'Ts'],
+      'seats': const <dynamic>[],
+      'settlement': {
+        'handId': 'hand_1',
+        'showdown': true,
+        'revealedHands': <dynamic>[],
+        'potAwards': <dynamic>[],
+        'runoutBoards': [
+          ['As', 'Kd', 'Qh', 'Jc', 'Ts'],
+          ['As', 'Kd', 'Qh', '2c', '3d'],
+        ],
+      },
+    });
+
+    Future<void> pumpBoard(WidgetTester tester, BoardDealState deal) =>
+        tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: Center(
+                child: SizedBox(
+                  width: 700,
+                  height: 400,
+                  child: TableBoardCenter(
+                    snapshot: runoutSnapshot(),
+                    actionRemaining: Duration.zero,
+                    dealState: deal,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+
+    testWidgets('第一块牌面逐张背面落桌，不是瞬间出现', (tester) async {
+      // 发两次走的是与普通公共牌不同的渲染分支，早先漏掉了发牌演出
+      await pumpBoard(
+        tester,
+        const BoardDealState(
+          placedCards: 4,
+          faceUpCards: 3,
+          flipProgress: 0,
+        ),
+      );
+      await tester.pump();
+
+      // 已在场的 3 张保持正面，第 4 张刚落桌仍是背面，第 5 张还没发
+      expect(find.byType(TableCardBack), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('全部翻开后不再有牌背', (tester) async {
+      await pumpBoard(tester, const BoardDealState.settled());
+      await tester.pump();
+      expect(find.byType(TableCardBack), findsNothing);
+    });
   });
 }

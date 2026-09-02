@@ -66,14 +66,26 @@ class TableBoardCenterState extends State<TableBoardCenter> {
       _stage = TableRunoutStage.firstBoard;
       return;
     }
-    if (settlement.handId == _animatedHandId) return;
-    _animatedHandId = settlement.handId;
-    _stage = TableRunoutStage.firstBoard;
-    _stageTimer?.cancel();
-    _stageTimer = Timer(_firstBoardHold, () {
-      if (!mounted) return;
-      setState(() => _stage = TableRunoutStage.stackedBoards);
-    });
+    if (settlement.handId != _animatedHandId) {
+      _animatedHandId = settlement.handId;
+      _stage = TableRunoutStage.firstBoard;
+      _stageTimer?.cancel();
+      _stageTimer = null;
+    }
+    // 第一块牌面的展示时间要从它翻开之后才开始算，否则发牌演出会吃掉
+    // 本该用来看第一块牌面的时间。
+    final dealt = widget.dealState;
+    final finishedDealing =
+        dealt.flipProgress >= 1 &&
+        dealt.placedCards >= runoutBoardLength(settlement.runoutBoards);
+    if (_stageTimer == null &&
+        _stage == TableRunoutStage.firstBoard &&
+        finishedDealing) {
+      _stageTimer = Timer(_firstBoardHold, () {
+        if (!mounted) return;
+        setState(() => _stage = TableRunoutStage.stackedBoards);
+      });
+    }
   }
 
   /// 发两次的展示：先完整展示第一块牌面 5 秒；之后本次发出的牌（公共
@@ -105,12 +117,17 @@ class TableBoardCenterState extends State<TableBoardCenter> {
           String? cardAt(List<String> board) =>
               index < board.length ? board[index] : null;
           final firstCard = cardAt(runoutBoards[0]);
-          final firstBoardCard = TablePlayingCard(
-            rank: firstCard == null ? '?' : cardRank(firstCard),
-            suit: firstCard == null ? '' : cardSuit(firstCard),
-            red:
-                firstCard != null &&
-                (firstCard.endsWith('h') || firstCard.endsWith('d')),
+          // 发两次的第一块牌面同样要逐张背面落桌再翻开：这里走的是与普通
+          // 公共牌不同的渲染分支，早先漏掉了发牌演出，牌是瞬间出现的。
+          final deal = widget.dealState;
+          if (firstCard == null || index >= deal.placedCards) {
+            return const TablePlayingCard(rank: '?', suit: '');
+          }
+          final firstBoardCard = TableFlipCard(
+            progress: index < deal.faceUpCards ? 1 : deal.flipProgress,
+            rank: cardRank(firstCard),
+            suit: cardSuit(firstCard),
+            red: firstCard.endsWith('h') || firstCard.endsWith('d'),
           );
           if (index < sharedPrefix) return firstBoardCard;
 
@@ -144,8 +161,7 @@ class TableBoardCenterState extends State<TableBoardCenter> {
                       key: const ValueKey('runout-stacked'),
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        if (firstCard != null)
-                          TableFirstRunoutTab(card: firstCard),
+                        TableFirstRunoutTab(card: firstCard),
                         TablePlayingCard(
                           rank: secondCard == null
                               ? '?'
