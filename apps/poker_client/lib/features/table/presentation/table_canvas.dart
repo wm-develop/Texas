@@ -22,6 +22,7 @@ class TableCanvas extends StatelessWidget {
     required this.onUseTimeExtension,
     required this.interactions,
     this.dealState = const BoardDealState.settled(),
+    this.seatDealState,
     super.key,
   });
 
@@ -37,6 +38,9 @@ class TableCanvas extends StatelessWidget {
 
   /// 发牌演出的瞬时状态。
   final BoardDealState dealState;
+
+  /// 按 userId 查询某座位的发牌演出状态；为空表示没有演出。
+  final SeatDealState Function(String userId)? seatDealState;
 
   @override
   Widget build(BuildContext context) {
@@ -98,6 +102,9 @@ class TableCanvas extends StatelessWidget {
                 onTap: () => onSeatTap(seats[index]),
                 child: TableSeatCard(
                   seat: seats[index],
+                  deal:
+                      seatDealState?.call(seats[index].userId) ??
+                      const SeatDealState.settled(),
                   actionRemaining: actionRemaining,
                   showReadyStatus: showReadyStatus,
                   winnerAmount: winnerAmounts[seats[index].userId] ?? 0,

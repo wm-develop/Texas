@@ -140,10 +140,11 @@ void main() {
     controller.dispose();
   });
 
-  test('不符合发牌规律的跳变直接呈现终态', () {
-    final controller = TableDealController();
+  test('全下后一次性发完的公共牌同样逐张演出', () {
+    final clock = _Clock();
+    final controller = TableDealController(now: clock.now);
     controller.observe(_snapshot(handId: 'hand_1'));
-    // 同一手内公共牌从 0 直接变成 5：只可能是重连补齐或全下一次性发完
+    // 服务端在全下后一次性发完剩余公共牌，客户端仍按一张一张发来呈现
     expect(
       controller.observe(
         _snapshot(
@@ -151,9 +152,11 @@ void main() {
           board: const ['As', 'Kd', 'Qh', 'Jc', 'Ts'],
         ),
       ),
-      isFalse,
+      isTrue,
     );
-    expect(controller.isAnimating, isFalse);
+    expect(controller.isAnimating, isTrue);
+    expect(controller.boardPlacedCards, 1, reason: '第一张先落桌');
+    clock.advance(const Duration(milliseconds: 740));
     expect(controller.boardPlacedCards, 5);
     controller.dispose();
   });

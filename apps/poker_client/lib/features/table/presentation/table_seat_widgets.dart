@@ -6,6 +6,7 @@ import 'package:poker_client/features/table/domain/hand_category_label.dart';
 import 'package:poker_client/features/table/domain/table_seat.dart';
 import 'package:poker_client/features/table/presentation/table_labels.dart';
 import 'package:poker_client/features/table/presentation/table_card_widgets.dart';
+import 'package:poker_client/features/table/presentation/table_deal_controller.dart';
 
 /// 玩家框及其内部区域：本人手牌、摊牌结果与互动气泡。
 /// 图层约束见项目交接文档：玩家框高于公共牌，互动气泡位于最上层。
@@ -18,6 +19,7 @@ class TableSeatCard extends StatelessWidget {
     required this.winnerAmount,
     required this.onAvatarTap,
     required this.onUseTimeExtension,
+    this.deal = const SeatDealState.settled(),
     super.key,
   });
 
@@ -27,6 +29,9 @@ class TableSeatCard extends StatelessWidget {
   final int winnerAmount;
   final VoidCallback onAvatarTap;
   final VoidCallback onUseTimeExtension;
+
+  /// 本座位的发牌演出状态。
+  final SeatDealState deal;
 
   @override
   Widget build(BuildContext context) {
@@ -118,8 +123,30 @@ class TableSeatCard extends StatelessWidget {
                     seat: seat,
                     showReadyStatus: showReadyStatus,
                     onUseTimeExtension: onUseTimeExtension,
+                    deal: deal,
                   )
                 else ...[
+                  // 别人的底牌只在发牌演出期间以牌背出现，随后淡出；
+                  // 玩家框还要承载筹码、位置等信息，不能被牌常驻占用。
+                  if (deal.isDealing && deal.dealtCards > 0)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 3),
+                      child: Opacity(
+                        opacity: (1 - deal.flipProgress).clamp(0.0, 1.0),
+                        child: Row(
+                          children: [
+                            for (
+                              var index = 0;
+                              index < deal.dealtCards;
+                              index++
+                            ) ...[
+                              if (index > 0) const SizedBox(width: 3),
+                              const TableMiniCardBack(),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
                   Row(
                     children: [
                       Expanded(
@@ -287,12 +314,16 @@ class TableCurrentSeatSummary extends StatelessWidget {
     required this.seat,
     required this.showReadyStatus,
     required this.onUseTimeExtension,
+    this.deal = const SeatDealState.settled(),
     super.key,
   });
 
   final TableSeat seat;
   final bool showReadyStatus;
   final VoidCallback onUseTimeExtension;
+
+  /// 本座位的发牌演出状态。
+  final SeatDealState deal;
 
   @override
   Widget build(BuildContext context) {
@@ -304,7 +335,26 @@ class TableCurrentSeatSummary extends StatelessWidget {
       children: [
         Row(
           children: [
-            if (seat.holeCards.isEmpty)
+            if (deal.isDealing) ...[
+              // 发牌演出：先落牌背，本人的牌随后翻开，别人的牌淡出，
+              // 不常驻在玩家框里——那里还要承载筹码、位置等信息。
+              for (var index = 0; index < deal.dealtCards; index++) ...[
+                if (index > 0) const SizedBox(width: 3),
+                if (seat.isCurrentUser && index < seat.holeCards.length)
+                  TableMiniFlipCard(
+                    progress: deal.flipProgress,
+                    label:
+                        '${cardRank(seat.holeCards[index])}'
+                        '${cardSuit(seat.holeCards[index])}',
+                  )
+                else
+                  Opacity(
+                    opacity: (1 - deal.flipProgress).clamp(0.0, 1.0),
+                    child: const TableMiniCardBack(),
+                  ),
+              ],
+              const Spacer(),
+            ] else if (seat.holeCards.isEmpty)
               const Expanded(
                 child: Text(
                   '等待发牌',

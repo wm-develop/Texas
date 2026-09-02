@@ -32,6 +32,9 @@ enum TableRunoutStage { firstBoard, stackedBoards }
 class TableBoardCenterState extends State<TableBoardCenter> {
   static const _firstBoardHold = Duration(seconds: 5);
 
+  /// 两块牌面切换的补间时长。
+  static const _stageTransition = Duration(milliseconds: 420);
+
   Timer? _stageTimer;
   String _animatedHandId = '';
   TableRunoutStage _stage = TableRunoutStage.firstBoard;
@@ -82,12 +85,16 @@ class TableBoardCenterState extends State<TableBoardCenter> {
     return [
       Padding(
         padding: const EdgeInsets.only(bottom: 2),
-        child: Text(
-          stacked ? '第1次(上) / 第2次(下)' : '第1次',
-          style: const TextStyle(
-            color: Color(0xFFF6D986),
-            fontSize: 12,
-            fontWeight: FontWeight.w700,
+        child: AnimatedSwitcher(
+          duration: _stageTransition,
+          child: Text(
+            stacked ? '第1次(上) / 第2次(下)' : '第1次',
+            key: ValueKey(stacked),
+            style: const TextStyle(
+              color: Color(0xFFF6D986),
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            ),
           ),
         ),
       ),
@@ -98,28 +105,60 @@ class TableBoardCenterState extends State<TableBoardCenter> {
           String? cardAt(List<String> board) =>
               index < board.length ? board[index] : null;
           final firstCard = cardAt(runoutBoards[0]);
-          if (index < sharedPrefix || !stacked) {
-            return TablePlayingCard(
-              rank: firstCard == null ? '?' : cardRank(firstCard),
-              suit: firstCard == null ? '' : cardSuit(firstCard),
-              red:
-                  firstCard != null &&
-                  (firstCard.endsWith('h') || firstCard.endsWith('d')),
-            );
-          }
+          final firstBoardCard = TablePlayingCard(
+            rank: firstCard == null ? '?' : cardRank(firstCard),
+            suit: firstCard == null ? '' : cardSuit(firstCard),
+            red:
+                firstCard != null &&
+                (firstCard.endsWith('h') || firstCard.endsWith('d')),
+          );
+          if (index < sharedPrefix) return firstBoardCard;
+
           final secondCard = cardAt(runoutBoards[1]);
-          return Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (firstCard != null) TableFirstRunoutTab(card: firstCard),
-              TablePlayingCard(
-                rank: secondCard == null ? '?' : cardRank(secondCard),
-                suit: secondCard == null ? '' : cardSuit(secondCard),
-                red:
-                    secondCard != null &&
-                    (secondCard.endsWith('h') || secondCard.endsWith('d')),
+          // 第二块牌面不再瞬间替换第一块：第一次的牌收起为顶部点数条，
+          // 第二次的牌自上而下滑入并淡进，高度变化也做补间，
+          // 避免原先那种硬切带来的生硬感。
+          return AnimatedSize(
+            duration: _stageTransition,
+            curve: Curves.easeOutCubic,
+            alignment: Alignment.bottomCenter,
+            child: AnimatedSwitcher(
+              duration: _stageTransition,
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
+              transitionBuilder: (child, animation) => ClipRect(
+                child: SlideTransition(
+                  position: Tween<Offset>(
+                    begin: const Offset(0, -0.22),
+                    end: Offset.zero,
+                  ).animate(animation),
+                  child: FadeTransition(opacity: animation, child: child),
+                ),
               ),
-            ],
+              child: !stacked
+                  ? KeyedSubtree(
+                      key: const ValueKey('runout-first-only'),
+                      child: firstBoardCard,
+                    )
+                  : Column(
+                      key: const ValueKey('runout-stacked'),
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (firstCard != null)
+                          TableFirstRunoutTab(card: firstCard),
+                        TablePlayingCard(
+                          rank: secondCard == null
+                              ? '?'
+                              : cardRank(secondCard),
+                          suit: secondCard == null ? '' : cardSuit(secondCard),
+                          red:
+                              secondCard != null &&
+                              (secondCard.endsWith('h') ||
+                                  secondCard.endsWith('d')),
+                        ),
+                      ],
+                    ),
+            ),
           );
         }),
       ),

@@ -11,8 +11,8 @@ enum DealKind { holeCards, board }
 ///
 /// 只在**亲眼看到**这次变化时才播放：断线重连后拿到的第一份快照里牌已经在
 /// 桌上了，此时补一段发牌动画既不真实，也会平白阻塞玩家操作。因此没有上一
-/// 份快照、或牌数跳变不符合发牌规律（例如同一手里公共牌从 0 直接变成 5）时，
-/// 一律直接呈现终态。
+/// 份快照时直接呈现终态。全下后服务端一次性发完剩余公共牌，客户端仍然
+/// 逐张演出，与正常街道保持一致。
 class TableDealController extends ChangeNotifier {
   TableDealController({DateTime Function()? now})
     : _now = now ?? DateTime.now;
@@ -131,6 +131,18 @@ class TableDealController extends ChangeNotifier {
     ];
   }
 
+  /// 某位玩家此刻的发牌演出状态。
+  SeatDealState seatDealState(String userId) {
+    if (_kind != DealKind.holeCards || _animation == null) {
+      return const SeatDealState.settled();
+    }
+    return SeatDealState(
+      dealtCards: cardsDealtToUser(userId),
+      flipProgress: holeFlipProgress,
+      isDealing: true,
+    );
+  }
+
   /// 处理一份新快照。返回是否因此开始了一段新的演出。
   bool observe(TableSnapshot? snapshot) {
     if (snapshot == null) return false;
@@ -156,23 +168,15 @@ class TableDealController extends ChangeNotifier {
       );
       started = true;
     } else if (handId == _lastHandId && boardCount > _lastBoardCount) {
-      final dealt = boardCount - _lastBoardCount;
-      // 只有符合发牌规律的增量才演出：翻牌一次 3 张，转牌与河牌各 1 张。
-      // 其余情况（重连补齐、全下一次性发完）直接呈现终态。
-      final expected =
-          (_lastBoardCount == 0 && dealt == 3) ||
-          (_lastBoardCount >= 3 && dealt == 1);
-      if (expected) {
-        _start(
-          DealAnimation.board(newCards: dealt),
-          DealKind.board,
-          faceUp: _lastBoardCount,
-          dealOrder: const [],
-        );
-        started = true;
-      } else {
-        _stop();
-      }
+      // 只要是发牌就逐张演出，全下后一次性发完剩余公共牌也不例外。
+      // 唯一的例外是本会话看到的第一份快照，那里的牌本来就已经在桌上。
+      _start(
+        DealAnimation.board(newCards: boardCount - _lastBoardCount),
+        DealKind.board,
+        faceUp: _lastBoardCount,
+        dealOrder: const [],
+      );
+      started = true;
     }
 
     _lastHandId = handId;
@@ -248,4 +252,27 @@ class BoardDealState {
 
   /// 本次新发的牌的翻面进度。
   final double flipProgress;
+}
+
+/// 单个座位的发牌演出状态。
+class SeatDealState {
+  const SeatDealState({
+    required this.dealtCards,
+    required this.flipProgress,
+    required this.isDealing,
+  });
+
+  /// 没有演出时的状态：按快照原样展示。
+  const SeatDealState.settled()
+    : dealtCards = 2,
+      flipProgress = 1,
+      isDealing = false;
+
+  /// 已经发到这个座位的张数。
+  final int dealtCards;
+
+  /// 本人底牌的翻面进度；别人的牌用它做淡出。
+  final double flipProgress;
+
+  final bool isDealing;
 }

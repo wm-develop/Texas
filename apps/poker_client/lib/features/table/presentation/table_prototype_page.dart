@@ -361,6 +361,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                               onUseTimeExtension: _gameSocket.useTimeExtension,
                               interactions: _activeInteractions,
                               dealState: _deal.boardState,
+                              seatDealState: _deal.seatDealState,
                             ),
                           ),
                           // 大屏聊天面板放左侧，与右侧下注区分居两栏；

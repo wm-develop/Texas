@@ -145,6 +145,58 @@ class TableFlipCard extends StatelessWidget {
   }
 }
 
+/// 玩家框内的迷你牌背，发底牌时先落下的就是它。
+class TableMiniCardBack extends StatelessWidget {
+  const TableMiniCardBack({this.compact = true, super.key});
+
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: compact ? 27 : 38,
+    height: compact ? 34 : 48,
+    decoration: BoxDecoration(
+      gradient: const LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [Color(0xFF7A2F35), Color(0xFF4A1B20)],
+      ),
+      borderRadius: BorderRadius.circular(6),
+      border: Border.all(color: const Color(0x66E0B85B)),
+    ),
+  );
+}
+
+/// 玩家框内会翻面的迷你牌。
+class TableMiniFlipCard extends StatelessWidget {
+  const TableMiniFlipCard({
+    required this.progress,
+    required this.label,
+    this.compact = true,
+    super.key,
+  });
+
+  final double progress;
+  final String label;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final clamped = progress.clamp(0.0, 1.0);
+    final showFace = clamped >= 0.5;
+    final angle = clamped * math.pi;
+    return Transform(
+      alignment: Alignment.center,
+      transform: Matrix4.identity()
+        ..setEntry(3, 2, 0.0015)
+        ..rotateY(showFace ? angle - math.pi : angle),
+      child: showFace
+          ? TableMiniCard(label: label, compact: compact)
+          : TableMiniCardBack(compact: compact),
+    );
+  }
+}
+
 /// 牌背。发牌过程中先落桌的就是它。
 class TableCardBack extends StatelessWidget {
   const TableCardBack({this.width = 58, this.height = 78, super.key});
