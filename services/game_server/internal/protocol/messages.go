@@ -3,7 +3,6 @@ package protocol
 type MessageType string
 
 const (
-	TypeSystemHello                MessageType = "system.hello"
 	TypeSystemPing                 MessageType = "system.ping"
 	TypeSystemPong                 MessageType = "system.pong"
 	TypeSystemError                MessageType = "system.error"
@@ -20,8 +19,6 @@ const (
 	TypeTableActionRequired        MessageType = "table.action.required"
 	TypeTableActionAccepted        MessageType = "table.action.accepted"
 	TypeTableActionRejected        MessageType = "table.action.rejected"
-	TypeTableHandStarted           MessageType = "table.hand.started"
-	TypeTableHoleCardsDealt        MessageType = "table.hole_cards.dealt"
 	TypeTableHoleCardsReveal       MessageType = "table.hole_cards.reveal"
 	TypeTableHoleCardsRevealed     MessageType = "table.hole_cards.revealed"
 	TypeTableHoleCardsRevealReject MessageType = "table.hole_cards.reveal.rejected"
@@ -30,8 +27,6 @@ const (
 	TypeTableSeatChangeRequest     MessageType = "table.seat.change.request"
 	TypeTableSeatSwapRespond       MessageType = "table.seat.swap.respond"
 	TypeTableRunoutChoose          MessageType = "table.runout.choose"
-	TypeTableBoardDealt            MessageType = "table.board.dealt"
-	TypeTableHandSettled           MessageType = "table.hand.settled"
 	TypeTableTimeExtensionUse      MessageType = "table.time_extension.use"
 	TypeTableTimeExtensionAccepted MessageType = "table.time_extension.accepted"
 	TypeTableTimeExtensionRejected MessageType = "table.time_extension.rejected"
@@ -153,7 +148,6 @@ type ChatMessagePayload struct {
 }
 
 type ErrorPayload struct {
-	Code            string `json:"code"`
-	Message         string `json:"message,omitempty"`
-	CurrentRevision uint64 `json:"currentRevision,omitempty"`
+	Code    string `json:"code"`
+	Message string `json:"message,omitempty"`
 }

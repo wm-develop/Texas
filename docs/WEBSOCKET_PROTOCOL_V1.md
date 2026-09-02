@@ -146,7 +146,7 @@
 |---|---|
 | `session.authenticated` | 会话鉴权成功，payload 含 `user` 和 `deviceId` |
 | `system.pong` | 心跳响应 |
-| `system.error` | 通用错误；同时用作多个牌桌命令的失败回执，payload 为 `{code, message?, currentRevision?}` |
+| `system.error` | 通用错误；同时用作多个牌桌命令的失败回执，payload 为 `{code, message?}` |
 
 ### 5.2 命令回执对照表
 
@@ -211,11 +211,7 @@
 
 它们的职责已全部并入 `table.snapshot`（玩家进出、准备状态、盲注、摊牌、底池）或 `table.joined`（聊天历史）。
 
-此外，以下类型在 `internal/protocol/messages.go` 中声明了常量，但服务端**没有任何发送点**，属于待清理的死代码：
-
-`system.hello`、`table.hand.started`、`table.hole_cards.dealt`、`table.board.dealt`、`table.hand.settled`
-
-其中底牌不通过独立的 `table.hole_cards.dealt` 下发，而是作为快照的 `holeCards` 字段只发给本人；手牌开始、公共牌和结算分别体现为快照的 `handId`/`phase`、`board` 和 `settlement`。
+早期还声明过 `system.hello`、`table.hand.started`、`table.hole_cards.dealt`、`table.board.dealt`、`table.hand.settled` 五个常量，同样从未发送，已于 2026-09-02 从代码中删除。底牌不通过独立消息下发，而是作为快照的 `holeCards` 字段只发给本人；手牌开始、公共牌和结算分别体现为快照的 `handId`/`phase`、`board` 和 `settlement`。
 
 ## 6. 快照
 

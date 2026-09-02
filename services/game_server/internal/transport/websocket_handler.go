@@ -183,7 +183,7 @@ func webSocketOriginPatterns(allowedOrigins []string) []string {
 func (client *webSocketClient) route(ctx context.Context, message protocol.Envelope) error {
 	client.server.messagesTotal.Inc(message.Type)
 	if message.Version != 0 && message.Version != 1 {
-		return client.sendError(message, protocol.TypeSystemError, "unsupported_protocol_version", 0)
+		return client.sendError(message, protocol.TypeSystemError, "unsupported_protocol_version")
 	}
 	switch protocol.MessageType(message.Type) {
 	case protocol.TypeSystemPing:
@@ -193,13 +193,13 @@ func (client *webSocketClient) route(ctx context.Context, message protocol.Envel
 		return client.authenticate(ctx, message)
 	}
 	if client.user.UserID == "" {
-		return client.sendError(message, protocol.TypeSystemError, "authentication_required", 0)
+		return client.sendError(message, protocol.TypeSystemError, "authentication_required")
 	}
 	if isIdempotentRequest(protocol.MessageType(message.Type)) {
 		unlock := client.server.lockUserRequests(client.user.UserID)
 		defer unlock()
 		if message.RequestID == "" {
-			return client.sendError(message, protocol.TypeSystemError, "request_id_required", 0)
+			return client.sendError(message, protocol.TypeSystemError, "request_id_required")
 		}
 		if previous, ok := client.server.requests.Get(client.user.UserID, message.RequestID); ok {
 			return client.write(previous)
@@ -240,21 +240,21 @@ func (client *webSocketClient) route(ctx context.Context, message protocol.Envel
 	case protocol.TypeTablePlayerInteract:
 		return client.sendPlayerInteraction(ctx, message)
 	default:
-		return client.sendError(message, protocol.TypeSystemError, "unsupported_message_type", 0)
+		return client.sendError(message, protocol.TypeSystemError, "unsupported_message_type")
 	}
 }
 
 func (client *webSocketClient) rebuy(ctx context.Context, message protocol.Envelope) error {
 	if client.roomID == "" || client.server.tables == nil {
-		return client.sendError(message, protocol.TypeTableRebuyRejected, "table_not_joined", 0)
+		return client.sendError(message, protocol.TypeTableRebuyRejected, "table_not_joined")
 	}
 	var payload protocol.RebuyPayload
 	if !decodePayload(message.Payload, &payload) {
-		return client.sendError(message, protocol.TypeTableRebuyRejected, "invalid_request", 0)
+		return client.sendError(message, protocol.TypeTableRebuyRejected, "invalid_request")
 	}
 	snapshot, err := client.server.tables.Rebuy(ctx, client.user.UserID, client.roomID, message.RequestID, payload.Amount)
 	if err != nil {
-		return client.sendError(message, protocol.TypeTableRebuyRejected, errorCode(err), 0)
+		return client.sendError(message, protocol.TypeTableRebuyRejected, errorCode(err))
 	}
 	if err := client.respond(message, protocol.TypeTableRebuyAccepted, map[string]int64{"amount": payload.Amount}); err != nil {
 		return err
@@ -264,11 +264,11 @@ func (client *webSocketClient) rebuy(ctx context.Context, message protocol.Envel
 
 func (client *webSocketClient) useTimeExtension(ctx context.Context, message protocol.Envelope) error {
 	if client.roomID == "" || client.server.tables == nil {
-		return client.sendError(message, protocol.TypeTableTimeExtensionRejected, "table_not_joined", 0)
+		return client.sendError(message, protocol.TypeTableTimeExtensionRejected, "table_not_joined")
 	}
 	snapshot, err := client.server.tables.UseTimeExtension(ctx, client.user.UserID, client.roomID)
 	if err != nil {
-		return client.sendError(message, protocol.TypeTableTimeExtensionRejected, errorCode(err), 0)
+		return client.sendError(message, protocol.TypeTableTimeExtensionRejected, errorCode(err))
 	}
 	remaining := 0
 	for _, seat := range snapshot.Seats {
@@ -287,15 +287,15 @@ func (client *webSocketClient) useTimeExtension(ctx context.Context, message pro
 
 func (client *webSocketClient) authenticate(ctx context.Context, message protocol.Envelope) error {
 	if client.server.accounts == nil {
-		return client.sendError(message, protocol.TypeSystemError, "service_unavailable", 0)
+		return client.sendError(message, protocol.TypeSystemError, "service_unavailable")
 	}
 	var payload protocol.SessionAuthenticatePayload
 	if !decodePayload(message.Payload, &payload) {
-		return client.sendError(message, protocol.TypeSystemError, "invalid_request", 0)
+		return client.sendError(message, protocol.TypeSystemError, "invalid_request")
 	}
 	user, err := client.server.accounts.Authenticate(ctx, payload.AccessToken)
 	if err != nil {
-		return client.sendError(message, protocol.TypeSystemError, errorCode(err), 0)
+		return client.sendError(message, protocol.TypeSystemError, errorCode(err))
 	}
 	if client.user.UserID != "" && client.user.UserID != user.UserID {
 		client.leave(ctx)
@@ -322,23 +322,23 @@ func (server *webSocketServer) disconnectUsers(roomID string, userIDs []string) 
 
 func (client *webSocketClient) join(ctx context.Context, message protocol.Envelope) error {
 	if client.server.rooms == nil || client.server.tables == nil {
-		return client.sendError(message, protocol.TypeSystemError, "service_unavailable", 0)
+		return client.sendError(message, protocol.TypeSystemError, "service_unavailable")
 	}
 	var joinPayload protocol.TableJoinPayload
 	if len(message.Payload) > 0 && !decodePayload(message.Payload, &joinPayload) {
-		return client.sendError(message, protocol.TypeSystemError, "invalid_request", 0)
+		return client.sendError(message, protocol.TypeSystemError, "invalid_request")
 	}
 	roomID := message.TableID
 	if roomID == "" {
 		current, err := client.server.rooms.Current(ctx, client.user.UserID)
 		if err != nil {
-			return client.sendError(message, protocol.TypeSystemError, errorCode(err), 0)
+			return client.sendError(message, protocol.TypeSystemError, errorCode(err))
 		}
 		roomID = current.RoomID
 	}
 	snapshot, err := client.server.tables.Join(ctx, client.user.UserID, roomID)
 	if err != nil {
-		return client.sendError(message, protocol.TypeSystemError, errorCode(err), 0)
+		return client.sendError(message, protocol.TypeSystemError, errorCode(err))
 	}
 	if client.roomID != "" && client.roomID != roomID {
 		client.leave(ctx)
@@ -361,11 +361,11 @@ func (client *webSocketClient) join(ctx context.Context, message protocol.Envelo
 
 func (client *webSocketClient) setVoiceState(message protocol.Envelope) error {
 	if client.roomID == "" {
-		return client.sendError(message, protocol.TypeSystemError, "table_not_joined", 0)
+		return client.sendError(message, protocol.TypeSystemError, "table_not_joined")
 	}
 	var payload protocol.VoiceStateSetPayload
 	if !decodePayload(message.Payload, &payload) {
-		return client.sendError(message, protocol.TypeSystemError, "invalid_request", 0)
+		return client.sendError(message, protocol.TypeSystemError, "invalid_request")
 	}
 	wasJoined := client.server.hub.setVoiceState(client.roomID, protocol.VoiceMemberState{
 		UserID: client.user.UserID, DisplayName: client.user.DisplayName,
@@ -380,17 +380,17 @@ func (client *webSocketClient) setVoiceState(message protocol.Envelope) error {
 
 func (client *webSocketClient) setReady(ctx context.Context, message protocol.Envelope) error {
 	if client.roomID == "" {
-		return client.sendError(message, protocol.TypeSystemError, "table_not_joined", 0)
+		return client.sendError(message, protocol.TypeSystemError, "table_not_joined")
 	}
 	var payload struct {
 		Ready bool `json:"ready"`
 	}
 	if !decodePayload(message.Payload, &payload) {
-		return client.sendError(message, protocol.TypeSystemError, "invalid_request", 0)
+		return client.sendError(message, protocol.TypeSystemError, "invalid_request")
 	}
 	snapshot, err := client.server.tables.SetReady(ctx, client.user.UserID, payload.Ready)
 	if err != nil {
-		return client.sendError(message, protocol.TypeSystemError, errorCode(err), 0)
+		return client.sendError(message, protocol.TypeSystemError, errorCode(err))
 	}
 	if err := client.respond(message, protocol.TypeTableReadySet, map[string]bool{"ready": payload.Ready}); err != nil {
 		return err
@@ -400,11 +400,11 @@ func (client *webSocketClient) setReady(ctx context.Context, message protocol.En
 
 func (client *webSocketClient) submitAction(ctx context.Context, message protocol.Envelope) error {
 	if client.roomID == "" {
-		return client.sendError(message, protocol.TypeTableActionRejected, "table_not_joined", 0)
+		return client.sendError(message, protocol.TypeTableActionRejected, "table_not_joined")
 	}
 	var payload protocol.ActionSubmitPayload
 	if !decodePayload(message.Payload, &payload) {
-		return client.sendError(message, protocol.TypeTableActionRejected, "invalid_request", 0)
+		return client.sendError(message, protocol.TypeTableActionRejected, "invalid_request")
 	}
 	result, snapshot, err := client.server.tables.SubmitAction(ctx, client.user.UserID, client.roomID, holdem.ActionRequest{
 		ActionID: payload.ActionID, HandID: message.HandID, TableRevision: message.TableRevision,
@@ -422,7 +422,7 @@ func (client *webSocketClient) submitAction(ctx context.Context, message protoco
 			)
 		}
 		client.server.actionsTotal.Inc("rejected")
-		return client.sendError(message, protocol.TypeTableActionRejected, code, revisionFromError(err))
+		return client.sendError(message, protocol.TypeTableActionRejected, code)
 	}
 	client.server.actionsTotal.Inc("accepted")
 	if err := client.respond(message, protocol.TypeTableActionAccepted, result); err != nil {
@@ -433,11 +433,11 @@ func (client *webSocketClient) submitAction(ctx context.Context, message protoco
 
 func (client *webSocketClient) showHoleCards(ctx context.Context, message protocol.Envelope) error {
 	if client.roomID == "" {
-		return client.sendError(message, protocol.TypeTableHoleCardsRevealReject, "table_not_joined", 0)
+		return client.sendError(message, protocol.TypeTableHoleCardsRevealReject, "table_not_joined")
 	}
 	snapshot, err := client.server.tables.ShowHoleCards(ctx, client.user.UserID, client.roomID)
 	if err != nil {
-		return client.sendError(message, protocol.TypeTableHoleCardsRevealReject, errorCode(err), 0)
+		return client.sendError(message, protocol.TypeTableHoleCardsRevealReject, errorCode(err))
 	}
 	if err := client.respond(message, protocol.TypeTableHoleCardsRevealed, map[string]bool{"revealed": true}); err != nil {
 		return err
@@ -447,17 +447,17 @@ func (client *webSocketClient) showHoleCards(ctx context.Context, message protoc
 
 func (client *webSocketClient) requestHoleCardsView(ctx context.Context, message protocol.Envelope) error {
 	if client.roomID == "" {
-		return client.sendError(message, protocol.TypeSystemError, "table_not_joined", 0)
+		return client.sendError(message, protocol.TypeSystemError, "table_not_joined")
 	}
 	var payload protocol.HoleCardsViewRequestPayload
 	if !decodePayload(message.Payload, &payload) {
-		return client.sendError(message, protocol.TypeSystemError, "invalid_request", 0)
+		return client.sendError(message, protocol.TypeSystemError, "invalid_request")
 	}
 	snapshot, err := client.server.tables.RequestHoleCardView(
 		ctx, client.user.UserID, client.roomID, payload.TargetUserID, message.RequestID,
 	)
 	if err != nil {
-		return client.sendError(message, protocol.TypeSystemError, errorCode(err), 0)
+		return client.sendError(message, protocol.TypeSystemError, errorCode(err))
 	}
 	if err := client.respond(message, protocol.TypeTableHoleCardsViewRequest, map[string]bool{"requested": true}); err != nil {
 		return err
@@ -467,17 +467,17 @@ func (client *webSocketClient) requestHoleCardsView(ctx context.Context, message
 
 func (client *webSocketClient) respondHoleCardsView(ctx context.Context, message protocol.Envelope) error {
 	if client.roomID == "" {
-		return client.sendError(message, protocol.TypeSystemError, "table_not_joined", 0)
+		return client.sendError(message, protocol.TypeSystemError, "table_not_joined")
 	}
 	var payload protocol.RequestResponsePayload
 	if !decodePayload(message.Payload, &payload) {
-		return client.sendError(message, protocol.TypeSystemError, "invalid_request", 0)
+		return client.sendError(message, protocol.TypeSystemError, "invalid_request")
 	}
 	snapshot, err := client.server.tables.RespondHoleCardView(
 		ctx, client.user.UserID, client.roomID, payload.PendingRequestID, payload.Accept,
 	)
 	if err != nil {
-		return client.sendError(message, protocol.TypeSystemError, errorCode(err), 0)
+		return client.sendError(message, protocol.TypeSystemError, errorCode(err))
 	}
 	if err := client.respond(message, protocol.TypeTableHoleCardsViewRespond, map[string]bool{"accepted": payload.Accept}); err != nil {
 		return err
@@ -487,17 +487,17 @@ func (client *webSocketClient) respondHoleCardsView(ctx context.Context, message
 
 func (client *webSocketClient) requestSeatChange(ctx context.Context, message protocol.Envelope) error {
 	if client.roomID == "" {
-		return client.sendError(message, protocol.TypeSystemError, "table_not_joined", 0)
+		return client.sendError(message, protocol.TypeSystemError, "table_not_joined")
 	}
 	var payload protocol.SeatChangeRequestPayload
 	if !decodePayload(message.Payload, &payload) {
-		return client.sendError(message, protocol.TypeSystemError, "invalid_request", 0)
+		return client.sendError(message, protocol.TypeSystemError, "invalid_request")
 	}
 	snapshot, err := client.server.tables.RequestSeatChange(
 		ctx, client.user.UserID, client.roomID, payload.TargetSeat, message.RequestID,
 	)
 	if err != nil {
-		return client.sendError(message, protocol.TypeSystemError, errorCode(err), 0)
+		return client.sendError(message, protocol.TypeSystemError, errorCode(err))
 	}
 	if err := client.respond(message, protocol.TypeTableSeatChangeRequest, map[string]bool{"requested": true}); err != nil {
 		return err
@@ -507,17 +507,17 @@ func (client *webSocketClient) requestSeatChange(ctx context.Context, message pr
 
 func (client *webSocketClient) respondSeatSwap(ctx context.Context, message protocol.Envelope) error {
 	if client.roomID == "" {
-		return client.sendError(message, protocol.TypeSystemError, "table_not_joined", 0)
+		return client.sendError(message, protocol.TypeSystemError, "table_not_joined")
 	}
 	var payload protocol.RequestResponsePayload
 	if !decodePayload(message.Payload, &payload) {
-		return client.sendError(message, protocol.TypeSystemError, "invalid_request", 0)
+		return client.sendError(message, protocol.TypeSystemError, "invalid_request")
 	}
 	snapshot, err := client.server.tables.RespondSeatSwap(
 		ctx, client.user.UserID, client.roomID, payload.PendingRequestID, payload.Accept,
 	)
 	if err != nil {
-		return client.sendError(message, protocol.TypeSystemError, errorCode(err), 0)
+		return client.sendError(message, protocol.TypeSystemError, errorCode(err))
 	}
 	if err := client.respond(message, protocol.TypeTableSeatSwapRespond, map[string]bool{"accepted": payload.Accept}); err != nil {
 		return err
@@ -527,17 +527,17 @@ func (client *webSocketClient) respondSeatSwap(ctx context.Context, message prot
 
 func (client *webSocketClient) chooseRunout(ctx context.Context, message protocol.Envelope) error {
 	if client.roomID == "" {
-		return client.sendError(message, protocol.TypeSystemError, "table_not_joined", 0)
+		return client.sendError(message, protocol.TypeSystemError, "table_not_joined")
 	}
 	var payload protocol.RunoutChoosePayload
 	if !decodePayload(message.Payload, &payload) {
-		return client.sendError(message, protocol.TypeSystemError, "invalid_request", 0)
+		return client.sendError(message, protocol.TypeSystemError, "invalid_request")
 	}
 	snapshot, err := client.server.tables.SubmitRunoutChoice(
 		ctx, client.user.UserID, client.roomID, payload.Count,
 	)
 	if err != nil {
-		return client.sendError(message, protocol.TypeSystemError, errorCode(err), 0)
+		return client.sendError(message, protocol.TypeSystemError, errorCode(err))
 	}
 	if err := client.respond(message, protocol.TypeTableRunoutChoose, map[string]int{"count": payload.Count}); err != nil {
 		return err
@@ -547,14 +547,14 @@ func (client *webSocketClient) chooseRunout(ctx context.Context, message protoco
 
 func (client *webSocketClient) sendChat(ctx context.Context, message protocol.Envelope) error {
 	if client.roomID == "" || client.server.chat == nil || client.server.rooms == nil {
-		return client.sendError(message, protocol.TypeTableChatRejected, "table_not_joined", 0)
+		return client.sendError(message, protocol.TypeTableChatRejected, "table_not_joined")
 	}
 	var payload protocol.ChatSendPayload
 	if !decodePayload(message.Payload, &payload) {
-		return client.sendError(message, protocol.TypeTableChatRejected, "invalid_request", 0)
+		return client.sendError(message, protocol.TypeTableChatRejected, "invalid_request")
 	}
 	if _, err := client.server.rooms.GetForMember(ctx, client.user.UserID, client.roomID); err != nil {
-		return client.sendError(message, protocol.TypeTableChatRejected, errorCode(err), 0)
+		return client.sendError(message, protocol.TypeTableChatRejected, errorCode(err))
 	}
 	accepted, err := client.server.chat.Send(chat.Sender{
 		UserID: client.user.UserID, DisplayName: client.user.DisplayName,
@@ -563,7 +563,7 @@ func (client *webSocketClient) sendChat(ctx context.Context, message protocol.En
 		ClientMessageID: payload.ClientMessageID, Kind: chat.Kind(payload.Kind), Content: payload.Content,
 	})
 	if err != nil {
-		return client.sendError(message, protocol.TypeTableChatRejected, errorCode(err), 0)
+		return client.sendError(message, protocol.TypeTableChatRejected, errorCode(err))
 	}
 	if err := client.respond(message, protocol.TypeTableChatAccepted, accepted); err != nil {
 		return err
@@ -573,17 +573,17 @@ func (client *webSocketClient) sendChat(ctx context.Context, message protocol.En
 
 func (client *webSocketClient) sendPlayerInteraction(ctx context.Context, message protocol.Envelope) error {
 	if client.roomID == "" || client.server.rooms == nil {
-		return client.sendError(message, protocol.TypeSystemError, "table_not_joined", 0)
+		return client.sendError(message, protocol.TypeSystemError, "table_not_joined")
 	}
 	var payload protocol.PlayerInteractPayload
 	if !decodePayload(message.Payload, &payload) ||
 		(payload.Kind != "praise" && payload.Kind != "taunt") ||
 		payload.TargetUserID == "" || payload.TargetUserID == client.user.UserID {
-		return client.sendError(message, protocol.TypeSystemError, "invalid_player_interaction", 0)
+		return client.sendError(message, protocol.TypeSystemError, "invalid_player_interaction")
 	}
 	roomValue, err := client.server.rooms.GetForMember(ctx, client.user.UserID, client.roomID)
 	if err != nil {
-		return client.sendError(message, protocol.TypeSystemError, errorCode(err), 0)
+		return client.sendError(message, protocol.TypeSystemError, errorCode(err))
 	}
 	var targetName string
 	for _, member := range roomValue.Members {
@@ -593,14 +593,14 @@ func (client *webSocketClient) sendPlayerInteraction(ctx context.Context, messag
 		}
 	}
 	if targetName == "" {
-		return client.sendError(message, protocol.TypeSystemError, "player_not_at_table", 0)
+		return client.sendError(message, protocol.TypeSystemError, "player_not_at_table")
 	}
 	now := time.Now()
 	client.server.interactionMu.Lock()
 	lastSent := client.server.interactionAt[client.user.UserID]
 	if now.Sub(lastSent) < 1500*time.Millisecond {
 		client.server.interactionMu.Unlock()
-		return client.sendError(message, protocol.TypeSystemError, "player_interaction_too_frequent", 0)
+		return client.sendError(message, protocol.TypeSystemError, "player_interaction_too_frequent")
 	}
 	client.server.interactionAt[client.user.UserID] = now
 	client.server.interactionMu.Unlock()
@@ -618,11 +618,11 @@ func (client *webSocketClient) sendPlayerInteraction(ctx context.Context, messag
 
 func (client *webSocketClient) recoverEvents(ctx context.Context, message protocol.Envelope) error {
 	if client.roomID == "" || client.server.tables == nil {
-		return client.sendError(message, protocol.TypeSystemError, "table_not_joined", 0)
+		return client.sendError(message, protocol.TypeSystemError, "table_not_joined")
 	}
 	var payload protocol.SnapshotRequestPayload
 	if len(message.Payload) > 0 && !decodePayload(message.Payload, &payload) {
-		return client.sendError(message, protocol.TypeSystemError, "invalid_request", 0)
+		return client.sendError(message, protocol.TypeSystemError, "invalid_request")
 	}
 	if payload.LastSequence > 0 {
 		replayed, complete := client.server.hub.replay(client, payload.LastSequence)
@@ -635,7 +635,7 @@ func (client *webSocketClient) recoverEvents(ctx context.Context, message protoc
 	}
 	snapshot, err := client.server.tables.Snapshot(ctx, client.user.UserID, client.roomID)
 	if err != nil {
-		return client.sendError(message, protocol.TypeSystemError, errorCode(err), 0)
+		return client.sendError(message, protocol.TypeSystemError, errorCode(err))
 	}
 	return client.write(snapshotEnvelope(snapshot, client.server.hub.latestSequence(client.roomID), message.RequestID))
 }
@@ -692,15 +692,14 @@ func (client *webSocketClient) respond(
 	return client.write(message)
 }
 
+// sendError 发送一次失败回执。幂等请求的回执同样进入缓存，
+// 使重复的 requestId 得到与首次一致的结果。
 func (client *webSocketClient) sendError(
 	request protocol.Envelope,
 	messageType protocol.MessageType,
 	code string,
-	currentRevision uint64,
 ) error {
-	message := response(request, messageType, protocol.ErrorPayload{
-		Code: code, CurrentRevision: currentRevision,
-	})
+	message := response(request, messageType, protocol.ErrorPayload{Code: code})
 	if isIdempotentRequest(protocol.MessageType(request.Type)) {
 		client.server.requests.Put(client.user.UserID, request.RequestID, message)
 	}
@@ -956,14 +955,6 @@ func errorCode(err error) string {
 		return chatError.Code
 	}
 	return "internal_error"
-}
-
-func revisionFromError(err error) uint64 {
-	var ruleError holdem.RuleError
-	if errors.As(err, &ruleError) && ruleError.Code == "stale_table_revision" {
-		return 0
-	}
-	return 0
 }
 
 func (server *webSocketServer) lockUserRequests(userID string) func() {

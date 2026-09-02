@@ -9,7 +9,6 @@ import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/core/network/game_socket_client.dart';
 import 'package:poker_client/core/network/trtc_credential_client.dart';
 import 'package:poker_client/core/platform/native_display_cutout.dart';
-import 'package:poker_client/core/platform/voice_chat_service.dart';
 import 'package:poker_client/core/settings/app_settings.dart';
 import 'package:poker_client/features/admin/presentation/admin_page.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
@@ -20,6 +19,7 @@ import 'package:poker_client/features/table/domain/table_seat.dart';
 import 'package:poker_client/features/table/presentation/table_labels.dart';
 import 'package:poker_client/features/table/presentation/table_action_bar.dart';
 import 'package:poker_client/features/table/presentation/table_canvas.dart';
+import 'package:poker_client/features/table/presentation/table_voice_controller.dart';
 import 'package:poker_client/features/table/presentation/table_chat_panel.dart';
 import 'package:poker_client/features/table/presentation/table_rebuy_dialog.dart';
 import 'package:poker_client/features/table/presentation/table_status_widgets.dart';
@@ -57,21 +57,13 @@ class _TablePrototypePageState extends State<TablePrototypePage>
     defaultValue: 'http://127.0.0.1:8080',
   );
 
-  VoiceConnectionState _voiceState = VoiceConnectionState.disconnected;
-  bool _microphoneEnabled = false;
-  bool _voiceOperationInProgress = false;
-  Set<String> _speakingUserIds = const {};
-  final Set<String> _blockedUserIds = {};
-  final Set<String> _mutedVoiceUserIds = {};
   bool _chatVisible = true;
   bool _compactChatOpen = false;
   int _observedChatRevision = 0;
   int _unreadChatCount = 0;
   late final GameSocketClient _gameSocket;
   late final TrtcCredentialClient _trtcCredentials;
-  late final VoiceChatService _voiceChat;
-  late final StreamSubscription<VoiceConnectionState> _voiceStateSubscription;
-  late final StreamSubscription<Set<String>> _speakingSubscription;
+  late final TableVoiceController _voice;
   Timer? _tableClock;
   String? _lastShownGameError;
   GameSocketStatus? _lastGameSocketStatus;
@@ -89,10 +81,6 @@ class _TablePrototypePageState extends State<TablePrototypePage>
   final Map<String, Timer> _interactionTimers = {};
   EdgeInsets _nativeDisplayCutout = EdgeInsets.zero;
 
-  bool get _voiceJoined =>
-      _voiceState == VoiceConnectionState.connected ||
-      _voiceState == VoiceConnectionState.reconnecting;
-
   @override
   void initState() {
     super.initState();
@@ -106,20 +94,22 @@ class _TablePrototypePageState extends State<TablePrototypePage>
     _trtcCredentials = TrtcCredentialClient(
       serverBaseUri: Uri.parse(_gameHttpServerUrl),
     );
-    _voiceChat = createVoiceChatService();
-    _voiceStateSubscription = _voiceChat.connectionState.listen((state) {
-      if (!mounted) return;
-      setState(() {
-        _voiceState = state;
-        if (state == VoiceConnectionState.disconnected) {
-          _microphoneEnabled = false;
-          _speakingUserIds = const {};
-        }
-      });
-    });
-    _speakingSubscription = _voiceChat.speakingUserIds.listen((userIds) {
-      if (mounted) setState(() => _speakingUserIds = userIds);
-    });
+    _voice = TableVoiceController(
+      voiceChat: createVoiceChatService(),
+      issueCredentials: () async => _trtcCredentials.issue(
+        userId: widget.session.user.userId,
+        roomId: widget.room.roomId,
+        accessToken: await widget.accessTokenProvider(),
+      ),
+      currentUserId: widget.session.user.userId,
+      onStateChanged: ({required joined, required microphoneEnabled}) =>
+          _gameSocket.setVoiceState(
+            joined: joined,
+            microphoneEnabled: microphoneEnabled,
+          ),
+      onError: _showVoiceError,
+      playbackVolume: () => widget.settings.voiceVolume,
+    )..addListener(_voiceChanged);
     _tableClock = Timer.periodic(const Duration(milliseconds: 200), (_) {
       final snapshot = _gameSocket.snapshot;
       _submitExpiredAutoReady(snapshot);
@@ -143,9 +133,9 @@ class _TablePrototypePageState extends State<TablePrototypePage>
     _gameSocket
       ..removeListener(_refresh)
       ..dispose();
-    unawaited(_voiceStateSubscription.cancel());
-    unawaited(_speakingSubscription.cancel());
-    unawaited(_voiceChat.dispose());
+    _voice
+      ..removeListener(_voiceChanged)
+      ..dispose();
     unawaited(_tableSoundEffects.dispose());
     _tableClock?.cancel();
     for (final timer in _interactionTimers.values) {
@@ -257,22 +247,20 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                   compact: viewport.isCompactLandscape,
                 );
                 final voiceControls = TableVoiceControls(
-                  voiceJoined: _voiceJoined,
-                  connectionState: _voiceState,
-                  microphoneEnabled: _microphoneEnabled,
-                  operationInProgress: _voiceOperationInProgress,
-                  speakingCount: _speakingUserIds
-                      .difference(_mutedVoiceUserIds)
-                      .length,
+                  voiceJoined: _voice.joined,
+                  connectionState: _voice.connectionState,
+                  microphoneEnabled: _voice.microphoneEnabled,
+                  operationInProgress: _voice.operationInProgress,
+                  speakingCount: _voice.audibleSpeakingUserIds.length,
                   members: _gameSocket.voiceMembers,
-                  speakingUserIds: _speakingUserIds,
-                  mutedUserIds: _mutedVoiceUserIds,
+                  speakingUserIds: _voice.speakingUserIds,
+                  mutedUserIds: _voice.mutedUserIds,
                   currentUserId: widget.session.user.userId,
                   displayName: widget.session.user.displayName,
                   compact: viewport.isCompactLandscape,
-                  onJoinChanged: _setVoiceJoined,
-                  onMicrophoneChanged: _setMicrophoneEnabled,
-                  onUserMuted: _setVoiceUserMuted,
+                  onJoinChanged: _voice.setJoined,
+                  onMicrophoneChanged: _voice.setMicrophoneEnabled,
+                  onUserMuted: _voice.setUserMuted,
                 );
                 return Align(
                   alignment: viewport.isCompactLandscape
@@ -351,8 +339,8 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                               child: TableChatPanel(
                                 client: _gameSocket,
                                 currentUserId: widget.session.user.userId,
-                                blockedUserIds: _blockedUserIds,
-                                onBlockChanged: _setUserBlocked,
+                                blockedUserIds: _voice.blockedUserIds,
+                                onBlockChanged: _voice.setUserBlocked,
                                 onClose: _toggleChat,
                               ),
                             )
@@ -411,58 +399,6 @@ class _TablePrototypePageState extends State<TablePrototypePage>
     ),
   );
 
-  Future<void> _setVoiceJoined(bool value) async {
-    if (_voiceOperationInProgress) return;
-    setState(() => _voiceOperationInProgress = true);
-    try {
-      if (value) {
-        final accessToken = await widget.accessTokenProvider();
-        final credentials = await _trtcCredentials.issue(
-          userId: widget.session.user.userId,
-          roomId: widget.room.roomId,
-          accessToken: accessToken,
-        );
-        await _voiceChat.joinTableChannel(
-          sdkAppId: credentials.sdkAppId,
-          tableId: credentials.roomId,
-          userId: credentials.userId,
-          userSig: credentials.userSig,
-        );
-        await _voiceChat.setPlaybackVolume(widget.settings.voiceVolume);
-        for (final userId in {..._blockedUserIds, ..._mutedVoiceUserIds}) {
-          await _voiceChat.setRemoteUserMuted(userId, true);
-        }
-        _gameSocket.setVoiceState(
-          joined: true,
-          microphoneEnabled: _microphoneEnabled,
-        );
-      } else {
-        await _voiceChat.leaveTableChannel();
-        _gameSocket.setVoiceState(joined: false, microphoneEnabled: false);
-      }
-    } on Object catch (error) {
-      _showVoiceError(error);
-    } finally {
-      if (mounted) setState(() => _voiceOperationInProgress = false);
-    }
-  }
-
-  Future<void> _setMicrophoneEnabled(bool value) async {
-    if (!_voiceJoined || _voiceOperationInProgress) return;
-    setState(() => _voiceOperationInProgress = true);
-    try {
-      await _voiceChat.setMicrophoneEnabled(value);
-      if (mounted) {
-        setState(() => _microphoneEnabled = value);
-        _gameSocket.setVoiceState(joined: true, microphoneEnabled: value);
-      }
-    } on Object catch (error) {
-      _showVoiceError(error);
-    } finally {
-      if (mounted) setState(() => _voiceOperationInProgress = false);
-    }
-  }
-
   void _toggleChat() => setState(() {
     _chatVisible = !_chatVisible;
     if (_chatVisible) _unreadChatCount = 0;
@@ -486,8 +422,8 @@ class _TablePrototypePageState extends State<TablePrototypePage>
             child: TableChatPanel(
               client: _gameSocket,
               currentUserId: widget.session.user.userId,
-              blockedUserIds: _blockedUserIds,
-              onBlockChanged: _setUserBlocked,
+              blockedUserIds: _voice.blockedUserIds,
+              onBlockChanged: _voice.setUserBlocked,
               onClose: () => Navigator.of(dialogContext).pop(),
             ),
           ),
@@ -498,44 +434,8 @@ class _TablePrototypePageState extends State<TablePrototypePage>
     }
   }
 
-  Future<void> _setUserBlocked(String userId, bool blocked) async {
-    if (userId == widget.session.user.userId) return;
-    setState(() {
-      if (blocked) {
-        _blockedUserIds.add(userId);
-      } else {
-        _blockedUserIds.remove(userId);
-      }
-    });
-    if (!_voiceJoined) return;
-    try {
-      await _voiceChat.setRemoteUserMuted(
-        userId,
-        blocked || _mutedVoiceUserIds.contains(userId),
-      );
-    } on Object catch (error) {
-      _showVoiceError(error);
-    }
-  }
-
-  Future<void> _setVoiceUserMuted(String userId, bool muted) async {
-    if (userId == widget.session.user.userId) return;
-    setState(() {
-      if (muted) {
-        _mutedVoiceUserIds.add(userId);
-      } else {
-        _mutedVoiceUserIds.remove(userId);
-      }
-    });
-    if (!_voiceJoined) return;
-    try {
-      await _voiceChat.setRemoteUserMuted(
-        userId,
-        muted || _blockedUserIds.contains(userId),
-      );
-    } on Object catch (error) {
-      _showVoiceError(error);
-    }
+  void _voiceChanged() {
+    if (mounted) setState(() {});
   }
 
   void _refresh() {
@@ -553,10 +453,10 @@ class _TablePrototypePageState extends State<TablePrototypePage>
     }
     if (_lastGameSocketStatus != _gameSocket.status) {
       _lastGameSocketStatus = _gameSocket.status;
-      if (_gameSocket.status == GameSocketStatus.joined && _voiceJoined) {
+      if (_gameSocket.status == GameSocketStatus.joined && _voice.joined) {
         _gameSocket.setVoiceState(
           joined: true,
-          microphoneEnabled: _microphoneEnabled,
+          microphoneEnabled: _voice.microphoneEnabled,
         );
       }
     }
@@ -783,15 +683,13 @@ class _TablePrototypePageState extends State<TablePrototypePage>
 
   void _settingsChanged() {
     if (!mounted) return;
-    if (_voiceJoined) {
-      unawaited(_voiceChat.setPlaybackVolume(widget.settings.voiceVolume));
-    }
+    unawaited(_voice.applyPlaybackVolume());
     if (widget.settings.ready &&
         widget.settings.autoJoinVoice &&
         !_autoJoinAttempted &&
-        !_voiceJoined) {
+        !_voice.joined) {
       _autoJoinAttempted = true;
-      unawaited(_setVoiceJoined(true));
+      unawaited(_voice.setJoined(true));
     }
   }
 
@@ -898,9 +796,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
             isCurrentUser: value.userId == widget.session.user.userId,
             isDealer: snapshot?.dealerSeat == seatNumber,
             isOwner: snapshot?.ownerUserId == value.userId,
-            isSpeaking:
-                _speakingUserIds.contains(value.userId) &&
-                !_mutedVoiceUserIds.contains(value.userId),
+            isSpeaking: _voice.isSpeaking(value.userId),
             isMicrophoneEnabled: _gameSocket.voiceMembers.any(
               (member) =>
                   member.userId == value.userId && member.microphoneEnabled,
@@ -946,18 +842,9 @@ class _TablePrototypePageState extends State<TablePrototypePage>
 
   void _showVoiceError(Object error) {
     if (!mounted) return;
-    final message = switch (error) {
-      MicrophonePermissionDeniedException() => '需要麦克风权限才能开启自由麦',
-      TrtcCredentialException(statusCode: 401) => '语音测试凭证鉴权失败',
-      TrtcCredentialException() => '获取语音凭证失败，请检查本地服务',
-      VoiceRoomException(:final code) => '加入语音房失败（错误码 $code）',
-      TimeoutException() => '语音服务连接超时',
-      UnsupportedError() => '当前平台的语音适配尚未完成',
-      _ => '语音操作失败',
-    };
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message)));
+      ..showSnackBar(SnackBar(content: Text(voiceErrorMessage(error))));
   }
 }
 
