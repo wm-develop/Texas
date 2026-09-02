@@ -51,11 +51,15 @@ void main() {
         0.001,
       ),
     );
-    expect(layout.tableRect.height, 532);
+    // 下注区从底部移到右栏后，牌桌纵向多出约 10%：620 - 8 - 24
+    expect(layout.tableRect.height, 588);
     expect(layout.tableRect.top, 8);
     expect(layout.boardRect.top, layout.tableRect.top + 128);
     expect(layout.boardRect.bottom, layout.tableRect.bottom - 128);
-    expect(layout.boardRect.width, greaterThan(500));
+    // 右栏加宽让公共牌区横向收窄，但仍远大于 5 张公共牌所需宽度
+    // （5 × 66 = 330），而纵向反而多出 56；侧边座位内缘决定了它不能再宽。
+    expect(layout.boardRect.width, greaterThan(5 * 66));
+    expect(layout.boardRect.height, greaterThan(300));
 
     // Enlarged 216x116 player cards remain outside the board's protected
     // center region, including the top and local-player bottom positions.
@@ -154,5 +158,32 @@ void main() {
       chatVisible: true,
     );
     expect(heuristic.isCompactLandscape, isTrue);
+  });
+  group('紧凑判定使用短边而不是宽高比', () {
+    test('被拖矮的桌面窗口不会翻成手机布局', () {
+      // 1400x620 宽高比 2.26，比多数手机还宽，但短边 620 不是手机
+      final layout = TableViewportLayout.fromSize(
+        const Size(1400, 620),
+        chatVisible: false,
+      );
+      expect(layout.isCompactLandscape, isFalse);
+    });
+
+    test('窗口被拖得足够小时才切紧凑布局', () {
+      final layout = TableViewportLayout.fromSize(
+        const Size(1000, 480),
+        chatVisible: false,
+      );
+      expect(layout.isCompactLandscape, isTrue);
+    });
+
+    test('compactOverride 仍然优先，键盘不能翻转布局', () {
+      final pinned = TableViewportLayout.fromSize(
+        const Size(1400, 620),
+        chatVisible: false,
+        compactOverride: true,
+      );
+      expect(pinned.isCompactLandscape, isTrue);
+    });
   });
 }

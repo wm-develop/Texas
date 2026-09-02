@@ -246,6 +246,23 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                   client: _gameSocket,
                   compact: viewport.isCompactLandscape,
                 );
+                final chatEntryButton = FilledButton.tonalIcon(
+                  onPressed: viewport.supportsSideChat
+                      ? _toggleChat
+                      : _showCompactChat,
+                  icon: Badge(
+                    isLabelVisible: _unreadChatCount > 0,
+                    label: Text(
+                      _unreadChatCount > 99 ? '99+' : '$_unreadChatCount',
+                    ),
+                    child: const Icon(Icons.chat_bubble_outline),
+                  ),
+                  label: Text(
+                    _unreadChatCount > 0
+                        ? '文字聊天 · $_unreadChatCount'
+                        : '文字聊天',
+                  ),
+                );
                 final voiceControls = TableVoiceControls(
                   voiceJoined: _voice.joined,
                   connectionState: _voice.connectionState,
@@ -343,42 +360,51 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                                 onBlockChanged: _voice.setUserBlocked,
                                 onClose: _toggleChat,
                               ),
-                            )
-                          else
+                            ),
+                          if (viewport.isCompactLandscape)
+                            // 手机：聊天入口在右栏顶部，下注区贴底，便于拇指够到
                             Positioned(
-                              right: 24,
-                              bottom: viewport.isCompactLandscape ? 86 : 118,
-                              child: FilledButton.tonalIcon(
-                                onPressed: viewport.supportsSideChat
-                                    ? _toggleChat
-                                    : _showCompactChat,
-                                icon: Badge(
-                                  isLabelVisible: _unreadChatCount > 0,
-                                  label: Text(
-                                    _unreadChatCount > 99
-                                        ? '99+'
-                                        : '$_unreadChatCount',
+                              right: 8,
+                              top: 8,
+                              bottom: 8,
+                              width:
+                                  TableViewportLayout.compactRightRailWidth -
+                                  16,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  chatEntryButton,
+                                  const Spacer(),
+                                  TableActionBar(
+                                    client: _gameSocket,
+                                    userId: widget.session.user.userId,
+                                    smallBlind: widget.room.rules.smallBlind,
+                                    onRebuy: _showRebuyDialog,
+                                    vertical: true,
                                   ),
-                                  child: const Icon(Icons.chat_bubble_outline),
-                                ),
-                                label: Text(
-                                  _unreadChatCount > 0
-                                      ? '文字聊天 · $_unreadChatCount 条新消息'
-                                      : '文字聊天',
-                                ),
+                                ],
+                              ),
+                            )
+                          else ...[
+                            if (!showSideChat)
+                              Positioned(
+                                right: 24,
+                                bottom: 172,
+                                child: chatEntryButton,
+                              ),
+                            // 大屏：动作区不再横跨整幅宽度，让开右侧聊天栏
+                            Positioned(
+                              right: showSideChat ? 262 : 24,
+                              bottom: 18,
+                              width: 470,
+                              child: TableActionBar(
+                                client: _gameSocket,
+                                userId: widget.session.user.userId,
+                                smallBlind: widget.room.rules.smallBlind,
+                                onRebuy: _showRebuyDialog,
                               ),
                             ),
-                          Positioned(
-                            left: viewport.isCompactLandscape ? 12 : 24,
-                            right: viewport.isCompactLandscape ? 12 : 24,
-                            bottom: viewport.isCompactLandscape ? 2 : 18,
-                            child: TableActionBar(
-                              client: _gameSocket,
-                              userId: widget.session.user.userId,
-                              smallBlind: widget.room.rules.smallBlind,
-                              onRebuy: _showRebuyDialog,
-                            ),
-                          ),
+                          ],
                         ],
                       ),
                     ),

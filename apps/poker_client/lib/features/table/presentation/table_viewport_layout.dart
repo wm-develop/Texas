@@ -19,7 +19,8 @@ class TableViewportLayout {
   static const double maxTableWidth = 1040;
   static const double compactMaxTableWidth = 1160;
   static const double compactLeftRailWidth = 168;
-  static const double compactRightRailWidth = 148;
+  /// 右栏承载竖排下注区，因此比左栏宽；牌桌下方相应只留很窄的一条。
+  static const double compactRightRailWidth = 216;
 
   final Size canvasSize;
   final Rect tableRect;
@@ -78,8 +79,11 @@ class TableViewportLayout {
     final safeHeight = math.max(1.0, availableSize.height);
     final viewportAspect = safeWidth / safeHeight;
     final canvasAspect = viewportAspect.clamp(minCanvasAspect, maxCanvasAspect);
+    // 宽高比不能用来判断设备类别：1400x500 的桌面窗口比任何手机都更宽，
+    // 但它显然不该用手机布局。短边才是与方向无关的判据，也与 Material 的
+    // 600 断点一致；桌面窗口被拖到很小时切紧凑布局同样是想要的结果。
     final isCompactLandscape =
-        compactOverride ?? (safeHeight <= 520 && viewportAspect >= 1.7);
+        compactOverride ?? (math.min(safeWidth, safeHeight) < 600);
     final canvasHeight = isCompactLandscape
         ? compactDesignHeight
         : designHeight;
@@ -97,7 +101,8 @@ class TableViewportLayout {
         ? 264.0
         : baseLeft;
     final top = isCompactLandscape ? 8.0 : 62.0;
-    final bottom = isCompactLandscape ? 80.0 : 132.0;
+    // 紧凑布局的动作区移到右栏后，底部只需留出本轮下注筹码的呼吸空间。
+    final bottom = isCompactLandscape ? 24.0 : 132.0;
     final tableHeight = canvasHeight - top - bottom;
     final availableTableWidth = math.max(
       1.0,
