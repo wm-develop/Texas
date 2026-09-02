@@ -2,6 +2,8 @@ package transport
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -42,11 +44,17 @@ type Options struct {
 	// Metrics 为 nil 时不采集指标；MetricsToken 为空时不暴露 /metrics。
 	Metrics      *metrics.Registry
 	MetricsToken string
+	// InstanceID 标识本进程，随 session.authenticated 下发；客户端据此判断
+	// 重连后服务端是否已重启。为空时 NewHandler 生成随机值。
+	InstanceID string
 }
 
 func NewHandler(logger *slog.Logger, options Options) http.Handler {
 	mux := http.NewServeMux()
 	presence := newPresenceTracker()
+	if options.InstanceID == "" {
+		options.InstanceID = randomInstanceID()
+	}
 	guard := newGuards(options.TrustedProxies, options.RateLimits, options.Metrics)
 	webSockets := newWebSocketServer(logger, options, presence, guard)
 	mux.HandleFunc("GET /healthz", handleHealth)
@@ -269,4 +277,13 @@ func writeJSONError(writer http.ResponseWriter, status int, code string) {
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.WriteHeader(status)
 	_ = json.NewEncoder(writer).Encode(map[string]string{"error": code})
+}
+
+// randomInstanceID 生成进程级随机标识；失败时退回启动时间，仍能区分重启。
+func randomInstanceID() string {
+	value := make([]byte, 8)
+	if _, err := rand.Read(value); err != nil {
+		return "inst_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return "inst_" + hex.EncodeToString(value)
 }

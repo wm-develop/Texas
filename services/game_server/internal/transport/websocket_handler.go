@@ -36,6 +36,7 @@ type webSocketServer struct {
 	userLocks      map[string]*sync.Mutex
 	originPatterns []string
 	presence       *presenceTracker
+	instanceID     string
 	interactionMu  sync.Mutex
 	interactionAt  map[string]time.Time
 	guard          *guards
@@ -83,6 +84,7 @@ func newWebSocketServer(
 		userLocks:      make(map[string]*sync.Mutex),
 		originPatterns: webSocketOriginPatterns(options.AllowedOrigins),
 		presence:       presence,
+		instanceID:     options.InstanceID,
 		interactionAt:  make(map[string]time.Time),
 	}
 	if server.tables != nil {
@@ -111,6 +113,12 @@ func newWebSocketServer(
 				return 0
 			}
 			return int64(server.tables.ActiveTables())
+		})
+		registry.NewGaugeFunc("texas_draining", "1 while the process is draining tables before shutdown.", func() int64 {
+			if server.tables != nil && server.tables.Draining() {
+				return 1
+			}
+			return 0
 		})
 	}
 	return server
@@ -304,6 +312,8 @@ func (client *webSocketClient) authenticate(ctx context.Context, message protoco
 	client.server.presence.touch(user.UserID)
 	return client.write(response(message, protocol.TypeSessionAuthenticated, map[string]any{
 		"user": user, "deviceId": payload.DeviceID,
+		// 重连后实例标识变化即服务端已重启，重启前进行中的那一手不可能恢复
+		"serverInstanceId": client.server.instanceID,
 	}))
 }
 

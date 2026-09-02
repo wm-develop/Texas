@@ -443,6 +443,19 @@ class _TablePrototypePageState extends State<TablePrototypePage>
     _updateChatNotification();
     _updatePlayerInteractions();
     setState(() {});
+    if (_gameSocket.takeVoidedHandId() != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            const SnackBar(
+              duration: Duration(seconds: 6),
+              content: Text('服务器已重启，上一手未完成的牌局作废，筹码已恢复到上一手结算后的状态'),
+            ),
+          );
+      });
+    }
     final error = _gameSocket.errorMessage;
     if (!_removedFromRoomHandled &&
         (error == 'permission_denied' || error == 'room_not_found')) {

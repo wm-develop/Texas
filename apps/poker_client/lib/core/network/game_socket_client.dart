@@ -58,12 +58,43 @@ class GameSocketClient extends ChangeNotifier {
   bool _recoveringSequenceGap = false;
   bool _forceRefreshOnNextConnect = false;
   int _requestCounter = 0;
+  String? _serverInstanceId;
+  String? _voidedHandId;
   DateTime _lastServerMessageAt = DateTime.now();
 
   GameSocketStatus get status => _status;
   String? get lastMessageType => _lastMessageType;
   String? get errorMessage => _errorMessage;
   TableSnapshot? get snapshot => _snapshot;
+
+  /// 服务端进程标识，来自 session.authenticated；重连后变化即服务端重启过。
+  String? get serverInstanceId => _serverInstanceId;
+
+  /// 取出并清除「上一手因服务端重启作废」的手牌号；没有则返回 null。
+  /// 进行中的手只存在于旧进程内存里，新进程无法恢复它，玩家需要一个解释。
+  String? takeVoidedHandId() {
+    final value = _voidedHandId;
+    _voidedHandId = null;
+    return value;
+  }
+
+  void _observeServerInstance(String? instanceId) {
+    if (instanceId == null || instanceId.isEmpty) return;
+    final previous = _serverInstanceId;
+    _serverInstanceId = instanceId;
+    final snapshot = _snapshot;
+    if (previous != null &&
+        previous != instanceId &&
+        snapshot != null &&
+        snapshot.handId.isNotEmpty &&
+        snapshot.settlement == null) {
+      _voidedHandId = snapshot.handId;
+    }
+  }
+
+  /// 仅供测试：把一条服务端消息喂给解析逻辑，绕过网络。
+  @visibleForTesting
+  void debugHandleMessage(String rawMessage) => _handleMessage(rawMessage);
   List<TableChatMessage> get chatMessages => List.unmodifiable(_chatMessages);
   List<TablePlayerInteraction> get playerInteractions =>
       List.unmodifiable(_playerInteractions);
@@ -274,6 +305,9 @@ class GameSocketClient extends ChangeNotifier {
       }
       switch (type) {
         case 'session.authenticated':
+          if (payload is Map<String, dynamic>) {
+            _observeServerInstance(payload['serverInstanceId'] as String?);
+          }
           _setStatus(GameSocketStatus.authenticated, notify: false);
           _send(
             'table.join',

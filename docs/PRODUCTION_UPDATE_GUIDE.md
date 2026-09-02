@@ -124,10 +124,12 @@ docker run --rm \
 
 ## 三、更新游戏服务
 
+游戏服务收到停止信号后会先等所有牌桌打完当前手（最多 `SHUTDOWN_DRAIN_TIMEOUT_SECONDS`，默认 120 秒），所以 `docker stop` 必须用 `-t 150` 给足宽限期；Docker 默认 10 秒就会强制杀进程，正在进行的那一手会作废。牌桌上会显示「服务器即将更新」，本手结束后暂停开新局，新容器起来后玩家重新点准备即可。
+
 数据库迁移成功后，替换游戏服务容器：
 
 ```bash
-docker stop texas-game-server
+docker stop -t 150 texas-game-server
 docker rm texas-game-server
 docker run -d \
   --name texas-game-server \
@@ -160,7 +162,7 @@ curl -i https://api.example.com/readyz
 仅当数据库改动与旧服务向后兼容时，才可以使用更新前记录的 `$OLD_IMAGE` 回滚应用：
 
 ```bash
-docker stop texas-game-server
+docker stop -t 150 texas-game-server
 docker rm texas-game-server
 docker run -d \
   --name texas-game-server \

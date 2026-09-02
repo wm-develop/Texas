@@ -73,6 +73,7 @@ String potAwardLabel(PotAward award, List<TableSeatSnapshot> seats) {
 
 String gameErrorLabel(String code) => switch (code) {
   'connection_failed' => '牌桌网络暂时不可用，正在自动重新连接',
+  'server_draining' => '服务器即将更新，本手结束后暂停开新局，请稍候',
   'sequence_gap' => '检测到网络消息缺口，正在恢复牌桌状态',
   'stale_revision' || 'stale_hand' => '牌桌状态已经更新，正在为你恢复最新画面',
   'not_your_turn' => '现在还没有轮到你',

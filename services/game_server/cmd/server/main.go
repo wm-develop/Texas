@@ -197,6 +197,19 @@ func main() {
 
 	go func() {
 		<-shutdownContext.Done()
+		// 优雅停机：先停开新局，等所有牌桌打完当前手再退出，避免部署打断牌局。
+		// 等待上限由 SHUTDOWN_DRAIN_TIMEOUT_SECONDS 控制，docker stop 的宽限期必须更长。
+		logger.Info("shutdown requested, draining tables",
+			"tablesInHand", tableManager.TablesInHand(), "timeout", appConfig.ShutdownDrainTimeout)
+		tableManager.BeginDrain()
+		drainContext, cancelDrain := context.WithTimeout(context.Background(), appConfig.ShutdownDrainTimeout)
+		if err := tableManager.WaitForHandBoundary(drainContext); err != nil {
+			logger.Warn("drain timeout reached, hands still in progress will be voided",
+				"tablesInHand", tableManager.TablesInHand())
+		} else {
+			logger.Info("all tables between hands, shutting down")
+		}
+		cancelDrain()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {

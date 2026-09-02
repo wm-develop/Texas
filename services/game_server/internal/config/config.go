@@ -30,6 +30,9 @@ type Config struct {
 	// MetricsToken 非空时启用 /metrics，并要求 Bearer 令牌；为空时端点不存在。
 	MetricsToken string
 	RateLimits   RateLimits
+	// ShutdownDrainTimeout 是收到停机信号后等待所有牌桌打完当前手的上限；
+	// 到期仍在进行的手会随进程退出而作废。为 0 时不等待。
+	ShutdownDrainTimeout time.Duration
 }
 
 // RateLimit 表示「每 Window 内最多 Burst 次」。
@@ -95,6 +98,13 @@ func Load() (Config, error) {
 	}
 	config.AccessTokenTTL = accessTTL
 	config.RefreshTokenTTL = refreshTTL
+	drainTimeout, err := durationFromSeconds(
+		"SHUTDOWN_DRAIN_TIMEOUT_SECONDS", 120*time.Second, 0, 10*time.Minute,
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	config.ShutdownDrainTimeout = drainTimeout
 	if origins := strings.TrimSpace(os.Getenv("ALLOWED_ORIGINS")); origins != "" {
 		for _, origin := range strings.Split(origins, ",") {
 			if origin = strings.TrimSuffix(strings.TrimSpace(origin), "/"); origin != "" {

@@ -144,7 +144,7 @@
 
 | 类型 | 用途 |
 |---|---|
-| `session.authenticated` | 会话鉴权成功，payload 含 `user` 和 `deviceId` |
+| `session.authenticated` | 会话鉴权成功，payload 含 `user`、`deviceId` 和 `serverInstanceId`（服务端进程启动时生成的随机标识，见 6.8） |
 | `system.pong` | 心跳响应 |
 | `system.error` | 通用错误；同时用作多个牌桌命令的失败回执，payload 为 `{code, message?}` |
 
@@ -234,6 +234,7 @@
 | `totalPot` | 当前底池**总额** |
 | `settlement` | 结算结果，见 6.4 |
 | `maxBuyIn` | 房间单人最大带入 |
+| `draining` | 为 `true` 表示服务端正在优雅停机：本手打完后不再开新局，`table.ready.set {"ready": true}` 返回 `server_draining`，自动准备倒计时也不会安排；重启完成后该字段消失（见 6.8） |
 
 ### 6.2 `seats[]`
 
@@ -305,6 +306,14 @@
 
 房主离桌后，服务端按成员加入时间、再按座位号将 `ownerUserId` 转移给最早加入的剩余成员。主动亮牌只允许在本手结算后由已弃牌玩家、或因其他玩家全部弃牌而获胜的玩家使用，公开状态持续到下一手开始。每手结算后服务端设置 10 秒 `autoReadyDeadline`（发两次结算为 15 秒，客户端分两块牌面先后展示需要额外时间）；短暂断线不等同于主动取消，客户端发送 `table.ready.set {"ready": false}` 才取消本轮自动准备，再发送 `ready: true` 可恢复。
 
+### 6.8 优雅停机与重启
+
+服务端收到停止信号后进入**排空**：不再开新局、取消所有牌桌的自动准备倒计时、向每桌广播一次带 `draining: true` 的快照，然后等待所有牌桌到达手间空档（上限由服务端 `SHUTDOWN_DRAIN_TIMEOUT_SECONDS` 控制，默认 120 秒）再退出。进行中的手照常进行，行动超时仍由服务端推进。
+
+**进行中的手无法跨重启恢复**：底牌与洗牌状态只存在于旧进程内存里，不会写入任何外部存储。排空超时或进程崩溃时，那一手直接作废，牌桌按 `room_members` 中上一手结算后的座位与筹码重建；本手投入从未落库，因此不需要退还。
+
+客户端识别这种情况的依据是 `session.authenticated` 中的 `serverInstanceId`：重连后若与上次不同，而重连前最后一份快照带有 `handId` 且没有 `settlement`，即可确定那一手作废，应向玩家说明并提示筹码已恢复到上一手结算后的状态。仅凭「重连后 `handId` 变了」不能下这个结论——玩家掉线期间那一手可能已经正常结算并进入下一手。
+
 ## 7. 错误码
 
 错误码通过 `system.error`、`table.action.rejected`、`table.chat.rejected`、`table.rebuy.rejected`、`table.time_extension.rejected`、`table.hole_cards.reveal.rejected` 的 payload `code` 字段返回。
@@ -320,6 +329,7 @@
 | `invalid_request` | payload 结构不合法 |
 | `service_unavailable` | 依赖服务未装配 |
 | `table_not_joined` | 该连接尚未加入牌桌 |
+| `server_draining` | 服务端正在优雅停机，本手结束后不再开新局；`table.ready.set {"ready": false}` 仍被接受 |
 | `internal_error` | 未归类的服务端错误；服务端会同时记录结构化日志 |
 
 ### 7.2 房间与权限

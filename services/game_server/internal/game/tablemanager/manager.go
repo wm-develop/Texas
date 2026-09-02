@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"texas/services/game_server/internal/bankroll"
@@ -16,7 +17,9 @@ import (
 )
 
 type Manager struct {
-	mu               sync.Mutex
+	mu sync.Mutex
+	// draining 置位后不再开新局，用于优雅停机等待所有牌桌到达手间空档。
+	draining         atomic.Bool
 	rooms            *room.Service
 	random           holdem.IntnSource
 	tables           map[string]*runtime
@@ -31,6 +34,7 @@ type Manager struct {
 type runtime struct {
 	mu                       sync.Mutex
 	engine                   *holdem.Table
+	draining                 *atomic.Bool
 	roomID                   string
 	actionSeconds            int
 	deadline                 time.Time
@@ -172,6 +176,8 @@ type Snapshot struct {
 	AutoReadyDeadline  int64                         `json:"autoReadyDeadline,omitempty"`
 	AutoReadyCancelled bool                          `json:"autoReadyCancelled"`
 	MaxBuyIn           int64                         `json:"maxBuyIn"`
+	// Draining 为 true 表示服务端正在优雅停机：本手结束后不再开新局。
+	Draining bool `json:"draining,omitempty"`
 }
 
 func New(rooms *room.Service, random holdem.IntnSource) (*Manager, error) {
@@ -260,6 +266,11 @@ func (manager *Manager) Disconnect(ctx context.Context, userID string, roomID st
 }
 
 func (manager *Manager) SetReady(ctx context.Context, userID string, ready bool) (Snapshot, error) {
+	// 停机排空期间不接受准备：一旦全员就绪就会开新局，而新局撑不到进程退出。
+	// 取消准备仍然允许，重启后玩家重新点准备即可。
+	if ready && manager.draining.Load() {
+		return Snapshot{}, holdem.RuleError{Code: "server_draining"}
+	}
 	roomValue, err := manager.rooms.SetReady(ctx, userID, ready)
 	if err != nil {
 		return Snapshot{}, err
@@ -788,7 +799,8 @@ func (manager *Manager) runtimeFor(roomValue room.Room) (*runtime, error) {
 		return nil, err
 	}
 	created := &runtime{
-		engine: engine, roomID: roomValue.RoomID, actionSeconds: roomValue.Rules.ActionSeconds,
+		engine: engine, draining: &manager.draining,
+		roomID: roomValue.RoomID, actionSeconds: roomValue.Rules.ActionSeconds,
 		timeExtensions: make(map[string]int), autoReadyCancelled: make(map[string]bool),
 		voluntarilyRevealedHands: make(map[string]holdem.RevealedHand),
 		holeCardViewRequests:     make(map[string]holeCardViewRequest),
@@ -800,6 +812,67 @@ func (manager *Manager) runtimeFor(roomValue room.Room) (*runtime, error) {
 }
 
 // ActiveTables 返回当前进程内持有的运行中牌桌数量，供指标暴露使用。
+// BeginDrain 进入停机排空：不再开新局、取消所有牌桌的自动准备倒计时，
+// 并向每桌广播一次快照，让客户端立即显示原因。进行中的手不受影响。
+// 重复调用是空操作。
+func (manager *Manager) BeginDrain() {
+	if manager.draining.Swap(true) {
+		return
+	}
+	manager.mu.Lock()
+	tables := make(map[string]*runtime, len(manager.tables))
+	for roomID, table := range manager.tables {
+		tables[roomID] = table
+	}
+	manager.mu.Unlock()
+	for roomID, table := range tables {
+		table.mu.Lock()
+		manager.clearAutoReadyLocked(table)
+		table.mu.Unlock()
+		manager.notifySnapshot(roomID)
+	}
+}
+
+// Draining 报告是否处于停机排空。
+func (manager *Manager) Draining() bool { return manager.draining.Load() }
+
+// TablesInHand 返回仍有一手牌在进行中的牌桌数。
+func (manager *Manager) TablesInHand() int {
+	manager.mu.Lock()
+	tables := make([]*runtime, 0, len(manager.tables))
+	for _, table := range manager.tables {
+		tables = append(tables, table)
+	}
+	manager.mu.Unlock()
+	count := 0
+	for _, table := range tables {
+		table.mu.Lock()
+		phase := table.engine.Phase()
+		table.mu.Unlock()
+		if phase != holdem.PhaseWaiting && phase != holdem.PhaseWaitingNextHand {
+			count++
+		}
+	}
+	return count
+}
+
+// WaitForHandBoundary 阻塞到所有牌桌都处于手间空档，或 ctx 结束。
+// 手内行动有服务端权威超时推进，因此这里只需轮询，不会永久等待。
+func (manager *Manager) WaitForHandBoundary(ctx context.Context) error {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if manager.TablesInHand() == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 func (manager *Manager) ActiveTables() int {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
@@ -846,6 +919,11 @@ func (manager *Manager) scheduleDeadlineLocked(runtime *runtime, deadline time.T
 }
 
 func (manager *Manager) scheduleAutoReadyLocked(runtime *runtime) {
+	// 排空期间不安排自动准备，否则倒计时结束后只会得到一串 server_draining。
+	if manager.draining.Load() {
+		manager.clearAutoReadyLocked(runtime)
+		return
+	}
 	if runtime.readyTimer != nil {
 		runtime.readyTimer.Stop()
 	}
@@ -1151,6 +1229,7 @@ func snapshotForRuntime(runtime *runtime, roomValue room.Room, recipientUserID s
 		return Snapshot{}, err
 	}
 	result.OwnerUserID = roomValue.OwnerUserID
+	result.Draining = runtime.draining != nil && runtime.draining.Load()
 	if runtime.lastAction != nil {
 		lastAction := *runtime.lastAction
 		result.LastAction = &lastAction

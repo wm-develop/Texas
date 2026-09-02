@@ -73,7 +73,9 @@ class TableActionBar extends StatelessWidget {
                   FilledButton.icon(
                     onPressed:
                         client.status == GameSocketStatus.joined &&
-                            (ownSeat?.stack ?? 0) > 0
+                            (ownSeat?.stack ?? 0) > 0 &&
+                            // 服务端排空期间准备会被拒绝，直接禁用并由状态条解释
+                            snapshot?.draining != true
                         ? () {
                             if (ownSeat?.ready == true) {
                               client.setReady(false);

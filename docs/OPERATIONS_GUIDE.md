@@ -82,6 +82,7 @@ curl -s -H "Authorization: Bearer $METRICS_TOKEN" http://127.0.0.1:8080/metrics
 | `texas_goroutines` | gauge | 进程内协程数；连接回落后不回落即为泄漏 |
 | `texas_memory_heap_bytes` | gauge | 已分配堆对象字节数 |
 | `texas_process_start_time_seconds` | gauge | 进程启动时间，用于识别静默重启 |
+| `texas_draining` | gauge | 收到停止信号、正在等待牌桌打完当前手时为 1 |
 
 几条值得盯的信号：
 
@@ -203,9 +204,13 @@ sudo /opt/texas/bin/texas-reconcile.sh
 ```dotenv
 TRUSTED_PROXIES=127.0.0.1,172.20.0.0/16
 METRICS_TOKEN=<至少16位随机字符串>
+# 停机排空：收到停止信号后最多等这么久让牌桌打完当前手，0 为不等待
+SHUTDOWN_DRAIN_TIMEOUT_SECONDS=120
 # 限流保持默认即可；只在确有需要时覆盖
 # RATE_LIMIT_AUTH_PER_IP=30/5m
 ```
+
+**优雅停机**：游戏服务收到 `SIGTERM` 后先停开新局、取消自动准备倒计时并向各桌广播「服务器即将更新」，等所有牌桌到达手间空档再退出，等待上限即 `SHUTDOWN_DRAIN_TIMEOUT_SECONDS`。因此 `docker stop` 必须给足宽限期，例如 `docker stop -t 150 texas-game-server`；Docker 默认只等 10 秒就会 `SIGKILL`，进行中的手会作废。停机期间日志会打印 `shutdown requested, draining tables`，超时会打印 `drain timeout reached`。
 
 生成令牌：
 

@@ -121,7 +121,13 @@ class TableConnectionStatusBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final draining = client.snapshot?.draining == true;
     final (label, color) = switch (client.status) {
+      // 优雅停机期间连接仍然正常，但要让玩家知道为什么不开新局
+      GameSocketStatus.joined when draining => (
+        '服务器即将更新，本手结束后暂停',
+        Colors.orangeAccent,
+      ),
       GameSocketStatus.disconnected => ('服务端未连接', Colors.white54),
       GameSocketStatus.connecting => ('正在连接', Colors.orangeAccent),
       GameSocketStatus.connected => ('服务端已连接', const Color(0xFF6DE0A4)),

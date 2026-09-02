@@ -324,6 +324,7 @@ class TableSnapshot {
     required this.canShowHoleCards,
     required this.autoReadyDeadline,
     required this.autoReadyCancelled,
+    this.draining = false,
   });
 
   final String roomId;
@@ -349,6 +350,9 @@ class TableSnapshot {
   final bool canShowHoleCards;
   final DateTime? autoReadyDeadline;
   final bool autoReadyCancelled;
+
+  /// 服务端正在优雅停机：本手结束后不再开新局，重启完成后自动恢复。
+  final bool draining;
   bool get hasSettlement => settlement != null;
 
   factory TableSnapshot.fromJson(Map<String, dynamic> json) => TableSnapshot(
@@ -410,6 +414,7 @@ class TableSnapshot {
         ? null
         : DateTime.fromMillisecondsSinceEpoch(json['autoReadyDeadline'] as int),
     autoReadyCancelled: json['autoReadyCancelled'] as bool? ?? false,
+    draining: json['draining'] as bool? ?? false,
   );
 }
 
