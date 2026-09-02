@@ -80,6 +80,11 @@ services/game_server/game_server.exe
 services/game_server/*.test
 services/game_server/*.prof
 
-# docs
-docs/PRODUCTION_UPDATE_GUIDE_local.md
+# 本地文档：只在本机保留，永不进入仓库。
+# 放这里的是含真实域名、IP、容器名、密钥位置的运维副本，
+# 以及只对当前维护者有意义的临时记录、验收原始数据和排障笔记。
+# 公开文档一律使用 example.com 与占位值，两者成对维护。
+docs/local/
+
+# 项目给 Claude Code 的指令文件，含本机约定，不公开。
 CLAUDE.md

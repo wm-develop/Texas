@@ -24,7 +24,7 @@
 
 阶段 3 的单实例纵向链路已完成。账户娱乐筹码余额、无支付虚拟充值、最近筹码流水、房主自定义盲注/最大带入、玩家自主带入、手间补码、输光自动补码和离桌返还均已接入；盲注最低为 10/20，普通下注和加注统一使用小盲整数倍。PostgreSQL 已覆盖账户/会话、钱包流水、房间成员、牌局行动与历史、结算账本、文字聊天和管理员治理；关键带入、补码、结算和返还采用事务、行锁与请求幂等。真实 PostgreSQL 集成测试及单实例云端部署已经完成。
 
-当前仍是**单游戏服务实例**，进程异常后进行中的那一手会作废。多实例与 Redis 已评估并决定暂缓，理由与触发条件见 [ADR-002](docs/decisions/ADR-002-MULTI-INSTANCE.md)。24 小时稳定性与弱网验收的工具和清单已就绪但尚未实跑。完整的已实现/未实现边界见[项目现状](docs/PROJECT_STATUS.md)，后续顺序见[阶段 3 计划](docs/PHASE_3_PLAN.md)。
+当前仍是**单游戏服务实例**，进程异常后进行中的那一手会作废。多实例与 Redis 已评估并决定暂缓，理由与触发条件见 [ADR-002](docs/decisions/ADR-002-MULTI-INSTANCE.md)。24 小时稳定性与弱网验收的工具和清单已就绪但尚未实跑。完整的已实现/未实现边界与后续顺序见[项目现状](docs/PROJECT_STATUS.md)。
 
 > 游戏服务默认仍使用进程内仓储，方便无数据库开发。生产环境设置 `STORAGE_BACKEND=postgres` 并完成全部迁移后启用 PostgreSQL 持久化。本项目仍定位为熟人封闭联机游戏。
 
@@ -36,37 +36,44 @@
 
 ## 文档索引
 
-- [项目现状（当前事实总入口）](docs/PROJECT_STATUS.md)
-- [项目交接文档](docs/PROJECT_HANDOVER.md)
-- [开发历程](docs/DEVELOPMENT_HISTORY.md)
-- [产品与架构规划](docs/PRODUCT_ARCHITECTURE_PLAN.md)
-- [阶段 0：技术验证](docs/PHASE_0_CHECKLIST.md)
-- [阶段 1：规则与协议](docs/PHASE_1_CHECKLIST.md)
-- [阶段 2：可玩 MVP](docs/PHASE_2_CHECKLIST.md)
-- [阶段 2.1：牌桌可玩性补全](docs/PHASE_2_1_TABLE_PLAYABILITY.md)
-- [阶段 2 验收记录](docs/PHASE_2_ACCEPTANCE.md)
-- [阶段 3：上线准备计划](docs/PHASE_3_PLAN.md)
+先读**当前事实**，再按需要查其余分类。历史规划不作为事实来源。
+
+**当前事实**
+
+- [项目现状](docs/PROJECT_STATUS.md)：已实现/未实现的精确边界，任何冲突以本文为准
+- [项目交接文档](docs/PROJECT_HANDOVER.md)：接手开发的入口与阅读顺序
+- [德州扑克规则规格 v1](docs/TEXAS_HOLDEM_RULES_V1.md)
+- [WebSocket 协议 v1](docs/WEBSOCKET_PROTOCOL_V1.md)
+- [隐私说明与账号注销规则](docs/PRIVACY_NOTICE.md)
+
+**自建与运维**
+
 - [从零自建部署指南](docs/SELF_HOSTING_GUIDE.md)
+- [生产环境更新手册](docs/PRODUCTION_UPDATE_GUIDE.md)
 - [数据库备份与恢复指南](docs/BACKUP_AND_RESTORE_GUIDE.md)
 - [运行保障指南：限流、指标与告警](docs/OPERATIONS_GUIDE.md)
 - [验收指南：稳定性、弱网与发布冒烟](docs/ACCEPTANCE_GUIDE.md)
-- [隐私说明与账号注销规则](docs/PRIVACY_NOTICE.md)
 - [Android 发布签名配置指南](docs/ANDROID_SIGNING_GUIDE.md)
-- [生产环境更新手册](docs/PRODUCTION_UPDATE_GUIDE.md)
-- [v0.1.0 首次发布说明](docs/releases/v0.1.0.md)
-- [v0.1.1 发布说明](docs/releases/v0.1.1.md)
-- [v0.2.0 发布说明](docs/releases/v0.2.0.md)
-- [德州扑克规则规格 v1](docs/TEXAS_HOLDEM_RULES_V1.md)
-- [WebSocket 协议 v1](docs/WEBSOCKET_PROTOCOL_V1.md)
-- [语音 RTC 决策记录](docs/decisions/ADR-001-VOICE-RTC.md)
-- [多实例与 Redis 决策记录](docs/decisions/ADR-002-MULTI-INSTANCE.md)
+- [开发环境与工具链](docs/TOOLCHAIN_STATUS.md)：已验证的版本组合与兼容性约束
+
+**决策记录**
+
+- [ADR-001：牌桌语音采用腾讯云 TRTC](docs/decisions/ADR-001-VOICE-RTC.md)
+- [ADR-002：多实例与 Redis（暂不实施）](docs/decisions/ADR-002-MULTI-INSTANCE.md)
+
+**历史与发布**
+
+- [开发历程](docs/DEVELOPMENT_HISTORY.md)：从选型至今的时间线，解释“为什么是现在这样”
+- [产品与架构规划](docs/PRODUCT_ARCHITECTURE_PLAN.md)：最初的产品与架构评审记录，部分内容已被实现取代
+- [v0.1.0](docs/releases/v0.1.0.md) · [v0.1.1](docs/releases/v0.1.1.md) · [v0.2.0](docs/releases/v0.2.0.md) 发布说明
 
 ## 目录结构
 
 ```text
 apps/poker_client/       Flutter OH 客户端
 services/game_server/    Go 游戏服务
-docs/                    产品、架构、阶段计划和技术决策
+docs/                    当前事实、运维手册、决策记录与历史
+docs/local/              仅本机保留的运维副本，不进入仓库
 CLAUDE.md                Claude Code 接手与仓库工作约定
 .env.example             本地配置模板
 ```

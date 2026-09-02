@@ -32,11 +32,11 @@ Android 用**签名**而不是包名来判断两个 APK 是否"同一个应用"�
 
 ## 3. 第一步：生成发布密钥库（只在一台机器上做一次）
 
-在你选定的目录执行（把 `D:\Keys` 换成你的实际路径）：
+在你选定的目录执行（把 `D:\Keys` 换成你的实际路径，**不要放在仓库里**）：
 
 ```powershell
 & 'C:\Program Files\Java\jdk-17\bin\keytool.exe' -genkeypair -v `
-  -keystore D:\Workspace\Android_keys\poker-release.jks `
+  -keystore D:\Keys\poker-release.jks `
   -storetype JKS `
   -keyalg RSA -keysize 2048 -validity 10000 `
   -alias poker

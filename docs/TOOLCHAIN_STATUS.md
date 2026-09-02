@@ -47,13 +47,14 @@ Go 下载包已使用官方 SHA256 校验：
 f0c0a0d33ba94f4d2c5dbc887334ce678b21813504ddb3aafcb06e60a5a667c4
 ```
 
+Android 正式签名已支持：配置 `android/key.properties` 后使用独立发布密钥，缺失时回退调试签名并告警，步骤见[Android 发布签名配置指南](ANDROID_SIGNING_GUIDE.md)。
+
 ## 尚未完成
 
 | 项目 | 影响 | 后续动作 |
 |---|---|---|
-| Windows 本地 Docker | 2026-08-24 盘点时未安装 | 可使用外部测试 PostgreSQL；继续数据库/Redis 开发时建议安装 Docker Desktop |
+| Windows 本地 Docker | 2026-08-24 盘点时未安装 | 可使用外部测试 PostgreSQL；生产环境的数据库与服务均以容器运行 |
 | Chrome | Flutter Doctor 未发现 Chrome | 当前用 Edge，不构成阻塞 |
-| Android 正式签名 | 当前 APK 使用调试签名 | 发布前配置 keystore；不影响阶段 0 真机联调 |
 
 ## 已验证构建
 

@@ -82,4 +82,4 @@ docker compose -f .\deploy\docker-compose.dev.yml up -d
 
 ## 当前限制
 
-默认配置仍使用内存仓储，生产环境已经接通 PostgreSQL 并完成真实数据库集成验收。Redis 当前尚未接入游戏运行时；后续按[上线准备计划](../../docs/PHASE_3_PLAN.md)继续实现租约、多实例恢复、自动备份和运行保障。
+默认配置仍使用内存仓储，生产环境已经接通 PostgreSQL 并完成真实数据库集成验收。自动备份、限流、指标与告警均已落地（见[运行保障指南](../../docs/OPERATIONS_GUIDE.md)与[备份与恢复指南](../../docs/BACKUP_AND_RESTORE_GUIDE.md)）。Redis 与多实例经评估后决定暂缓，理由与触发条件见 [ADR-002](../../docs/decisions/ADR-002-MULTI-INSTANCE.md)。

@@ -184,9 +184,9 @@ Web、Windows、Android 和 HarmonyOS 共用同一套 Dart 代码及生产服务
 
 ```powershell
 # 仓库检出目录，按本机实际路径修改
-$repo    = 'D:\Workspace\Texas'
+$repo    = 'D:\path\to\Texas'
 # Flutter OH 安装目录，按本机实际路径修改
-$flutter = 'D:\Workspace\flutter_flutter\bin\flutter.bat'
+$flutter = 'D:\path\to\flutter_flutter\bin\flutter.bat'
 # Android platform-tools 中的 adb，仅安装 APK 到真机时需要
 $adb     = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
 
