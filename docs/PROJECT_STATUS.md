@@ -118,8 +118,8 @@ TRTC：牌桌语音
 - 账号注销（`POST /v1/users/me/delete`）与隐私说明已完成，规则见[隐私说明](PRIVACY_NOTICE.md)；举报因熟人局定位不做。语音加入/退出元数据以 `voice.joined`/`voice.left` 审计事件持久化，管理员可在客户端「审计记录」页（`GET /v1/admin/audit`）按类别、用户或房间查询全部管理操作、账号变更与语音进出。
 - 已有 GitHub Actions（`.github/workflows/ci.yml`）：服务端 gofmt/vet/test 与 -race、客户端 analyze/test、shellcheck 与仓库卫生检查。构建、迁移、发布和回滚仍是文档化的人工流程。
 - Android Release 签名已支持通过 `android/key.properties` 配置独立发布密钥（缺失时回退调试签名并告警），维护者需按[Android 发布签名配置指南](ANDROID_SIGNING_GUIDE.md)完成一次性配置；HarmonyOS 签名依赖维护者本机配置；iOS 未验证。
-- 客户端牌桌页已按职责拆分：`table_prototype_page.dart` 从 3180 行降至约 855 行，组件分入 `table_labels`、`table_card_widgets`、`table_status_widgets`、`table_board_center`、`table_seat_widgets`、`table_chat_panel`、`table_action_bar`、`table_rebuy_dialog`、`table_canvas`，语音状态与命令抽入 `table_voice_controller.dart`。提取出的组件为公开类，控制器不接触 `BuildContext`，均可被测试直接覆盖。
-- Flutter 测试为 20 个文件、90 项，其中 `table_layout_regression_test.dart` 覆盖 2～10 人座位排布、紧凑横屏布局、玩家框内手牌与中文牌型、图层顺序（下注筹码须绘制于玩家框之后）以及公共牌区域几何。该测试已验证能捕获图层顺序写反的回归。真机多端冒烟仍不可省略。
+- 客户端牌桌页已按职责拆分：`table_prototype_page.dart` 从 3180 行降至约 805 行，组件分入 `table_labels`、`table_card_widgets`、`table_status_widgets`、`table_board_center`、`table_seat_widgets`、`table_chat_panel`、`table_action_bar`、`table_rebuy_dialog`、`table_canvas`；语音状态与命令抽入 `table_voice_controller.dart`，自动准备/自动补码/牌桌请求的判定与去重抽入 `table_automation_coordinator.dart`。提取出的组件为公开类，两个控制器不接触 `BuildContext`，均可被测试直接覆盖。
+- Flutter 测试为 21 个文件、100 项，其中 `table_layout_regression_test.dart` 覆盖 2～10 人座位排布、紧凑横屏布局、玩家框内手牌与中文牌型、图层顺序（下注筹码须绘制于玩家框之后）以及公共牌区域几何。该测试已验证能捕获图层顺序写反的回归。真机多端冒烟仍不可省略。
 - 客户端版本已统一为 `0.2.0`：`pubspec.yaml` 为 `0.2.0+2`，Android/Windows 自动取自 pubspec，HarmonyOS 需在 `ohos/AppScope/app.json5` 手动同步（当前 `versionCode` 为 `2000`）。
 - 早期事件驱动设计的残留死代码已于 2026-09-02 清理：`internal/protocol/messages.go` 删除五个从无发送点的常量，恒不命中的 `revisionFromError` 与随之始终为 0 的 `ErrorPayload.CurrentRevision` 一并删除（该字段带 `omitempty`，从未出现在报文中，客户端也未读取，协议无变化）。
 
@@ -127,8 +127,7 @@ TRTC：牌桌语音
 
 截至 2026-09-01，备份/演练/对账、成员生命周期属性测试、CI、牌桌页拆分与布局回归、分层限流、`/metrics` 与告警脚本均已落地。剩余顺序：
 
-1. 继续从 `_TablePrototypePageState` 抽出自动准备、自动补码与牌桌请求弹窗的协调逻辑（语音已抽出）。
-2. 24 小时稳定性与弱网验收、发布冒烟清单。
-3. 再设计 Redis 路由、单写者租约、牌桌快照恢复和多实例故障模型；不要直接把进程内状态复制到 Redis。
+1. 24 小时稳定性与弱网验收、发布冒烟清单。
+2. 再设计 Redis 路由、单写者租约、牌桌快照恢复和多实例故障模型；不要直接把进程内状态复制到 Redis。
 
 详细接手入口见[项目交接文档](PROJECT_HANDOVER.md)，完整开发演进见[开发历程](DEVELOPMENT_HISTORY.md)。

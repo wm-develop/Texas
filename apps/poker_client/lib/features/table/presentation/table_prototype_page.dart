@@ -18,6 +18,7 @@ import 'package:poker_client/features/table/audio/table_sound_effects.dart';
 import 'package:poker_client/features/table/domain/table_seat.dart';
 import 'package:poker_client/features/table/presentation/table_labels.dart';
 import 'package:poker_client/features/table/presentation/table_action_bar.dart';
+import 'package:poker_client/features/table/presentation/table_automation_coordinator.dart';
 import 'package:poker_client/features/table/presentation/table_canvas.dart';
 import 'package:poker_client/features/table/presentation/table_voice_controller.dart';
 import 'package:poker_client/features/table/presentation/table_chat_panel.dart';
@@ -69,13 +70,9 @@ class _TablePrototypePageState extends State<TablePrototypePage>
   GameSocketStatus? _lastGameSocketStatus;
   final TableActionSoundTracker _actionSoundTracker = TableActionSoundTracker();
   final TableSoundEffects _tableSoundEffects = TableSoundEffects();
+  late final TableAutomationCoordinator _automation;
   bool _autoJoinAttempted = false;
-  bool _rebuyDialogOpen = false;
-  String? _autoRebuyHandId;
   bool _removedFromRoomHandled = false;
-  String? _autoReadySubmittedHandId;
-  final Set<String> _handledTableRequestIds = {};
-  bool _tableRequestDialogOpen = false;
   final Set<String> _observedInteractionIds = {};
   final List<TablePlayerInteraction> _activeInteractions = [];
   final Map<String, Timer> _interactionTimers = {};
@@ -85,6 +82,9 @@ class _TablePrototypePageState extends State<TablePrototypePage>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _automation = TableAutomationCoordinator(
+      currentUserId: widget.session.user.userId,
+    );
     _gameSocket = GameSocketClient(
       accessTokenProvider: widget.accessTokenProvider,
       roomId: widget.room.roomId,
@@ -519,67 +519,26 @@ class _TablePrototypePageState extends State<TablePrototypePage>
   }
 
   void _submitExpiredAutoReady(TableSnapshot? snapshot) {
-    final deadline = snapshot?.autoReadyDeadline;
-    if (snapshot == null || deadline == null) {
-      return;
+    if (_automation.shouldSubmitAutoReady(
+      snapshot: snapshot,
+      serverNow: _gameSocket.serverNow,
+      socketJoined: _gameSocket.status == GameSocketStatus.joined,
+    )) {
+      _gameSocket.setReady(true);
     }
-    final ownSeat = snapshot.seats
-        .where((seat) => seat.userId == widget.session.user.userId)
-        .firstOrNull;
-    if (deadline.isAfter(_gameSocket.serverNow) ||
-        snapshot.autoReadyCancelled ||
-        ownSeat == null ||
-        ownSeat.ready ||
-        ownSeat.stack <= 0 ||
-        _gameSocket.status != GameSocketStatus.joined ||
-        _autoReadySubmittedHandId == snapshot.handId) {
-      return;
-    }
-    _autoReadySubmittedHandId = snapshot.handId;
-    _gameSocket.setReady(true);
   }
 
   void _offerPendingTableRequest() {
-    if (_tableRequestDialogOpen) return;
-    final snapshot = _gameSocket.snapshot;
-    if (snapshot == null) return;
-    PendingTableRequest? request;
-    var holeCards = false;
-    for (final candidate in snapshot.holeCardViewRequests) {
-      if (!_handledTableRequestIds.contains(candidate.requestId)) {
-        request = candidate;
-        holeCards = true;
-        break;
-      }
-    }
-    if (request == null) {
-      for (final candidate in snapshot.seatSwapRequests) {
-        if (!_handledTableRequestIds.contains(candidate.requestId)) {
-          request = candidate;
-          break;
-        }
-      }
-    }
-    if (request == null) return;
-    _handledTableRequestIds.add(request.requestId);
-    _tableRequestDialogOpen = true;
-    final pending = request;
-    final requesterName = snapshot.seats
-        .where((seat) => seat.userId == pending.requesterUserId)
-        .map((seat) => seat.displayName)
-        .firstOrNull;
+    final prompt = _automation.takeNextRequest(_gameSocket.snapshot);
+    if (prompt == null) return;
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
       final accepted = await showDialog<bool>(
         context: context,
         barrierDismissible: false,
         builder: (context) => AlertDialog(
-          title: Text(holeCards ? '查看手牌申请' : '换位申请'),
-          content: Text(
-            holeCards
-                ? '${requesterName ?? '一名玩家'}已弃牌，申请提前查看你的手牌。是否同意？'
-                : '${requesterName ?? '一名玩家'}申请与你交换座位。是否同意？',
-          ),
+          title: Text(prompt.title),
+          content: Text(prompt.description),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(false),
@@ -592,12 +551,13 @@ class _TablePrototypePageState extends State<TablePrototypePage>
           ],
         ),
       );
-      if (holeCards) {
-        _gameSocket.respondHoleCardsView(pending.requestId, accepted == true);
+      final requestId = prompt.request.requestId;
+      if (prompt.holeCards) {
+        _gameSocket.respondHoleCardsView(requestId, accepted == true);
       } else {
-        _gameSocket.respondSeatSwap(pending.requestId, accepted == true);
+        _gameSocket.respondSeatSwap(requestId, accepted == true);
       }
-      _tableRequestDialogOpen = false;
+      _automation.requestDialogOpen = false;
       if (mounted) _offerPendingTableRequest();
     });
   }
@@ -701,25 +661,14 @@ class _TablePrototypePageState extends State<TablePrototypePage>
   }
 
   void _offerAutomaticRebuy() {
-    final snapshot = _gameSocket.snapshot;
-    final settlementHandId = snapshot?.settlement?.handId;
-    if (settlementHandId == null ||
-        settlementHandId == _autoRebuyHandId ||
-        _rebuyDialogOpen) {
-      return;
-    }
-    final ownSeat = snapshot?.seats
-        .where((seat) => seat.userId == widget.session.user.userId)
-        .firstOrNull;
-    if (ownSeat == null || ownSeat.stack > 0) return;
-    _autoRebuyHandId = settlementHandId;
+    if (!_automation.shouldOfferRebuy(_gameSocket.snapshot)) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(_showRebuyDialog(automatic: true));
     });
   }
 
   Future<void> _showRebuyDialog({bool automatic = false}) async {
-    if (_rebuyDialogOpen) return;
+    if (_automation.rebuyDialogOpen) return;
     final snapshot = _gameSocket.snapshot;
     final ownSeat = snapshot?.seats
         .where((seat) => seat.userId == widget.session.user.userId)
@@ -735,7 +684,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
       ).showSnackBar(const SnackBar(content: Text('当前牌桌筹码已达到最大带入')));
       return;
     }
-    _rebuyDialogOpen = true;
+    _automation.rebuyDialogOpen = true;
     try {
       final bankroll = await widget.loadBankroll();
       if (!mounted) return;
@@ -761,7 +710,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
         ).showSnackBar(const SnackBar(content: Text('读取钱包失败，请稍后重试')));
       }
     } finally {
-      _rebuyDialogOpen = false;
+      _automation.rebuyDialogOpen = false;
     }
   }
 
