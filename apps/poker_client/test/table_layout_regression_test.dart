@@ -278,8 +278,11 @@ void main() {
             greaterThan(0.3),
             reason: '$seatCount 人时第 $index 个座位过于靠近牌桌中心，可能压住公共牌',
           );
-          expect(alignment.x.abs(), lessThanOrEqualTo(1.0));
-          expect(alignment.y.abs(), lessThanOrEqualTo(1.0));
+          // alignment 现在会超过 1：玩家框有意伸出桌沿，只有 1/3 留在桌内。
+          // 「不压住公共牌区」由 table_viewport_layout_test.dart 里按真实
+          // seatRect 逐个校验，这里只做一个不至于离谱的上界。
+          expect(alignment.x.abs(), lessThanOrEqualTo(2.0));
+          expect(alignment.y.abs(), lessThanOrEqualTo(2.0));
         }
       }
     });

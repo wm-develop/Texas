@@ -10,6 +10,10 @@ class TableViewportLayout {
     required this.tableRect,
     required this.supportsSideChat,
     required this.isCompactLandscape,
+    required this.seatVerticalAlignment,
+    required this.seatHorizontalAlignment,
+    required this.boardHorizontalInset,
+    required this.boardVerticalInset,
   });
 
   static const double designHeight = 720;
@@ -29,44 +33,84 @@ class TableViewportLayout {
   final Rect tableRect;
   final bool supportsSideChat;
   final bool isCompactLandscape;
+  final double seatVerticalAlignment;
+  final double seatHorizontalAlignment;
+  final double boardHorizontalInset;
+  final double boardVerticalInset;
 
-  /// Keeps the top and bottom seats close to the outer table edge. Compact
-  /// layouts no longer reserve a separate local-hand panel below the table.
-  double get seatVerticalRadius => isCompactLandscape ? 0.80 : 0.88;
-  double get seatHorizontalRadius => isCompactLandscape ? 0.76 : 0.94;
+  /// 玩家框尺寸。与 [TableSeatCard] 保持一致；布局据此推算落位与公共牌区内缩。
+  static const Size seatCardSize = Size(216, 116);
 
-  /// Places compact seats around a rounded-rectangle perimeter instead of an
-  /// ellipse. This keeps every enlarged player card outside [boardRect] for
-  /// all supported table sizes (2-10 players).
+  /// 玩家框落在牌桌内的比例，其余落在桌外空白区。
+  ///
+  /// 取 1/3 是为了把桌面让给本轮下注筹码和公共牌：玩家框原本整个压在桌内，
+  /// 桌内被占的面积远大于桌外空白，中间反而局促。
+  static const double seatInsideFraction = 1 / 3;
+
+  /// 玩家框需要伸出牌桌边缘的长度。
+  static double get _verticalOverhang =>
+      seatCardSize.height * (1 - seatInsideFraction);
+
+  static double get _horizontalOverhang =>
+      seatCardSize.width * (1 - seatInsideFraction);
+
+  /// 把「期望伸出多少」换算成 [Align] 需要的 alignment。
+  ///
+  /// [Align] 的语义不是「圆心落在半径处」，而是把子件放进
+  /// `extent - card` 的空隙里：`childStart = (1 + a) / 2 * slack`。
+  /// 两者差一个 `card`，直接按半径写常量会让框比预期更靠近中心。
+  static double _edgeAlignment(double extent, double card, double overhang) {
+    final slack = extent - card;
+    if (slack <= 0) return 1;
+    return (extent + overhang - card) / slack * 2 - 1;
+  }
+
+  /// 座位在牌桌坐标系中的实际矩形。
+  ///
+  /// 布局与测试共用这一处换算：此前测试自己按「圆心 × 半宽」另算了一份，
+  /// 与 [Align] 的真实语义不符，导致侧边座位实际压住公共牌区却仍然通过。
+  Rect seatRect(int relativeIndex, int seatCount) {
+    final alignment = seatAlignment(relativeIndex, seatCount);
+    final horizontalSlack = tableRect.width - seatCardSize.width;
+    final verticalSlack = tableRect.height - seatCardSize.height;
+    return Rect.fromLTWH(
+      tableRect.left + (1 + alignment.x) / 2 * horizontalSlack,
+      tableRect.top + (1 + alignment.y) / 2 * verticalSlack,
+      seatCardSize.width,
+      seatCardSize.height,
+    );
+  }
+
+  /// 座位沿牌桌的圆角矩形周边分布，而不是沿椭圆分布。
+  ///
+  /// 椭圆分布会把斜角座位（例如 3 人桌的第 2 个座位）放在靠近中心的位置，
+  /// 从而压住公共牌区；周边分布把它们推到最近的一条边上。两种布局族共用
+  /// 这一套映射，桌面端此前用椭圆，正是它产生了遮挡。
   Alignment seatAlignment(int relativeIndex, int seatCount) {
     final angle = math.pi / 2 + (math.pi * 2 * relativeIndex / seatCount);
     final x = math.cos(angle);
     final y = math.sin(angle);
-    if (!isCompactLandscape) {
-      return Alignment(x * seatHorizontalRadius, y * seatVerticalRadius);
-    }
-
-    const topRowHorizontalRadius = 0.46;
-    const sideColumnVerticalRadius = 0.48;
+    final topRowHorizontalReach = seatHorizontalAlignment * 0.6;
+    final sideColumnVerticalReach = seatVerticalAlignment * 0.6;
     if (y.abs() >= x.abs()) {
       return Alignment(
-        y == 0 ? 0 : x / y.abs() * topRowHorizontalRadius,
-        y.isNegative ? -seatVerticalRadius : seatVerticalRadius,
+        y == 0 ? 0 : x / y.abs() * topRowHorizontalReach,
+        y.isNegative ? -seatVerticalAlignment : seatVerticalAlignment,
       );
     }
     return Alignment(
-      x.isNegative ? -seatHorizontalRadius : seatHorizontalRadius,
-      x == 0 ? 0 : y / x.abs() * sideColumnVerticalRadius,
+      x.isNegative ? -seatHorizontalAlignment : seatHorizontalAlignment,
+      x == 0 ? 0 : y / x.abs() * sideColumnVerticalReach,
     );
   }
 
-  /// The board owns this top-most center region. It is inset far enough that
-  /// even enlarged top/bottom seat cards do not intersect it.
+  /// 公共牌与底池独占的中央区域。内缩量由玩家框留在桌内的部分推算，
+  /// 玩家框越靠外，这块区域越大。
   Rect get boardRect => Rect.fromLTRB(
-    tableRect.left + 240,
-    tableRect.top + 128,
-    tableRect.right - 240,
-    tableRect.bottom - 128,
+    tableRect.left + boardHorizontalInset,
+    tableRect.top + boardVerticalInset,
+    tableRect.right - boardHorizontalInset,
+    tableRect.bottom - boardVerticalInset,
   );
 
   /// [compactOverride] pins the phone/tablet layout family regardless of the
@@ -108,10 +152,10 @@ class TableViewportLayout {
         : canvasSize.width < 1160
         ? 64.0
         : 104.0;
-    final top = isCompactLandscape ? 8.0 : 62.0;
-    // 紧凑布局的动作区移到右栏后，底部只需留出本轮下注筹码的呼吸空间。
-    // 下注区移出底部后，两种布局都只需为本轮下注筹码留出呼吸空间。
-    final bottom = isCompactLandscape ? 24.0 : 44.0;
+    // 上下各让出玩家框伸到桌外的那一段，让它真正落在空白区而不是压在桌面上。
+    final verticalMargin = _verticalOverhang + 8;
+    final top = verticalMargin;
+    final bottom = verticalMargin;
     final tableHeight = canvasHeight - top - bottom;
     final availableTableWidth = math.max(
       1.0,
@@ -129,11 +173,35 @@ class TableViewportLayout {
       tableHeight,
     );
 
+    // 横向能伸出多少取决于牌桌两侧的空余：左右栏紧贴牌桌时不能再外扩，
+    // 否则玩家框会压住聊天面板或下注区。没有空余时取 alignment 1，
+    // 也就是紧贴桌沿的内侧，这仍比原先的 0.76/0.94 更靠外。
+    final horizontalOverhang = math.min(
+      _horizontalOverhang,
+      math.max(0.0, unusedWidth / 2 - 8),
+    );
+    final seatHorizontalAlignment = _edgeAlignment(
+      tableWidth,
+      seatCardSize.width,
+      horizontalOverhang,
+    );
+    final seatVerticalAlignment = _edgeAlignment(
+      tableHeight,
+      seatCardSize.height,
+      _verticalOverhang,
+    );
+
     return TableViewportLayout._(
       canvasSize: canvasSize,
       tableRect: tableRect,
       supportsSideChat: supportsSideChat,
       isCompactLandscape: isCompactLandscape,
+      seatVerticalAlignment: seatVerticalAlignment,
+      seatHorizontalAlignment: seatHorizontalAlignment,
+      // 公共牌区退到玩家框留在桌内的那部分之外，再留一点呼吸空间。
+      boardHorizontalInset: seatCardSize.width - horizontalOverhang + 24,
+      boardVerticalInset:
+          seatCardSize.height - _verticalOverhang + 24,
     );
   }
 }

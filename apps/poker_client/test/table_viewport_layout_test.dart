@@ -3,21 +3,42 @@ import 'dart:ui';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:poker_client/features/table/presentation/table_viewport_layout.dart';
 
+/// 两种布局族的代表性画布。座位几何必须在两者上都成立。
+final _layouts = <String, TableViewportLayout>{
+  '桌面 1280x720 聊天收起': TableViewportLayout.fromSize(
+    const Size(1280, 720),
+    chatVisible: false,
+  ),
+  '桌面 2000x900 聊天停靠': TableViewportLayout.fromSize(
+    const Size(2000, 900),
+    chatVisible: true,
+  ),
+  '桌面 1600x720 聊天收起': TableViewportLayout.fromSize(
+    const Size(1600, 720),
+    chatVisible: false,
+  ),
+  '手机 920x420': TableViewportLayout.fromSize(
+    const Size(920, 420),
+    chatVisible: true,
+  ),
+  '手机 2400x1080': TableViewportLayout.fromSize(
+    const Size(2400, 1080),
+    chatVisible: true,
+    compactOverride: true,
+  ),
+};
+
 void main() {
-  test('preserves the existing 16:9 desktop composition', () {
+  test('preserves the desktop composition', () {
     final layout = TableViewportLayout.fromSize(
       const Size(1280, 720),
       chatVisible: true,
     );
 
     expect(layout.canvasSize, const Size(1280, 720));
-    // 1280 宽同时停靠聊天与下注区会把公共牌区挤到 288（< 5 张牌的 330），
+    // 1280 宽同时停靠聊天与下注区会把公共牌区挤得放不下 5 张公共牌，
     // 因此这个宽度下聊天改为弹窗，牌桌拿回宽度。
     expect(layout.supportsSideChat, isFalse);
-    expect(layout.seatVerticalRadius, 0.88);
-    expect(layout.seatHorizontalRadius, 0.94);
-    // 下注区移出底部，牌桌纵向从 526 增至 614
-    expect(layout.tableRect, const Rect.fromLTWH(104, 62, 944, 614));
     expect(layout.boardRect.width, greaterThan(5 * 66));
   });
 
@@ -32,7 +53,6 @@ void main() {
       closeTo(const Size(2400, 1080).aspectRatio, 0.001),
     );
     expect(layout.tableRect.width, TableViewportLayout.maxTableWidth);
-    expect(layout.tableRect.height, 614);
   });
 
   test('enlarges content on a logical-size landscape phone', () {
@@ -42,8 +62,6 @@ void main() {
     );
 
     expect(layout.isCompactLandscape, isTrue);
-    expect(layout.seatVerticalRadius, 0.80);
-    expect(layout.seatHorizontalRadius, 0.76);
     expect(layout.canvasSize.height, TableViewportLayout.compactDesignHeight);
     expect(layout.supportsSideChat, isFalse);
     expect(
@@ -55,53 +73,7 @@ void main() {
         0.001,
       ),
     );
-    // 下注区从底部移到右栏后，牌桌纵向多出约 10%：620 - 8 - 24
-    expect(layout.tableRect.height, 588);
-    expect(layout.tableRect.top, 8);
-    expect(layout.boardRect.top, layout.tableRect.top + 128);
-    expect(layout.boardRect.bottom, layout.tableRect.bottom - 128);
-    // 右栏加宽让公共牌区横向收窄，但仍远大于 5 张公共牌所需宽度
-    // （5 × 66 = 330），而纵向反而多出 56；侧边座位内缘决定了它不能再宽。
     expect(layout.boardRect.width, greaterThan(5 * 66));
-    expect(layout.boardRect.height, greaterThan(300));
-
-    // Enlarged 216x116 player cards remain outside the board's protected
-    // center region, including the top and local-player bottom positions.
-    final topSeatCenter =
-        layout.tableRect.center.dy -
-        layout.tableRect.height * layout.seatVerticalRadius / 2;
-    final bottomSeatCenter =
-        layout.tableRect.center.dy +
-        layout.tableRect.height * layout.seatVerticalRadius / 2;
-    expect(topSeatCenter + 58, lessThan(layout.boardRect.top));
-    expect(bottomSeatCenter - 58, greaterThan(layout.boardRect.bottom));
-
-    // Side seats stay clear of the compact information rail.
-    final leftSeatCenter =
-        layout.tableRect.center.dx -
-        layout.tableRect.width * layout.seatHorizontalRadius / 2;
-    expect(leftSeatCenter - 108, greaterThan(layout.tableRect.left));
-
-    for (var playerCount = 2; playerCount <= 10; playerCount++) {
-      for (var index = 0; index < playerCount; index++) {
-        final alignment = layout.seatAlignment(index, playerCount);
-        final center = Offset(
-          layout.tableRect.center.dx + alignment.x * layout.tableRect.width / 2,
-          layout.tableRect.center.dy +
-              alignment.y * layout.tableRect.height / 2,
-        );
-        final seatRect = Rect.fromCenter(
-          center: center,
-          width: 216,
-          height: 116,
-        );
-        expect(
-          seatRect.overlaps(layout.boardRect),
-          isFalse,
-          reason: '$playerCount 人牌桌的第 ${index + 1} 个座位遮挡公共牌区',
-        );
-      }
-    }
   });
 
   test('聊天收起时牌桌在下注区左侧的空间内居中', () {
@@ -144,8 +116,6 @@ void main() {
   });
 
   test('compactOverride 固定布局族，键盘压缩高度不会切换布局', () {
-    // 平板横屏被键盘压缩到 520 以下时，高度启发式会误判为紧凑布局；
-    // 设备级 override 必须保持普通布局不变。
     final tabletWithKeyboard = TableViewportLayout.fromSize(
       const Size(1280, 480),
       chatVisible: true,
@@ -153,21 +123,14 @@ void main() {
     );
     expect(tabletWithKeyboard.isCompactLandscape, isFalse);
 
-    // 手机即使窗口高度暂时变大，也保持紧凑布局。
     final phoneOverride = TableViewportLayout.fromSize(
       const Size(920, 700),
       chatVisible: true,
       compactOverride: true,
     );
     expect(phoneOverride.isCompactLandscape, isTrue);
-
-    // 不传 override 时保留原有高度启发式。
-    final heuristic = TableViewportLayout.fromSize(
-      const Size(920, 420),
-      chatVisible: true,
-    );
-    expect(heuristic.isCompactLandscape, isTrue);
   });
+
   group('紧凑判定使用短边而不是宽高比', () {
     test('被拖矮的桌面窗口不会翻成手机布局', () {
       // 1400x620 宽高比 2.26，比多数手机还宽，但短边 620 不是手机
@@ -186,13 +149,109 @@ void main() {
       expect(layout.isCompactLandscape, isTrue);
     });
 
-    test('compactOverride 仍然优先，键盘不能翻转布局', () {
+    test('compactOverride 仍然优先', () {
       final pinned = TableViewportLayout.fromSize(
         const Size(1400, 620),
         chatVisible: false,
         compactOverride: true,
       );
       expect(pinned.isCompactLandscape, isTrue);
+    });
+  });
+
+  group('座位落位', () {
+    // 这是本文件最重要的一组断言。此前测试自己按「圆心 × 半宽」另算了一份座位
+    // 位置，与 Align 的真实语义（按 extent - card 的空隙插值）不符，结果侧边
+    // 座位实际压住公共牌区 60 余像素却依然通过。现在改为直接使用布局自己
+    // 提供的 seatRect，实现与断言不可能再各算各的。
+    for (final entry in _layouts.entries) {
+      test('${entry.key}：2～10 人座位都不遮挡公共牌区', () {
+        final layout = entry.value;
+        for (var seatCount = 2; seatCount <= 10; seatCount++) {
+          for (var index = 0; index < seatCount; index++) {
+            final seat = layout.seatRect(index, seatCount);
+            expect(
+              seat.overlaps(layout.boardRect),
+              isFalse,
+              reason:
+                  '$seatCount 人牌桌第 ${index + 1} 个座位 $seat '
+                  '压住公共牌区 ${layout.boardRect}',
+            );
+          }
+        }
+      });
+
+      test('${entry.key}：座位不超出画布', () {
+        final layout = entry.value;
+        final canvas = Offset.zero & layout.canvasSize;
+        for (var seatCount = 2; seatCount <= 10; seatCount++) {
+          for (var index = 0; index < seatCount; index++) {
+            final seat = layout.seatRect(index, seatCount);
+            expect(
+              canvas.contains(seat.topLeft) &&
+                  canvas.contains(seat.bottomRight - const Offset(1, 1)),
+              isTrue,
+              reason: '$seatCount 人牌桌第 ${index + 1} 个座位 $seat 被画布裁切',
+            );
+          }
+        }
+      });
+    }
+
+    test('顶部与底部玩家框约 1/3 落在桌内、2/3 落在桌外', () {
+      final expected =
+          TableViewportLayout.seatCardSize.height *
+          TableViewportLayout.seatInsideFraction;
+      for (final entry in _layouts.entries) {
+        final layout = entry.value;
+        // 座位 0 恒为本人，落在正下方；两人桌的座位 1 落在正上方。
+        final bottom = layout.seatRect(0, 2);
+        final top = layout.seatRect(1, 2);
+        expect(
+          layout.tableRect.bottom - bottom.top,
+          closeTo(expected, 1),
+          reason: '${entry.key}：底部玩家框落在桌内的比例不对',
+        );
+        expect(
+          top.bottom - layout.tableRect.top,
+          closeTo(expected, 1),
+          reason: '${entry.key}：顶部玩家框落在桌内的比例不对',
+        );
+      }
+    });
+
+    test('左右栏贴住牌桌时侧边座位不外扩，避免压住聊天区与下注区', () {
+      // 1280 宽画布下牌桌吃满可用宽度，两侧没有余量。
+      final layout = TableViewportLayout.fromSize(
+        const Size(1280, 720),
+        chatVisible: false,
+      );
+      expect(
+        layout.tableRect.width,
+        lessThan(TableViewportLayout.maxTableWidth),
+      );
+
+      final side = layout.seatRect(1, 4);
+      expect(
+        side.left,
+        greaterThanOrEqualTo(layout.tableRect.left - 0.001),
+        reason: '没有余量时侧边座位只能贴到桌沿内侧，不能伸进左右栏',
+      );
+    });
+
+    test('画布够宽、牌桌被上限限住时侧边座位才向外让出空间', () {
+      final layout = TableViewportLayout.fromSize(
+        const Size(2400, 900),
+        chatVisible: false,
+      );
+      expect(layout.tableRect.width, TableViewportLayout.maxTableWidth);
+
+      final side = layout.seatRect(1, 4);
+      expect(
+        side.left,
+        lessThan(layout.tableRect.left),
+        reason: '有余量时侧边座位应当伸出桌沿，把桌面让给公共牌区',
+      );
     });
   });
 }
