@@ -6,6 +6,7 @@ import 'package:poker_client/features/table/presentation/table_seat_widgets.dart
 import 'package:poker_client/features/table/presentation/table_card_widgets.dart';
 import 'package:poker_client/features/table/presentation/table_board_center.dart';
 import 'package:poker_client/features/table/presentation/table_deal_controller.dart';
+import 'package:poker_client/features/table/presentation/table_viewport_layout.dart';
 
 /// 牌桌画布：按响应式布局摆放座位，并把公共牌区域嵌入桌面中央。
 
@@ -54,11 +55,13 @@ class TableCanvas extends StatelessWidget {
     return Stack(
       clipBehavior: Clip.none,
       children: [
+        // 毛毡的内缩必须与 TableViewportLayout.feltInsets 一致：座位落位与
+        // 公共牌区都以桌沿为基准，两处各写一份就会重演「玩家框整个落在桌外」。
         Positioned.fill(
-          left: 70,
-          right: 70,
-          top: 54,
-          bottom: 54,
+          left: TableViewportLayout.feltInsets.left,
+          right: TableViewportLayout.feltInsets.right,
+          top: TableViewportLayout.feltInsets.top,
+          bottom: TableViewportLayout.feltInsets.bottom,
           child: DecoratedBox(
             decoration: BoxDecoration(
               color: const Color(0xFF126344),

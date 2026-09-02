@@ -308,6 +308,7 @@ class TableSnapshot {
     required this.phase,
     required this.handId,
     required this.dealerSeat,
+    this.smallBlindSeat = 0,
     required this.board,
     required this.holeCards,
     required this.seats,
@@ -334,6 +335,9 @@ class TableSnapshot {
   final String phase;
   final String handId;
   final int dealerSeat;
+
+  /// 小盲座位号。发牌顺序从这里开始。
+  final int smallBlindSeat;
   final List<String> board;
   final List<String> holeCards;
   final List<TableSeatSnapshot> seats;
@@ -363,6 +367,7 @@ class TableSnapshot {
     phase: json['phase'] as String,
     handId: json['handId'] as String? ?? '',
     dealerSeat: json['dealerSeat'] as int? ?? 0,
+    smallBlindSeat: json['smallBlindSeat'] as int? ?? 0,
     board: (json['board'] as List<dynamic>? ?? const []).cast<String>(),
     holeCards: (json['holeCards'] as List<dynamic>? ?? const []).cast<String>(),
     seats: (json['seats'] as List<dynamic>? ?? const [])

@@ -45,6 +45,18 @@ class TableViewportLayout {
   /// 玩家框尺寸。与 [TableSeatCard] 保持一致；布局据此推算落位与公共牌区内缩。
   static const Size seatCardSize = Size(216, 116);
 
+  /// 可见桌面（毛毡）相对 [tableRect] 的内缩。TableCanvas 按同一组数值绘制，
+  /// 座位落位与公共牌区都以 [feltRect] 为基准——玩家看到的桌沿是它，不是
+  /// [tableRect]。这两者相差 54/70，早先按 tableRect 计算落位，结果玩家框
+  /// 整个落在桌外还差 15 像素才碰到桌沿。
+  static const EdgeInsets feltInsets = EdgeInsets.symmetric(
+    horizontal: 70,
+    vertical: 54,
+  );
+
+  /// 玩家看到的桌面矩形。
+  Rect get feltRect => feltInsets.deflateRect(tableRect);
+
   /// 玩家框落在牌桌内的比例，其余落在桌外空白区。
   ///
   /// 取 1/3 是为了把桌面让给本轮下注筹码和公共牌：玩家框原本整个压在桌内，
@@ -93,10 +105,10 @@ class TableViewportLayout {
     final offsetX = seatHorizontalOverhang - seatCardSize.width / 2;
     final offsetY = seatVerticalOverhang - seatCardSize.height / 2;
     return Rect.fromLTRB(
-      tableRect.left - offsetX,
-      tableRect.top - offsetY,
-      tableRect.right + offsetX,
-      tableRect.bottom + offsetY,
+      feltRect.left - offsetX,
+      feltRect.top - offsetY,
+      feltRect.right + offsetX,
+      feltRect.bottom + offsetY,
     );
   }
 
@@ -150,10 +162,10 @@ class TableViewportLayout {
   /// 公共牌与底池独占的中央区域。内缩量由玩家框留在桌内的部分推算，
   /// 玩家框越靠外，这块区域越大。
   Rect get boardRect => Rect.fromLTRB(
-    tableRect.left + boardHorizontalInset,
-    tableRect.top + boardVerticalInset,
-    tableRect.right - boardHorizontalInset,
-    tableRect.bottom - boardVerticalInset,
+    feltRect.left + boardHorizontalInset,
+    feltRect.top + boardVerticalInset,
+    feltRect.right - boardHorizontalInset,
+    feltRect.bottom - boardVerticalInset,
   );
 
   /// [compactOverride] pins the phone/tablet layout family regardless of the
@@ -195,8 +207,12 @@ class TableViewportLayout {
         : canvasSize.width < 1160
         ? 64.0
         : 104.0;
-    // 上下各让出玩家框伸到桌外的那一段，让它真正落在空白区而不是压在桌面上。
-    final verticalMargin = _verticalOverhang + 8;
+    // 上下各让出玩家框伸到桌外的那一段。桌沿本身已经比 tableRect 内缩了
+    // feltInsets.top，因此这里只需补足差额。
+    final verticalMargin = math.max(
+      8.0,
+      _verticalOverhang - feltInsets.top + 8,
+    );
     final top = verticalMargin;
     final bottom = verticalMargin;
     final tableHeight = canvasHeight - top - bottom;
@@ -219,9 +235,23 @@ class TableViewportLayout {
     // 横向能伸出多少取决于牌桌两侧的空余：左右栏紧贴牌桌时不能再外扩，
     // 否则玩家框会压住聊天面板或下注区。没有空余时取 alignment 1，
     // 也就是紧贴桌沿的内侧，这仍比原先的 0.76/0.94 更靠外。
+    // 横向外扩的真正约束是左右两栏的内缘，不是 tableRect 的边界：
+    // 左栏放信息或聊天面板，右栏放下注区，玩家框不能压到它们上面。
+    final feltLeft = tableRect.left + feltInsets.left;
+    final feltRight = tableRect.right - feltInsets.right;
+    final leftLimit = isCompactLandscape
+        ? compactLeftRailWidth
+        : reserveChat
+        ? 256.0
+        : 8.0;
+    final railInnerEdge =
+        canvasSize.width - (isCompactLandscape ? 208.0 : 216.0);
     final horizontalOverhang = math.min(
       _horizontalOverhang,
-      math.max(0.0, unusedWidth / 2 - 8),
+      math.max(
+        0.0,
+        math.min(feltLeft - leftLimit, railInnerEdge - 8 - feltRight),
+      ),
     );
     final seatHorizontalAlignment = _edgeAlignment(
       tableWidth,

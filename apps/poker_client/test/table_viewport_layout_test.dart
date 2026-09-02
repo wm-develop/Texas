@@ -28,6 +28,10 @@ final _layouts = <String, TableViewportLayout>{
   ),
 };
 
+/// supportsSideChat 只表示画布放得下聊天栏，不代表它已经展开；
+/// 只有真正停靠时左栏才被占用。
+const _chatDocked = {'桌面 2000x900 聊天停靠'};
+
 void main() {
   test('preserves the desktop composition', () {
     final layout = TableViewportLayout.fromSize(
@@ -222,6 +226,8 @@ void main() {
     }
 
     test('顶部与底部玩家框约 1/3 落在桌内、2/3 落在桌外', () {
+      // 基准必须是玩家看得见的桌沿 feltRect，不是更大的 tableRect：
+      // 两者相差 54 像素，按 tableRect 计算会让玩家框整个落在桌外。
       final expected =
           TableViewportLayout.seatCardSize.height *
           TableViewportLayout.seatInsideFraction;
@@ -231,35 +237,58 @@ void main() {
         final bottom = layout.seatRect(0, 2);
         final top = layout.seatRect(1, 2);
         expect(
-          layout.tableRect.bottom - bottom.top,
+          layout.feltRect.bottom - bottom.top,
           closeTo(expected, 1),
           reason: '${entry.key}：底部玩家框落在桌内的比例不对',
         );
         expect(
-          top.bottom - layout.tableRect.top,
+          top.bottom - layout.feltRect.top,
           closeTo(expected, 1),
           reason: '${entry.key}：顶部玩家框落在桌内的比例不对',
+        );
+        expect(
+          bottom.top,
+          lessThan(layout.feltRect.bottom),
+          reason: '${entry.key}：底部玩家框必须真的压在桌沿上，不能整个悬在桌外',
         );
       }
     });
 
-    test('左右栏贴住牌桌时侧边座位不外扩，避免压住聊天区与下注区', () {
-      // 1280 宽画布下牌桌吃满可用宽度，两侧没有余量。
-      final layout = TableViewportLayout.fromSize(
-        const Size(1280, 720),
-        chatVisible: false,
-      );
-      expect(
-        layout.tableRect.width,
-        lessThan(TableViewportLayout.maxTableWidth),
-      );
-
-      final side = layout.seatRect(1, 4);
-      expect(
-        side.left,
-        greaterThanOrEqualTo(layout.tableRect.left - 0.001),
-        reason: '没有余量时侧边座位只能贴到桌沿内侧，不能伸进左右栏',
-      );
+    test('座位不侵入左右两栏', () {
+      // 左栏放房间信息或聊天面板，右栏放下注区。玩家框可以伸出桌沿，
+      // 但绝不能压到这两栏上面，否则会挡住聊天或让人点不到下注按钮。
+      for (final entry in _layouts.entries) {
+        final layout = entry.value;
+        final compact = layout.isCompactLandscape;
+        final betRail = Rect.fromLTRB(
+          layout.canvasSize.width - (compact ? 208 : 216),
+          0,
+          layout.canvasSize.width,
+          layout.canvasSize.height,
+        );
+        final leftRail = compact
+            ? Rect.fromLTRB(0, 0, 160, layout.canvasSize.height)
+            : _chatDocked.contains(entry.key)
+            ? const Rect.fromLTRB(18, 116, 248, 10000)
+            : Rect.zero;
+        for (var seatCount = 2; seatCount <= 10; seatCount++) {
+          for (var index = 0; index < seatCount; index++) {
+            final seat = layout.seatRect(index, seatCount);
+            expect(
+              seat.overlaps(betRail),
+              isFalse,
+              reason: '${entry.key}：$seatCount 人第 ${index + 1} 个座位压住下注区',
+            );
+            if (leftRail != Rect.zero) {
+              expect(
+                seat.overlaps(leftRail),
+                isFalse,
+                reason: '${entry.key}：$seatCount 人第 ${index + 1} 个座位压住左栏',
+              );
+            }
+          }
+        }
+      }
     });
 
     test('画布够宽、牌桌被上限限住时侧边座位才向外让出空间', () {

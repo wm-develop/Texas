@@ -27,8 +27,10 @@ class TableDealController extends ChangeNotifier {
   /// 本次发牌之前已经翻开的公共牌张数，它们保持正面不变。
   int _boardFaceUp = 0;
 
-  /// 本次发牌涉及的玩家数，用于把发牌顺序映射到座位。
-  int _playerCount = 0;
+  /// 本次发牌的顺序（小盲在前）。在演出开始时固定下来：牌局进行中加入的
+  /// 玩家是「待入座」观战者，不参与本手，因此不在这个列表里，也就不会有
+  /// 发牌动画；即使他在演出途中加入，顺序也不会被打乱。
+  List<String> _dealOrder = const [];
 
   bool _seenSnapshot = false;
   String _lastHandId = '';
@@ -90,13 +92,43 @@ class TableDealController extends ChangeNotifier {
   ///
   /// 一张一张轮流发：第一轮每人一张，第二轮再一张。
   int cardsDealtToPlayer(int orderIndex) {
-    if (_kind != DealKind.holeCards || _playerCount <= 0) return 2;
+    final players = _dealOrder.length;
+    if (_kind != DealKind.holeCards || players <= 0 || orderIndex < 0) {
+      return 2;
+    }
     final placed = holeCardsPlaced;
     var cards = 0;
     for (var round = 0; round < 2; round++) {
-      if (placed > round * _playerCount + orderIndex) cards++;
+      if (placed > round * players + orderIndex) cards++;
     }
     return cards;
+  }
+
+  /// 某位玩家此刻已经拿到几张牌。
+  ///
+  /// 不在本手发牌顺序里的人（牌局进行中加入的观战者）恒为 0：不该给他发牌，
+  /// 也不该在他的玩家框里闪出牌背。
+  int cardsDealtToUser(String userId) {
+    if (_kind != DealKind.holeCards) return 2;
+    final index = _dealOrder.indexOf(userId);
+    if (index < 0) return 0;
+    return cardsDealtToPlayer(index);
+  }
+
+  /// 按小盲起始的发牌顺序排列本手的参与者。
+  static List<String> dealOrderFor(TableSnapshot snapshot) {
+    final players =
+        snapshot.seats.where((seat) => seat.participating).toList()
+          ..sort((left, right) => left.seat.compareTo(right.seat));
+    if (players.isEmpty) return const [];
+    var start = players.indexWhere(
+      (seat) => seat.seat == snapshot.smallBlindSeat,
+    );
+    if (start < 0) start = 0;
+    return [
+      for (var offset = 0; offset < players.length; offset++)
+        players[(start + offset) % players.length].userId,
+    ];
   }
 
   /// 处理一份新快照。返回是否因此开始了一段新的演出。
@@ -114,15 +146,13 @@ class TableDealController extends ChangeNotifier {
 
     var started = false;
     if (handId.isNotEmpty && handId != _lastHandId) {
-      final players = snapshot.seats
-          .where((seat) => seat.participating)
-          .length;
       // 新的一手：发底牌。此时公共牌一定是空的。
+      final order = dealOrderFor(snapshot);
       _start(
-        DealAnimation.holeCards(playerCount: players),
+        DealAnimation.holeCards(playerCount: order.length),
         DealKind.holeCards,
         faceUp: 0,
-        playerCount: players,
+        dealOrder: order,
       );
       started = true;
     } else if (handId == _lastHandId && boardCount > _lastBoardCount) {
@@ -137,7 +167,7 @@ class TableDealController extends ChangeNotifier {
           DealAnimation.board(newCards: dealt),
           DealKind.board,
           faceUp: _lastBoardCount,
-          playerCount: 0,
+          dealOrder: const [],
         );
         started = true;
       } else {
@@ -155,13 +185,13 @@ class TableDealController extends ChangeNotifier {
     DealAnimation animation,
     DealKind kind, {
     required int faceUp,
-    required int playerCount,
+    required List<String> dealOrder,
   }) {
     _ticker?.cancel();
     _animation = animation;
     _kind = kind;
     _boardFaceUp = faceUp;
-    _playerCount = playerCount;
+    _dealOrder = dealOrder;
     _startedAt = _now();
     _ticker = Timer.periodic(const Duration(milliseconds: 16), (_) {
       if (animation.isComplete(_elapsed)) {

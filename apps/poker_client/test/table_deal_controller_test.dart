@@ -6,6 +6,8 @@ TableSnapshot _snapshot({
   String handId = 'hand_1',
   List<String> board = const [],
   int players = 2,
+  int smallBlindSeat = 1,
+  List<String> spectators = const [],
 }) => TableSnapshot.fromJson({
   'roomId': 'room_1',
   'roomCode': '123456',
@@ -13,6 +15,7 @@ TableSnapshot _snapshot({
   'phase': board.isEmpty ? 'PREFLOP' : 'FLOP',
   'handId': handId,
   'board': board,
+  'smallBlindSeat': smallBlindSeat,
   'seats': [
     for (var index = 0; index < players; index++)
       {
@@ -32,6 +35,26 @@ TableSnapshot _snapshot({
         'lastCommitted': 0,
         'lastActionTo': 0,
         'timeExtensions': 2,
+      },
+    // 牌局进行中加入的玩家：待入座观战，不参与本手
+    for (var index = 0; index < spectators.length; index++)
+      {
+        'userId': spectators[index],
+        'displayName': spectators[index],
+        'seat': 90 + index,
+        'stack': 1000,
+        'ready': false,
+        'connected': true,
+        'participating': false,
+        'folded': false,
+        'allIn': false,
+        'streetBet': 0,
+        'totalBet': 0,
+        'position': '',
+        'lastAction': '',
+        'lastCommitted': 0,
+        'lastActionTo': 0,
+        'timeExtensions': 0,
       },
   ],
 });
@@ -145,6 +168,44 @@ void main() {
     clock.advance(const Duration(milliseconds: 2200));
     controller.debugSettle();
     expect(controller.isAnimating, isFalse);
+    controller.dispose();
+  });
+  test('发牌顺序从小盲开始，中途加入的观战者不发牌', () {
+    final clock = _Clock();
+    final controller = TableDealController(now: clock.now);
+    controller.observe(_snapshot(handId: 'hand_1', players: 3));
+    controller.observe(
+      _snapshot(handId: 'hand_2', players: 3, smallBlindSeat: 2),
+    );
+
+    // 座位 2 是小盲，发牌从它开始
+    expect(controller.cardsDealtToUser('user_1'), 1);
+    expect(controller.cardsDealtToUser('user_2'), 0);
+    expect(controller.cardsDealtToUser('user_0'), 0);
+    clock.advance(const Duration(milliseconds: 250));
+    expect(controller.cardsDealtToUser('user_2'), 1);
+  });
+
+  test('发牌途中加入的玩家不会闪出牌背', () {
+    final clock = _Clock();
+    final controller = TableDealController(now: clock.now);
+    controller.observe(_snapshot(handId: 'hand_1'));
+    controller.observe(_snapshot(handId: 'hand_2'));
+    expect(controller.cardsDealtToUser('user_0'), 1);
+
+    // 演出进行到一半时有人加入，成为待入座观战者
+    controller.observe(
+      _snapshot(handId: 'hand_2', spectators: const ['latecomer']),
+    );
+    expect(
+      controller.cardsDealtToUser('latecomer'),
+      0,
+      reason: '不参与本手的人不该出现发牌动画',
+    );
+    // 原有玩家的发牌顺序不受影响
+    clock.advance(const Duration(milliseconds: 700));
+    expect(controller.cardsDealtToUser('user_0'), 2);
+    expect(controller.cardsDealtToUser('user_1'), 2);
     controller.dispose();
   });
 }
