@@ -111,12 +111,32 @@ sudo chmod 600 /opt/texas/alert.env
 
 `TEXAS_ALERT_FORMAT` 对应：
 
+- `dingtalk`：钉钉群机器人，见下方逐步说明
 - `wecom`：企业微信群机器人，webhook 形如 `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...`
 - `feishu`：飞书自定义机器人（文本消息）
 - `bark`：Bark 推送到 iPhone，webhook 形如 `https://api.day.app/<key>`
-- `generic`：`{"text": "..."}`，适用于 Server酱、钉钉（需在机器人安全设置里加关键词「好友德州」）及自建接收端
+- `generic`：`{"text": "..."}`，适用于 Server酱及自建接收端
+
+每条告警都以 `【好友德州】` 开头（可用 `TEXAS_ALERT_TAG` 改）。钉钉与企业微信机器人常用「自定义关键词」做安全校验，把关键词设为这个标签即可保证送达。
 
 webhook 地址等同于向你发消息的权限，`alert.env` 已被仓库卫生检查列为禁止提交。
+
+#### 钉钉群机器人逐步配置
+
+1. 在钉钉群里：群设置 → 机器人 → 添加机器人 → **自定义**（Webhook 接入）。
+2. 机器人名字随意，例如「好友德州告警」。
+3. **安全设置必须选一项**，选 **自定义关键词**，填 `好友德州`。不要选「加签」——它要求对每条消息做 HMAC 签名，本脚本不支持；也不要只选 IP 白名单，服务器公网 IP 变化会导致静默丢弃。
+4. 完成后复制 webhook，形如 `https://oapi.dingtalk.com/robot/send?access_token=xxxxxxxx`。
+5. 写入 `/opt/texas/alert.env`：
+
+   ```bash
+   TEXAS_ALERT_WEBHOOK=https://oapi.dingtalk.com/robot/send?access_token=xxxxxxxx
+   TEXAS_ALERT_FORMAT=dingtalk
+   ```
+
+6. 立刻验证：`sudo /opt/texas/bin/texas-alert.sh "测试" "通道正常"`，群里应在几秒内收到。
+
+常见失败：收不到但脚本显示「告警已发送」→ 多半是关键词不匹配被钉钉静默丢弃，用 `curl` 直接调用 webhook 时钉钉会返回 `{"errcode":310000,...}` 说明原因。钉钉限制每个机器人每分钟 20 条，巡检只在状态翻转时发送，不会触及该上限。
 
 ### 4.2 安装
 

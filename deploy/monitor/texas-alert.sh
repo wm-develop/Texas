@@ -23,19 +23,22 @@ if [[ -f "$CONFIG_FILE" ]]; then
 fi
 
 WEBHOOK="${TEXAS_ALERT_WEBHOOK:-}"
-FORMAT="${TEXAS_ALERT_FORMAT:-generic}"   # generic | wecom | feishu | bark
+FORMAT="${TEXAS_ALERT_FORMAT:-generic}"   # generic | wecom | dingtalk | feishu | bark
 HOSTNAME_LABEL="${TEXAS_ALERT_HOST:-$(hostname)}"
+# 每条消息固定带上该标签。钉钉/企业微信机器人常用「自定义关键词」做安全校验，
+# 不含关键词的消息会被静默丢弃；把关键词设为这个标签即可保证所有告警都能送达。
+TAG="${TEXAS_ALERT_TAG:-好友德州}"
 
 log() { logger -t texas-alert "$*" 2>/dev/null || true; printf '%s\n' "$*" >&2; }
 
 if [[ $# -eq 1 && "$1" == *.service ]]; then
     # 由 systemd OnFailure 调用：附带该单元最近的日志，便于不登录服务器也能定位
     UNIT="$1"
-    TITLE="[$HOSTNAME_LABEL] $UNIT 执行失败"
+    TITLE="【$TAG】[$HOSTNAME_LABEL] $UNIT 执行失败"
     BODY="$(journalctl -u "$UNIT" -n 25 --no-pager -o cat 2>/dev/null | tail -c 1800 || true)"
     [[ -z "$BODY" ]] && BODY="（无法读取 journal 日志）"
 else
-    TITLE="[$HOSTNAME_LABEL] ${1:-告警}"
+    TITLE="【$TAG】[$HOSTNAME_LABEL] ${1:-告警}"
     BODY="${2:-}"
 fi
 
@@ -56,7 +59,8 @@ json_escape() {
 ESCAPED="$(printf '%s' "$MESSAGE" | json_escape)"
 
 case "$FORMAT" in
-    wecom)   PAYLOAD="{\"msgtype\":\"text\",\"text\":{\"content\":$ESCAPED}}" ;;
+    # 企业微信与钉钉群机器人的文本消息结构完全相同
+    wecom|dingtalk) PAYLOAD="{\"msgtype\":\"text\",\"text\":{\"content\":$ESCAPED}}" ;;
     feishu)  PAYLOAD="{\"msg_type\":\"text\",\"content\":{\"text\":$ESCAPED}}" ;;
     bark)    PAYLOAD="{\"title\":$(printf '%s' "$TITLE" | json_escape),\"body\":$(printf '%s' "$BODY" | json_escape)}" ;;
     *)       PAYLOAD="{\"text\":$ESCAPED}" ;;

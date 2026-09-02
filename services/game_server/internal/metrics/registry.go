@@ -163,6 +163,11 @@ func (registry *Registry) Write(out io.Writer) {
 		for _, key := range keys {
 			fmt.Fprintf(out, "%s%s %d\n", counter.name, formatLabels(counter.labelNames, key), counter.series[key].Load())
 		}
+		// 无标签计数器在首次计数前也输出 0：告警规则里「不存在」与「为 0」
+		// 是两回事，rate()/increase() 对缺失序列不会产生任何值。
+		if len(counter.labelNames) == 0 && len(counter.series) == 0 {
+			fmt.Fprintf(out, "%s 0\n", counter.name)
+		}
 		counter.mu.Unlock()
 	}
 	for _, gauge := range gauges {

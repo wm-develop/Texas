@@ -42,6 +42,27 @@ func TestCounterGaugeAndFuncRenderInPrometheusTextFormat(t *testing.T) {
 	_ = tables
 }
 
+func TestUnlabeledCounterRendersZeroBeforeFirstIncrement(t *testing.T) {
+	registry := NewRegistry()
+	registry.NewCounter("texas_snapshot_broadcast_failures_total", "h")
+	labeled := registry.NewCounter("texas_rate_limited_total", "h", "scope")
+	var buffer bytes.Buffer
+	registry.Write(&buffer)
+	if !strings.Contains(buffer.String(), "texas_snapshot_broadcast_failures_total 0\n") {
+		t.Fatalf("unlabeled counter must render 0 so alert rules can see it:\n%s", buffer.String())
+	}
+	// 带标签的计数器无法预知标签值，首次计数前不输出数据行
+	if strings.Contains(buffer.String(), "texas_rate_limited_total 0") {
+		t.Fatal("labeled counter must not invent a series without labels")
+	}
+	labeled.Inc("auth_ip")
+	buffer.Reset()
+	registry.Write(&buffer)
+	if !strings.Contains(buffer.String(), `texas_rate_limited_total{scope="auth_ip"} 1`) {
+		t.Fatal("labeled series should appear after first increment")
+	}
+}
+
 func TestLabelValuesAreEscaped(t *testing.T) {
 	registry := NewRegistry()
 	counter := registry.NewCounter("c", "h", "l")
