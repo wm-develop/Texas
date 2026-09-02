@@ -181,6 +181,29 @@ void main() {
         }
       });
 
+      test('${entry.key}：2～10 人座位彼此不重叠', () {
+        // 10 人是最密的一档。按角度投影的旧分布会在底边挤下三个玩家框，
+        // 相邻两框中心只差 159 像素而框宽 216，直接叠在一起。
+        final layout = entry.value;
+        for (var seatCount = 2; seatCount <= 10; seatCount++) {
+          final seats = [
+            for (var index = 0; index < seatCount; index++)
+              layout.seatRect(index, seatCount),
+          ];
+          for (var a = 0; a < seats.length; a++) {
+            for (var b = a + 1; b < seats.length; b++) {
+              expect(
+                seats[a].overlaps(seats[b]),
+                isFalse,
+                reason:
+                    '$seatCount 人牌桌第 ${a + 1} 与第 ${b + 1} 个座位重叠：'
+                    '${seats[a]} / ${seats[b]}',
+              );
+            }
+          }
+        }
+      });
+
       test('${entry.key}：座位不超出画布', () {
         final layout = entry.value;
         final canvas = Offset.zero & layout.canvasSize;

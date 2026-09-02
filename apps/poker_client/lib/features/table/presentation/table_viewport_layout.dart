@@ -14,6 +14,8 @@ class TableViewportLayout {
     required this.seatHorizontalAlignment,
     required this.boardHorizontalInset,
     required this.boardVerticalInset,
+    required this.seatHorizontalOverhang,
+    required this.seatVerticalOverhang,
   });
 
   static const double designHeight = 720;
@@ -37,6 +39,8 @@ class TableViewportLayout {
   final double seatHorizontalAlignment;
   final double boardHorizontalInset;
   final double boardVerticalInset;
+  final double seatHorizontalOverhang;
+  final double seatVerticalOverhang;
 
   /// 玩家框尺寸。与 [TableSeatCard] 保持一致；布局据此推算落位与公共牌区内缩。
   static const Size seatCardSize = Size(216, 116);
@@ -81,26 +85,65 @@ class TableViewportLayout {
     );
   }
 
-  /// 座位沿牌桌的圆角矩形周边分布，而不是沿椭圆分布。
+  /// 座位中心所在的矩形。
   ///
-  /// 椭圆分布会把斜角座位（例如 3 人桌的第 2 个座位）放在靠近中心的位置，
-  /// 从而压住公共牌区；周边分布把它们推到最近的一条边上。两种布局族共用
-  /// 这一套映射，桌面端此前用椭圆，正是它产生了遮挡。
-  Alignment seatAlignment(int relativeIndex, int seatCount) {
-    final angle = math.pi / 2 + (math.pi * 2 * relativeIndex / seatCount);
-    final x = math.cos(angle);
-    final y = math.sin(angle);
-    final topRowHorizontalReach = seatHorizontalAlignment * 0.6;
-    final sideColumnVerticalReach = seatVerticalAlignment * 0.6;
-    if (y.abs() >= x.abs()) {
-      return Alignment(
-        y == 0 ? 0 : x / y.abs() * topRowHorizontalReach,
-        y.isNegative ? -seatVerticalAlignment : seatVerticalAlignment,
-      );
+  /// 由玩家框伸出桌沿的长度反推：框中心到桌沿的偏移 = 外露长度 - 框宽的一半。
+  /// 完全不外扩时偏移为负，中心落在桌内半个框宽处。
+  Rect get seatCenterRect {
+    final offsetX = seatHorizontalOverhang - seatCardSize.width / 2;
+    final offsetY = seatVerticalOverhang - seatCardSize.height / 2;
+    return Rect.fromLTRB(
+      tableRect.left - offsetX,
+      tableRect.top - offsetY,
+      tableRect.right + offsetX,
+      tableRect.bottom + offsetY,
+    );
+  }
+
+  /// 第 [relativeIndex] 个座位的中心，沿 [seatCenterRect] 的周长**等距**分布。
+  ///
+  /// 之前按角度把座位投影到最近的边上，间距并不均匀：10 人桌底边会挤下三个
+  /// 玩家框，相邻两框中心只差 159 像素而框宽 216，直接重叠。等距分布让间距
+  /// 恒为「周长 / 人数」，10 人时仍留有余量。
+  ///
+  /// 起点是底边中点（本人座位），沿屏幕向左推进，与原先的座位顺序一致。
+  Offset seatCenter(int relativeIndex, int seatCount) {
+    final rect = seatCenterRect;
+    final half = rect.width / 2;
+    final perimeter = 2 * (rect.width + rect.height);
+    var distance = perimeter * relativeIndex / seatCount;
+
+    if (distance <= half) {
+      return Offset(rect.center.dx - distance, rect.bottom);
     }
+    distance -= half;
+    if (distance <= rect.height) {
+      return Offset(rect.left, rect.bottom - distance);
+    }
+    distance -= rect.height;
+    if (distance <= rect.width) {
+      return Offset(rect.left + distance, rect.top);
+    }
+    distance -= rect.width;
+    if (distance <= rect.height) {
+      return Offset(rect.right, rect.top + distance);
+    }
+    distance -= rect.height;
+    return Offset(rect.right - distance, rect.bottom);
+  }
+
+  /// 把座位中心换算成 [Align] 需要的 alignment。
+  Alignment seatAlignment(int relativeIndex, int seatCount) {
+    final center = seatCenter(relativeIndex, seatCount);
+    final horizontalSlack = tableRect.width - seatCardSize.width;
+    final verticalSlack = tableRect.height - seatCardSize.height;
+    final left = center.dx - seatCardSize.width / 2;
+    final top = center.dy - seatCardSize.height / 2;
     return Alignment(
-      x.isNegative ? -seatHorizontalAlignment : seatHorizontalAlignment,
-      x == 0 ? 0 : y / x.abs() * sideColumnVerticalReach,
+      horizontalSlack <= 0
+          ? 0
+          : (left - tableRect.left) / horizontalSlack * 2 - 1,
+      verticalSlack <= 0 ? 0 : (top - tableRect.top) / verticalSlack * 2 - 1,
     );
   }
 
@@ -200,8 +243,9 @@ class TableViewportLayout {
       seatHorizontalAlignment: seatHorizontalAlignment,
       // 公共牌区退到玩家框留在桌内的那部分之外，再留一点呼吸空间。
       boardHorizontalInset: seatCardSize.width - horizontalOverhang + 24,
-      boardVerticalInset:
-          seatCardSize.height - _verticalOverhang + 24,
+      boardVerticalInset: seatCardSize.height - _verticalOverhang + 24,
+      seatHorizontalOverhang: horizontalOverhang,
+      seatVerticalOverhang: _verticalOverhang,
     );
   }
 }
