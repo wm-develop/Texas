@@ -5,6 +5,7 @@ import 'package:poker_client/features/table/domain/table_snapshot.dart';
 import 'package:poker_client/features/table/presentation/table_seat_widgets.dart';
 import 'package:poker_client/features/table/presentation/table_card_widgets.dart';
 import 'package:poker_client/features/table/presentation/table_board_center.dart';
+import 'package:poker_client/features/table/presentation/table_deal_controller.dart';
 
 /// 牌桌画布：按响应式布局摆放座位，并把公共牌区域嵌入桌面中央。
 
@@ -19,6 +20,7 @@ class TableCanvas extends StatelessWidget {
     required this.onAvatarTap,
     required this.onUseTimeExtension,
     required this.interactions,
+    this.dealState = const BoardDealState.settled(),
     super.key,
   });
 
@@ -31,6 +33,9 @@ class TableCanvas extends StatelessWidget {
   final ValueChanged<TableSeat> onAvatarTap;
   final VoidCallback onUseTimeExtension;
   final List<TablePlayerInteraction> interactions;
+
+  /// 发牌演出的瞬时状态。
+  final BoardDealState dealState;
 
   @override
   Widget build(BuildContext context) {
@@ -76,6 +81,7 @@ class TableCanvas extends StatelessWidget {
             child: TableBoardCenter(
               snapshot: snapshot,
               actionRemaining: actionRemaining,
+              dealState: dealState,
             ),
           ),
         ),

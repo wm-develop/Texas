@@ -15,6 +15,7 @@ class TableActionBar extends StatelessWidget {
     required this.smallBlind,
     required this.onRebuy,
     this.vertical = false,
+    this.blocked = false,
     super.key,
   });
 
@@ -23,6 +24,9 @@ class TableActionBar extends StatelessWidget {
   final int smallBlind;
   final VoidCallback onRebuy;
   final bool vertical;
+
+  /// 发牌演出进行中：牌还没翻开，不接受行动输入。
+  final bool blocked;
 
   @override
   Widget build(BuildContext context) {
@@ -79,6 +83,7 @@ class TableActionBar extends StatelessWidget {
         suggestions: current.suggestions,
         ownSeat: ownSeat,
         vertical: vertical,
+        blocked: blocked,
       );
     }
 

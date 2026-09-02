@@ -5,6 +5,7 @@ import 'package:poker_client/features/table/domain/runout_boards.dart';
 import 'package:poker_client/features/table/domain/table_snapshot.dart';
 import 'package:poker_client/features/table/presentation/table_labels.dart';
 import 'package:poker_client/features/table/presentation/table_card_widgets.dart';
+import 'package:poker_client/features/table/presentation/table_deal_controller.dart';
 
 /// 牌桌中央的公共牌区域，含发两次时的分阶段叠牌展示。
 
@@ -12,11 +13,15 @@ class TableBoardCenter extends StatefulWidget {
   const TableBoardCenter({
     required this.snapshot,
     required this.actionRemaining,
+    this.dealState = const BoardDealState.settled(),
     super.key,
   });
 
   final TableSnapshot? snapshot;
   final Duration actionRemaining;
+
+  /// 发牌演出的瞬时状态；无演出时为终态。
+  final BoardDealState dealState;
 
   @override
   State<TableBoardCenter> createState() => TableBoardCenterState();
@@ -199,12 +204,18 @@ class TableBoardCenterState extends State<TableBoardCenter> {
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: List.generate(5, (index) {
                       final card = index < board.length ? board[index] : null;
-                      return TablePlayingCard(
-                        rank: card == null ? '?' : cardRank(card),
-                        suit: card == null ? '' : cardSuit(card),
-                        red:
-                            card != null &&
-                            (card.endsWith('h') || card.endsWith('d')),
+                      // 还没落桌的位置保持空位；已落桌但属于本次新发的牌
+                      // 先显示背面，再按进度翻开。
+                      if (card == null ||
+                          index >= widget.dealState.placedCards) {
+                        return const TablePlayingCard(rank: '?', suit: '');
+                      }
+                      final settled = index < widget.dealState.faceUpCards;
+                      return TableFlipCard(
+                        progress: settled ? 1 : widget.dealState.flipProgress,
+                        rank: cardRank(card),
+                        suit: cardSuit(card),
+                        red: card.endsWith('h') || card.endsWith('d'),
                       );
                     }),
                   ),

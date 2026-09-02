@@ -20,6 +20,7 @@ import 'package:poker_client/features/table/presentation/table_labels.dart';
 import 'package:poker_client/features/table/presentation/table_action_bar.dart';
 import 'package:poker_client/features/table/presentation/table_automation_coordinator.dart';
 import 'package:poker_client/features/table/presentation/table_canvas.dart';
+import 'package:poker_client/features/table/presentation/table_deal_controller.dart';
 import 'package:poker_client/features/table/presentation/table_voice_controller.dart';
 import 'package:poker_client/features/table/presentation/table_chat_panel.dart';
 import 'package:poker_client/features/table/presentation/table_rebuy_dialog.dart';
@@ -71,6 +72,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
   final TableActionSoundTracker _actionSoundTracker = TableActionSoundTracker();
   final TableSoundEffects _tableSoundEffects = TableSoundEffects();
   late final TableAutomationCoordinator _automation;
+  late final TableDealController _deal;
   bool _autoJoinAttempted = false;
   bool _removedFromRoomHandled = false;
   final Set<String> _observedInteractionIds = {};
@@ -85,6 +87,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
     _automation = TableAutomationCoordinator(
       currentUserId: widget.session.user.userId,
     );
+    _deal = TableDealController()..addListener(_dealChanged);
     _gameSocket = GameSocketClient(
       accessTokenProvider: widget.accessTokenProvider,
       roomId: widget.room.roomId,
@@ -135,6 +138,9 @@ class _TablePrototypePageState extends State<TablePrototypePage>
       ..dispose();
     _voice
       ..removeListener(_voiceChanged)
+      ..dispose();
+    _deal
+      ..removeListener(_dealChanged)
       ..dispose();
     unawaited(_tableSoundEffects.dispose());
     _tableClock?.cancel();
@@ -354,6 +360,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                               onAvatarTap: _handleAvatarTap,
                               onUseTimeExtension: _gameSocket.useTimeExtension,
                               interactions: _activeInteractions,
+                              dealState: _deal.boardState,
                             ),
                           ),
                           // 大屏聊天面板放左侧，与右侧下注区分居两栏；
@@ -397,6 +404,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                                   smallBlind: widget.room.rules.smallBlind,
                                   onRebuy: _showRebuyDialog,
                                   vertical: true,
+                                  blocked: _deal.isAnimating,
                                 ),
                               ],
                             ),
@@ -460,8 +468,14 @@ class _TablePrototypePageState extends State<TablePrototypePage>
     if (mounted) setState(() {});
   }
 
+  void _dealChanged() {
+    if (mounted) setState(() {});
+  }
+
   void _refresh() {
     if (!mounted) return;
+    // 发牌演出由快照变化驱动；重连补齐的快照不会触发，见 TableDealController。
+    _deal.observe(_gameSocket.snapshot);
     _updateChatNotification();
     _updatePlayerInteractions();
     setState(() {});

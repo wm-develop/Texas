@@ -20,6 +20,7 @@ class TableBetPanel extends StatefulWidget {
     required this.suggestions,
     required this.ownSeat,
     this.vertical = false,
+    this.blocked = false,
     super.key,
   });
 
@@ -32,6 +33,9 @@ class TableBetPanel extends StatefulWidget {
 
   /// 竖排用于手机右栏，横排用于平板与桌面底部右侧。
   final bool vertical;
+
+  /// 发牌演出进行中，暂不接受输入。
+  final bool blocked;
 
   @override
   State<TableBetPanel> createState() => _TableBetPanelState();
@@ -147,7 +151,7 @@ class _TableBetPanelState extends State<TableBetPanel> {
     _syncSignature();
     final model = _model;
     final options = widget.options;
-    final busy = widget.client.actionPending;
+    final busy = widget.client.actionPending || widget.blocked;
     final amount = _currentAmount;
 
     final fold = _ActionButton(

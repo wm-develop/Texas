@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 /// 牌面与筹码的基础展示组件：公共牌大牌、玩家框内小牌、本轮下注筹码。
@@ -106,4 +108,74 @@ class TableBetChip extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 会翻面的公共牌。[progress] 为 0 时是背面，1 时完全翻开。
+///
+/// 用绕 Y 轴旋转实现：前半程转到侧立（看不见牌面），越过中点后换成正面并把
+/// 变换镜像回来，视觉上就是一张牌被翻过来，而不是两张牌淡入淡出。
+class TableFlipCard extends StatelessWidget {
+  const TableFlipCard({
+    required this.progress,
+    required this.rank,
+    required this.suit,
+    this.red = false,
+    super.key,
+  });
+
+  final double progress;
+  final String rank;
+  final String suit;
+  final bool red;
+
+  @override
+  Widget build(BuildContext context) {
+    final clamped = progress.clamp(0.0, 1.0);
+    final showFace = clamped >= 0.5;
+    final angle = clamped * math.pi;
+    return Transform(
+      alignment: Alignment.center,
+      transform: Matrix4.identity()
+        ..setEntry(3, 2, 0.0012)
+        ..rotateY(showFace ? angle - math.pi : angle),
+      child: showFace
+          ? TablePlayingCard(rank: rank, suit: suit, red: red)
+          : const TableCardBack(),
+    );
+  }
+}
+
+/// 牌背。发牌过程中先落桌的就是它。
+class TableCardBack extends StatelessWidget {
+  const TableCardBack({this.width = 58, this.height = 78, super.key});
+
+  final double width;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: width,
+    height: height,
+    margin: const EdgeInsets.symmetric(horizontal: 4),
+    decoration: BoxDecoration(
+      gradient: const LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [Color(0xFF7A2F35), Color(0xFF4A1B20)],
+      ),
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(color: const Color(0x66E0B85B)),
+      boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 6)],
+    ),
+    child: Center(
+      child: Container(
+        width: width * 0.5,
+        height: height * 0.62,
+        decoration: BoxDecoration(
+          border: Border.all(color: const Color(0x55E0B85B)),
+          borderRadius: BorderRadius.circular(4),
+        ),
+      ),
+    ),
+  );
 }

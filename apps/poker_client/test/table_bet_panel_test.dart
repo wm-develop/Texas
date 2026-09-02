@@ -270,4 +270,51 @@ void main() {
       }
     });
   });
+  testWidgets('发牌演出期间不接受行动输入', (tester) async {
+    final client = GameSocketClient(
+      accessTokenProvider: ({bool forceRefresh = false}) async => 'token',
+      roomId: 'room_1',
+      userId: 'me',
+    );
+    client.debugHandleMessage(
+      jsonEncode({
+        'version': 1,
+        'type': 'table.joined',
+        'payload': {'roomId': 'room_1'},
+      }),
+    );
+    client.debugHandleMessage(_turnSnapshot(canCheck: false, toCall: 20));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 470,
+            child: TableActionBar(
+              client: client,
+              userId: 'me',
+              smallBlind: 10,
+              onRebuy: () {},
+              blocked: true,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    // 牌还没翻开时不能下决定，三个按钮都必须是禁用态
+    for (final key in const [
+      ValueKey('bet-fold-action'),
+      ValueKey('bet-check-call-action'),
+      ValueKey('bet-aggressive-action'),
+    ]) {
+      // key 挂在私有包装组件上，真正的按钮是它的后代
+      final button = tester.widget<FilledButton>(
+        find.descendant(
+          of: find.byKey(key),
+          matching: find.byType(FilledButton),
+        ),
+      );
+      expect(button.onPressed, isNull, reason: '$key 在发牌演出期间应当禁用');
+    }
+  });
 }
