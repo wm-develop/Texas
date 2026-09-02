@@ -320,11 +320,19 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                           else ...[
                             // 顶部正中留给上家玩家框：座位现在会伸到桌沿之外，
                             // 原先居中的连接状态条会与之重叠，故并入左上一列。
-                            Positioned(left: 24, top: 18, child: roomHeader),
+                            // 两者放进同一个 Column，避免用固定 top 猜测标题高度。
                             Positioned(
                               left: 24,
-                              top: 62,
-                              child: connectionStatus,
+                              top: 18,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  roomHeader,
+                                  const SizedBox(height: 10),
+                                  connectionStatus,
+                                ],
+                              ),
                             ),
                             Positioned(
                               right: 24,
@@ -353,8 +361,8 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                           if (showSideChat)
                             Positioned(
                               left: 18,
-                              // 让开左上角的房间信息与连接状态两行
-                              top: 116,
+                              // 让开左上角的房间信息与连接状态
+                              top: 150,
                               bottom: 24,
                               width: 230,
                               child: TableChatPanel(
