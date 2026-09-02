@@ -49,6 +49,7 @@
 - [从零自建部署指南](docs/SELF_HOSTING_GUIDE.md)
 - [数据库备份与恢复指南](docs/BACKUP_AND_RESTORE_GUIDE.md)
 - [运行保障指南：限流、指标与告警](docs/OPERATIONS_GUIDE.md)
+- [验收指南：稳定性、弱网与发布冒烟](docs/ACCEPTANCE_GUIDE.md)
 - [隐私说明与账号注销规则](docs/PRIVACY_NOTICE.md)
 - [Android 发布签名配置指南](docs/ANDROID_SIGNING_GUIDE.md)
 - [生产环境更新手册](docs/PRODUCTION_UPDATE_GUIDE.md)

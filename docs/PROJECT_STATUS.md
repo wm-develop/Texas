@@ -114,6 +114,7 @@ TRTC：牌桌语音
 - Redis 尚未接入；不支持多游戏服务实例、权威牌桌租约、实例故障自动接管或无损热迁移。
 - 运行中的牌桌状态主要在内存中。数据库保留业务记录，但服务进程异常退出后不能完整恢复进行中的一手牌。
 - 备份、恢复演练、账本对账、健康巡检与告警均已提供可执行方案（`deploy/backup/`、`deploy/monitor/`，见[备份恢复指南](BACKUP_AND_RESTORE_GUIDE.md)与[运行保障指南](OPERATIONS_GUIDE.md)）；2026-09-01 生产服务器已全部安装并验证：备份定时任务、异机复制、恢复演练、对账定时任务、健康巡检，以及钉钉告警通道（手动触发与 OnFailure 链路均实际收到消息）。24 小时故障注入尚未做。
+- `/metrics` 增加 `texas_goroutines`、`texas_memory_heap_bytes`、`texas_process_start_time_seconds` 三项运行时指标，供 `deploy/monitor/texas-soak.sh` 判断协程泄漏、内存增长与静默重启；脚本启动时会核对指标名，服务端改名后立即失败而非静默记 0。
 - 分层限流已实现：登录/注册/刷新按 IP、密码错误按用户名、房间与钱包操作按用户、TRTC 凭证按用户、单 IP WebSocket 并发上限；`TRUSTED_PROXIES` 提供可信代理解析。`/metrics` 以 Bearer 令牌保护，暴露 HTTP、WebSocket、牌桌动作、活跃牌桌、快照广播失败与限流计数。生产环境已配置 `TRUSTED_PROXIES`（`texas-internal` 网段）与 `METRICS_TOKEN`，`/metrics` 已验证仅接受令牌访问。
 - 账号注销（`POST /v1/users/me/delete`）与隐私说明已完成，规则见[隐私说明](PRIVACY_NOTICE.md)；举报因熟人局定位不做。语音加入/退出元数据以 `voice.joined`/`voice.left` 审计事件持久化，管理员可在客户端「审计记录」页（`GET /v1/admin/audit`）按类别、用户或房间查询全部管理操作、账号变更与语音进出。
 - 已有 GitHub Actions（`.github/workflows/ci.yml`）：服务端 gofmt/vet/test 与 -race、客户端 analyze/test、shellcheck 与仓库卫生检查。构建、迁移、发布和回滚仍是文档化的人工流程。
@@ -127,7 +128,7 @@ TRTC：牌桌语音
 
 截至 2026-09-01，备份/演练/对账、成员生命周期属性测试、CI、牌桌页拆分与布局回归、分层限流、`/metrics` 与告警脚本均已落地。剩余顺序：
 
-1. 24 小时稳定性与弱网验收、发布冒烟清单。
+1. 按[验收指南](ACCEPTANCE_GUIDE.md)完成一轮 24 小时稳定性观测、弱网验收与四端冒烟，并归档记录。观测脚本与记录模板已就绪，尚未实跑。
 2. 再设计 Redis 路由、单写者租约、牌桌快照恢复和多实例故障模型；不要直接把进程内状态复制到 Redis。
 
 详细接手入口见[项目交接文档](PROJECT_HANDOVER.md)，完整开发演进见[开发历程](DEVELOPMENT_HISTORY.md)。

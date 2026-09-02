@@ -79,6 +79,9 @@ curl -s -H "Authorization: Bearer $METRICS_TOKEN" http://127.0.0.1:8080/metrics
 | `texas_tables_active` | gauge | 本进程内存中的运行中牌桌数 |
 | `texas_snapshot_broadcast_failures_total` | counter | **整桌无人收到快照的次数，每一次都是一桌卡死** |
 | `texas_rate_limited_total{scope}` | counter | 被限流拒绝的请求数，按作用域 |
+| `texas_goroutines` | gauge | 进程内协程数；连接回落后不回落即为泄漏 |
+| `texas_memory_heap_bytes` | gauge | 已分配堆对象字节数 |
+| `texas_process_start_time_seconds` | gauge | 进程启动时间，用于识别静默重启 |
 
 几条值得盯的信号：
 
@@ -86,6 +89,8 @@ curl -s -H "Authorization: Bearer $METRICS_TOKEN" http://127.0.0.1:8080/metrics
 - `texas_rate_limited_total{scope="auth_ip"}` 或 `{scope="login_failures_user"}` 持续增长说明有人在撞库。
 - `texas_rate_limited_total{scope="trtc"}` 增长说明有人在刷凭证。
 - `texas_http_requests_total{status="5xx"}` 出现即为服务端异常。
+
+后三项是为 24 小时稳定性观测加的，判读方式与阈值见[验收指南](ACCEPTANCE_GUIDE.md#1-24-小时稳定性观测)；`deploy/monitor/texas-soak.sh` 会周期抓取并给出判定。
 
 接入 Prometheus / Grafana 时，在抓取配置里加 `authorization: {credentials: <token>}` 即可。**不要把 `/metrics` 暴露到公网 nginx**——它包含房间数、连接数等运营信息；只从服务器本机或内网抓取。
 

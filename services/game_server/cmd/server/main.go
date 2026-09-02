@@ -151,6 +151,10 @@ func main() {
 		logger.Info("TRTC credential issuer enabled")
 	}
 
+	// 运行时指标在此注册一次；进程启动时间用于观测脚本识别静默重启。
+	metricsRegistry := metrics.NewRegistry()
+	metricsRegistry.RegisterRuntime(time.Now())
+
 	server := &http.Server{
 		Addr: address,
 		Handler: transport.NewHandler(logger, transport.Options{
@@ -168,7 +172,7 @@ func main() {
 			AllowedOrigins: appConfig.AllowedOrigins,
 			TrustedProxies: appConfig.TrustedProxies,
 			RateLimits:     appConfig.RateLimits,
-			Metrics:        metrics.NewRegistry(),
+			Metrics:        metricsRegistry,
 			MetricsToken:   appConfig.MetricsToken,
 			Readiness: func(ctx context.Context) error {
 				if database == nil {
