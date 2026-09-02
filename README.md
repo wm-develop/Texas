@@ -24,7 +24,7 @@
 
 阶段 3 的单实例纵向链路已完成。账户娱乐筹码余额、无支付虚拟充值、最近筹码流水、房主自定义盲注/最大带入、玩家自主带入、手间补码、输光自动补码和离桌返还均已接入；盲注最低为 10/20，普通下注和加注统一使用小盲整数倍。PostgreSQL 已覆盖账户/会话、钱包流水、房间成员、牌局行动与历史、结算账本、文字聊天和管理员治理；关键带入、补码、结算和返还采用事务、行锁与请求幂等。真实 PostgreSQL 集成测试及单实例云端部署已经完成。
 
-当前仍是**单游戏服务实例**：Redis、多实例权威租约、进程异常后的进行中牌桌恢复、自动备份/恢复演练、指标告警和 24 小时稳定性验收尚未完成。完整的已实现/未实现边界见[项目现状](docs/PROJECT_STATUS.md)，后续顺序见[阶段 3 计划](docs/PHASE_3_PLAN.md)。
+当前仍是**单游戏服务实例**，进程异常后进行中的那一手会作废。多实例与 Redis 已评估并决定暂缓，理由与触发条件见 [ADR-002](docs/decisions/ADR-002-MULTI-INSTANCE.md)。24 小时稳定性与弱网验收的工具和清单已就绪但尚未实跑。完整的已实现/未实现边界见[项目现状](docs/PROJECT_STATUS.md)，后续顺序见[阶段 3 计划](docs/PHASE_3_PLAN.md)。
 
 > 游戏服务默认仍使用进程内仓储，方便无数据库开发。生产环境设置 `STORAGE_BACKEND=postgres` 并完成全部迁移后启用 PostgreSQL 持久化。本项目仍定位为熟人封闭联机游戏。
 
@@ -59,6 +59,7 @@
 - [德州扑克规则规格 v1](docs/TEXAS_HOLDEM_RULES_V1.md)
 - [WebSocket 协议 v1](docs/WEBSOCKET_PROTOCOL_V1.md)
 - [语音 RTC 决策记录](docs/decisions/ADR-001-VOICE-RTC.md)
+- [多实例与 Redis 决策记录](docs/decisions/ADR-002-MULTI-INSTANCE.md)
 
 ## 目录结构
 
