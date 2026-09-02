@@ -799,6 +799,13 @@ func (manager *Manager) runtimeFor(roomValue room.Room) (*runtime, error) {
 	return created, nil
 }
 
+// ActiveTables 返回当前进程内持有的运行中牌桌数量，供指标暴露使用。
+func (manager *Manager) ActiveTables() int {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	return len(manager.tables)
+}
+
 func (manager *Manager) existingRuntime(roomID string) *runtime {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()

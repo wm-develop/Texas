@@ -8,14 +8,17 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"texas/services/game_server/internal/account"
 	"texas/services/game_server/internal/bankroll"
 	"texas/services/game_server/internal/chat"
+	"texas/services/game_server/internal/config"
 	"texas/services/game_server/internal/game/tablemanager"
 	"texas/services/game_server/internal/history"
+	"texas/services/game_server/internal/metrics"
 	"texas/services/game_server/internal/room"
 	"texas/services/game_server/internal/trtc"
 )
@@ -32,26 +35,87 @@ type Options struct {
 	History        history.Store
 	Readiness      func(context.Context) error
 	AllowedOrigins []string
+	// TrustedProxies 见 config.Config.TrustedProxies。
+	TrustedProxies []string
+	// RateLimits 为零值时全部关闭，便于测试；生产由 config 提供默认值。
+	RateLimits config.RateLimits
+	// Metrics 为 nil 时不采集指标；MetricsToken 为空时不暴露 /metrics。
+	Metrics      *metrics.Registry
+	MetricsToken string
 }
 
 func NewHandler(logger *slog.Logger, options Options) http.Handler {
 	mux := http.NewServeMux()
 	presence := newPresenceTracker()
-	webSockets := newWebSocketServer(logger, options, presence)
+	guard := newGuards(options.TrustedProxies, options.RateLimits, options.Metrics)
+	webSockets := newWebSocketServer(logger, options, presence, guard)
 	mux.HandleFunc("GET /healthz", handleHealth)
 	mux.HandleFunc("GET /readyz", handleReadiness(options.Readiness))
-	registerAccountRoutes(mux, options.Accounts, presence)
-	registerBankrollRoutes(mux, options.Accounts, options.Bankroll)
+	registerAccountRoutes(mux, options.Accounts, presence, guard)
+	registerBankrollRoutes(mux, options.Accounts, options.Bankroll, guard)
 	registerAdminRoutes(
 		mux, options.Accounts, options.Bankroll, options.Rooms, options.Tables,
 		options.Chat, presence, webSockets.disconnectUsers,
 	)
-	registerRoomRoutes(mux, options.Accounts, options.Rooms, options.Tables)
+	registerRoomRoutes(mux, options.Accounts, options.Rooms, options.Tables, guard)
 	registerHistoryRoutes(mux, options.Accounts, options.History)
 	mux.Handle("GET /ws", webSockets)
-	mux.Handle("POST /v1/trtc/credentials", trtcCredentialsHandler(options))
-	return securityHeaders(configuredCORS(mux, options.AllowedOrigins))
+	mux.Handle("POST /v1/trtc/credentials", trtcCredentialsHandler(options, guard))
+	if options.Metrics != nil && options.MetricsToken != "" {
+		// 指标含房间数、连接数等运营信息，必须持令牌访问；未配置令牌时端点不存在。
+		mux.Handle("GET /metrics", bearerTokenGuard(options.MetricsToken, options.Metrics.Handler()))
+	}
+	var handler http.Handler = mux
+	if options.Metrics != nil {
+		handler = httpMetrics(options.Metrics, handler)
+	}
+	return securityHeaders(configuredCORS(handler, options.AllowedOrigins))
 }
+
+// bearerTokenGuard 要求 Authorization: Bearer <token> 与配置值完全一致。
+func bearerTokenGuard(expected string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if readBearerToken(request.Header.Get("Authorization")) != expected {
+			writeJSONError(writer, http.StatusUnauthorized, "authentication_required")
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
+}
+
+// httpMetrics 按路由模式与状态码统计每个 HTTP 请求。
+// Go 1.22+ 的 ServeMux 会把匹配到的模式写回 request.Pattern，外层中间件在
+// next.ServeHTTP 返回后即可读到，无需在每个处理器里手工打点。
+func httpMetrics(registry *metrics.Registry, next http.Handler) http.Handler {
+	requests := registry.NewCounter(
+		"texas_http_requests_total",
+		"HTTP requests by route pattern and status code.",
+		"route", "status",
+	)
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		recorder := &statusRecorder{ResponseWriter: writer, status: http.StatusOK}
+		next.ServeHTTP(recorder, request)
+		route := request.Pattern
+		if route == "" {
+			route = "unmatched"
+		}
+		requests.Inc(route, strconv.Itoa(recorder.status))
+	})
+}
+
+// statusRecorder 记录响应状态码。WebSocket 升级会劫持连接，此时状态保持 200。
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (recorder *statusRecorder) WriteHeader(status int) {
+	recorder.status = status
+	recorder.ResponseWriter.WriteHeader(status)
+}
+
+// Unwrap 让 http.ResponseController 与 WebSocket 库能拿到底层 Hijacker/Flusher。
+func (recorder *statusRecorder) Unwrap() http.ResponseWriter { return recorder.ResponseWriter }
 
 func configuredCORS(next http.Handler, allowedOrigins []string) http.Handler {
 	allowed := make(map[string]struct{}, len(allowedOrigins))
@@ -120,7 +184,7 @@ type trtcCredentialsRequest struct {
 	RoomID string `json:"roomId"`
 }
 
-func trtcCredentialsHandler(options Options) http.Handler {
+func trtcCredentialsHandler(options Options, guard *guards) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if options.TRTCIssuer == nil {
 			writeJSONError(writer, http.StatusServiceUnavailable, "trtc_not_configured")
@@ -133,6 +197,9 @@ func trtcCredentialsHandler(options Options) http.Handler {
 			writeJSONError(writer, http.StatusBadRequest, "invalid_request")
 			return
 		}
+		// 每张 UserSig 都对应云服务成本，限流键在鉴权之后才可信：
+		// 已登录路径按用户计，调试令牌路径按来源 IP 计。
+		limitKey := "ip:" + guard.clientIP(request)
 		if !allowDebugCredentialRequest(
 			request,
 			options.TRTCDebugToken,
@@ -157,6 +224,10 @@ func trtcCredentialsHandler(options Options) http.Handler {
 				}
 				return
 			}
+			limitKey = "user:" + body.UserID
+		}
+		if !guard.allow(writer, guard.trtc, limitKey, "trtc") {
+			return
 		}
 
 		credentials, err := options.TRTCIssuer.Issue(body.UserID, body.RoomID)

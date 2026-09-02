@@ -19,6 +19,7 @@ import (
 	"texas/services/game_server/internal/chat"
 	"texas/services/game_server/internal/game/holdem"
 	"texas/services/game_server/internal/game/tablemanager"
+	"texas/services/game_server/internal/metrics"
 	"texas/services/game_server/internal/protocol"
 	"texas/services/game_server/internal/room"
 )
@@ -37,6 +38,11 @@ type webSocketServer struct {
 	presence       *presenceTracker
 	interactionMu  sync.Mutex
 	interactionAt  map[string]time.Time
+	guard          *guards
+	// 以下指标在 Options.Metrics 为 nil 时全部为 nil，方法调用是空操作。
+	activeConnections *metrics.Gauge
+	messagesTotal     *metrics.Counter
+	actionsTotal      *metrics.Counter
 }
 
 type webSocketClient struct {
@@ -54,16 +60,19 @@ type tableHub struct {
 	clients   map[string]map[*webSocketClient]struct{}
 	buffers   map[string]*protocol.EventBuffer
 	voice     map[string]map[string]protocol.VoiceMemberState
+	// broadcastFailures 记录整桌无人收到快照的次数，对应 P0 加的全桌级告警日志。
+	broadcastFailures *metrics.Counter
 }
 
 func newWebSocketServer(
 	logger *slog.Logger,
 	options Options,
 	presence *presenceTracker,
+	guard *guards,
 ) *webSocketServer {
 	server := &webSocketServer{
 		logger: logger, accounts: options.Accounts, rooms: options.Rooms,
-		tables: options.Tables, chat: options.Chat,
+		tables: options.Tables, chat: options.Chat, guard: guard,
 		hub: &tableHub{
 			logger:  logger,
 			clients: make(map[string]map[*webSocketClient]struct{}),
@@ -83,6 +92,27 @@ func newWebSocketServer(
 			_ = server.hub.broadcastSnapshots(ctx, server.tables, roomID, nil)
 		})
 	}
+	if registry := options.Metrics; registry != nil {
+		server.activeConnections = registry.NewGauge(
+			"texas_websocket_connections_active", "Open WebSocket connections.",
+		)
+		server.messagesTotal = registry.NewCounter(
+			"texas_websocket_messages_total", "Inbound WebSocket messages by type.", "type",
+		)
+		server.actionsTotal = registry.NewCounter(
+			"texas_table_actions_total", "Table actions submitted, by outcome.", "result",
+		)
+		server.hub.broadcastFailures = registry.NewCounter(
+			"texas_snapshot_broadcast_failures_total",
+			"Snapshot broadcasts that reached no client; each one is a frozen table.",
+		)
+		registry.NewGaugeFunc("texas_tables_active", "Tables held in memory by this instance.", func() int64 {
+			if server.tables == nil {
+				return 0
+			}
+			return int64(server.tables.ActiveTables())
+		})
+	}
 	return server
 }
 
@@ -91,6 +121,18 @@ func (server *webSocketServer) ServeHTTP(writer http.ResponseWriter, request *ht
 }
 
 func (server *webSocketServer) serveHTTP(writer http.ResponseWriter, request *http.Request) {
+	// 单 IP 并发连接上限在升级握手之前判定，被拒绝的请求收到普通 HTTP 429，
+	// 不会占用一条已建立的 WebSocket 连接。
+	clientIP := server.guard.clientIP(request)
+	if server.guard != nil && server.guard.wsPerIP != nil {
+		if !server.guard.wsPerIP.Acquire(clientIP) {
+			server.guard.limited.Inc("ws_connections_ip")
+			writeJSONError(writer, http.StatusTooManyRequests, "rate_limited")
+			return
+		}
+		defer server.guard.wsPerIP.Release(clientIP)
+	}
+
 	connection, err := websocket.Accept(writer, request, &websocket.AcceptOptions{
 		OriginPatterns: server.originPatterns,
 	})
@@ -99,6 +141,8 @@ func (server *webSocketServer) serveHTTP(writer http.ResponseWriter, request *ht
 		return
 	}
 	defer connection.CloseNow()
+	server.activeConnections.Inc()
+	defer server.activeConnections.Dec()
 	connection.SetReadLimit(16 * 1024)
 	client := &webSocketClient{server: server, connection: connection}
 	defer client.disconnect()
@@ -137,6 +181,7 @@ func webSocketOriginPatterns(allowedOrigins []string) []string {
 }
 
 func (client *webSocketClient) route(ctx context.Context, message protocol.Envelope) error {
+	client.server.messagesTotal.Inc(message.Type)
 	if message.Version != 0 && message.Version != 1 {
 		return client.sendError(message, protocol.TypeSystemError, "unsupported_protocol_version", 0)
 	}
@@ -375,8 +420,10 @@ func (client *webSocketClient) submitAction(ctx context.Context, message protoco
 				"hand_id", message.HandID,
 			)
 		}
+		client.server.actionsTotal.Inc("rejected")
 		return client.sendError(message, protocol.TypeTableActionRejected, code, revisionFromError(err))
 	}
+	client.server.actionsTotal.Inc("accepted")
 	if err := client.respond(message, protocol.TypeTableActionAccepted, result); err != nil {
 		return err
 	}
@@ -786,6 +833,7 @@ func (hub *tableHub) broadcastSnapshots(
 	if len(clients) > 0 && delivered == 0 {
 		// Every client missed this revision: the table is effectively frozen
 		// for everyone and needs operator attention, not just a per-client note.
+		hub.broadcastFailures.Inc()
 		hub.logError(
 			"table snapshot broadcast reached no client", nil,
 			"room_id", roomID, "sequence", sequence, "clients", len(clients),

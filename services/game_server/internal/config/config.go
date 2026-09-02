@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -23,6 +24,44 @@ type Config struct {
 	TRTCSecretKey   string
 	TRTCDebugToken  string
 	TRTCExpire      int
+	// TrustedProxies 是可以采信 X-Forwarded-For 的代理地址或网段。
+	// 为空时永远使用直接连接方 IP，防止客户端伪造来源绕过限流。
+	TrustedProxies []string
+	// MetricsToken 非空时启用 /metrics，并要求 Bearer 令牌；为空时端点不存在。
+	MetricsToken string
+	RateLimits   RateLimits
+}
+
+// RateLimit 表示「每 Window 内最多 Burst 次」。
+type RateLimit struct {
+	Burst  int
+	Window time.Duration
+}
+
+// RateLimits 汇总各入口的限流参数。零值表示不限制。
+type RateLimits struct {
+	// AuthPerIP 覆盖登录、注册、刷新令牌的合计频率，按客户端 IP 计。
+	AuthPerIP RateLimit
+	// RegisterPerIP 单独收紧注册，按客户端 IP 计。
+	RegisterPerIP RateLimit
+	// LoginFailuresPerUser 只在密码错误时计数，按用户名计；成功登录后清零。
+	LoginFailuresPerUser RateLimit
+	// UserOpsPerUser 覆盖建房、入房、离桌、准备与虚拟充值，按已登录用户计。
+	UserOpsPerUser RateLimit
+	// TRTCPerUser 覆盖 TRTC 凭证签发，按已登录用户计（未登录的调试路径按 IP 计）。
+	TRTCPerUser RateLimit
+	// WebSocketPerIP 是单个客户端 IP 允许同时保持的 WebSocket 连接数。
+	WebSocketPerIP int
+}
+
+// 默认值面向熟人牌局的真实使用强度，既拦住脚本滥用，也不会影响正常玩家。
+var defaultRateLimits = RateLimits{
+	AuthPerIP:            RateLimit{Burst: 30, Window: 5 * time.Minute},
+	RegisterPerIP:        RateLimit{Burst: 5, Window: time.Hour},
+	LoginFailuresPerUser: RateLimit{Burst: 8, Window: 15 * time.Minute},
+	UserOpsPerUser:       RateLimit{Burst: 30, Window: time.Minute},
+	TRTCPerUser:          RateLimit{Burst: 12, Window: time.Minute},
+	WebSocketPerIP:       20,
 }
 
 func Load() (Config, error) {
@@ -79,6 +118,27 @@ func Load() (Config, error) {
 		}
 		config.AutoMigrate = autoMigrate
 	}
+	if proxies := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")); proxies != "" {
+		for _, entry := range strings.Split(proxies, ",") {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			if err := validateProxyEntry(entry); err != nil {
+				return Config{}, err
+			}
+			config.TrustedProxies = append(config.TrustedProxies, entry)
+		}
+	}
+	config.MetricsToken = strings.TrimSpace(os.Getenv("METRICS_TOKEN"))
+	if config.MetricsToken != "" && len(config.MetricsToken) < 16 {
+		return Config{}, errors.New("METRICS_TOKEN must be at least 16 characters")
+	}
+	rateLimits, err := loadRateLimits()
+	if err != nil {
+		return Config{}, err
+	}
+	config.RateLimits = rateLimits
 
 	appIDText := strings.TrimSpace(os.Getenv("TRTC_SDK_APP_ID"))
 	if appIDText == "" && config.TRTCSecretKey == "" {
@@ -104,6 +164,77 @@ func Load() (Config, error) {
 
 	return config, nil
 }
+
+func validateProxyEntry(entry string) error {
+	if _, _, err := net.ParseCIDR(entry); err == nil {
+		return nil
+	}
+	if net.ParseIP(entry) != nil {
+		return nil
+	}
+	return fmt.Errorf("TRUSTED_PROXIES contains invalid address %q (expected IP or CIDR)", entry)
+}
+
+// loadRateLimits 读取 RATE_LIMIT_* 环境变量，格式为「次数/时长」，例如 30/5m。
+// 显式写成 0 或 off 表示关闭该项限制。未设置时使用内置默认值。
+func loadRateLimits() (RateLimits, error) {
+	limits := defaultRateLimits
+	entries := []struct {
+		name   string
+		target *RateLimit
+	}{
+		{"RATE_LIMIT_AUTH_PER_IP", &limits.AuthPerIP},
+		{"RATE_LIMIT_REGISTER_PER_IP", &limits.RegisterPerIP},
+		{"RATE_LIMIT_LOGIN_FAILURES_PER_USER", &limits.LoginFailuresPerUser},
+		{"RATE_LIMIT_USER_OPS_PER_USER", &limits.UserOpsPerUser},
+		{"RATE_LIMIT_TRTC_PER_USER", &limits.TRTCPerUser},
+	}
+	for _, entry := range entries {
+		raw := strings.TrimSpace(os.Getenv(entry.name))
+		if raw == "" {
+			continue
+		}
+		parsed, err := parseRateLimit(raw)
+		if err != nil {
+			return RateLimits{}, fmt.Errorf("%s: %w", entry.name, err)
+		}
+		*entry.target = parsed
+	}
+	if raw := strings.TrimSpace(os.Getenv("RATE_LIMIT_WS_CONNECTIONS_PER_IP")); raw != "" {
+		if strings.EqualFold(raw, "off") {
+			limits.WebSocketPerIP = 0
+		} else {
+			value, err := strconv.Atoi(raw)
+			if err != nil || value < 0 {
+				return RateLimits{}, errors.New("RATE_LIMIT_WS_CONNECTIONS_PER_IP must be a non-negative integer or off")
+			}
+			limits.WebSocketPerIP = value
+		}
+	}
+	return limits, nil
+}
+
+func parseRateLimit(raw string) (RateLimit, error) {
+	if strings.EqualFold(raw, "off") || raw == "0" {
+		return RateLimit{}, nil
+	}
+	parts := strings.SplitN(raw, "/", 2)
+	if len(parts) != 2 {
+		return RateLimit{}, errors.New(`expected "count/duration" such as 30/5m, or off`)
+	}
+	burst, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil || burst <= 0 {
+		return RateLimit{}, errors.New("count must be a positive integer")
+	}
+	window, err := time.ParseDuration(strings.TrimSpace(parts[1]))
+	if err != nil || window <= 0 {
+		return RateLimit{}, errors.New("duration must be a positive Go duration such as 5m or 1h")
+	}
+	return RateLimit{Burst: burst, Window: window}, nil
+}
+
+// Enabled 报告该限流项是否生效。
+func (limit RateLimit) Enabled() bool { return limit.Burst > 0 && limit.Window > 0 }
 
 func validateAllowedOrigin(origin string) error {
 	if strings.ContainsAny(origin, "，； \t\r\n") {

@@ -21,6 +21,7 @@ import (
 	"texas/services/game_server/internal/game/tablemanager"
 	"texas/services/game_server/internal/history"
 	"texas/services/game_server/internal/ledger"
+	"texas/services/game_server/internal/metrics"
 	"texas/services/game_server/internal/postgres"
 	"texas/services/game_server/internal/room"
 	"texas/services/game_server/internal/security"
@@ -165,6 +166,10 @@ func main() {
 			Chat:           chatService,
 			History:        historyStore,
 			AllowedOrigins: appConfig.AllowedOrigins,
+			TrustedProxies: appConfig.TrustedProxies,
+			RateLimits:     appConfig.RateLimits,
+			Metrics:        metrics.NewRegistry(),
+			MetricsToken:   appConfig.MetricsToken,
 			Readiness: func(ctx context.Context) error {
 				if database == nil {
 					return nil

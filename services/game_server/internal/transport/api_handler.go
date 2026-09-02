@@ -21,10 +21,16 @@ func registerAccountRoutes(
 	mux *http.ServeMux,
 	accounts *account.Service,
 	presence *presenceTracker,
+	guard *guards,
 ) {
 	mux.HandleFunc("POST /v1/auth/register", func(writer http.ResponseWriter, request *http.Request) {
 		if accounts == nil {
 			writeJSONError(writer, http.StatusServiceUnavailable, "service_unavailable")
+			return
+		}
+		ip := guard.clientIP(request)
+		if !guard.allow(writer, guard.auth, ip, "auth_ip") ||
+			!guard.allow(writer, guard.register, ip, "register_ip") {
 			return
 		}
 		var body struct {
@@ -53,6 +59,9 @@ func registerAccountRoutes(
 			writeJSONError(writer, http.StatusServiceUnavailable, "service_unavailable")
 			return
 		}
+		if !guard.allow(writer, guard.auth, guard.clientIP(request), "auth_ip") {
+			return
+		}
 		var body struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
@@ -60,10 +69,24 @@ func registerAccountRoutes(
 		if !decodeJSONBody(writer, request, &body) {
 			return
 		}
+		// 按用户名的失败计数：先看是否已被锁定，只在密码错误时消耗配额，
+		// 成功后清零。这样暴力猜测某个账号会被单独拦住，而不影响其他人登录。
+		usernameKey := normalizeUsername(body.Username)
+		if guard != nil && guard.loginFail != nil && !guard.loginFail.Peek(usernameKey) {
+			guard.reject(writer, guard.loginFail, usernameKey, "login_failures_user")
+			return
+		}
 		result, err := accounts.Login(request.Context(), body.Username, body.Password)
 		if err != nil {
+			var accountError account.Error
+			if guard != nil && errors.As(err, &accountError) && accountError.Code == "invalid_credentials" {
+				guard.loginFail.Allow(usernameKey)
+			}
 			writeAccountError(writer, err)
 			return
+		}
+		if guard != nil {
+			guard.loginFail.Reset(usernameKey)
 		}
 		presence.touch(result.User.UserID)
 		writeJSON(writer, http.StatusOK, result)
@@ -72,6 +95,9 @@ func registerAccountRoutes(
 	mux.HandleFunc("POST /v1/auth/refresh", func(writer http.ResponseWriter, request *http.Request) {
 		if accounts == nil {
 			writeJSONError(writer, http.StatusServiceUnavailable, "service_unavailable")
+			return
+		}
+		if !guard.allow(writer, guard.auth, guard.clientIP(request), "auth_ip") {
 			return
 		}
 		var body struct {
@@ -514,7 +540,7 @@ func registerAdminRoutes(
 	})
 }
 
-func registerBankrollRoutes(mux *http.ServeMux, accounts *account.Service, chips *bankroll.Service) {
+func registerBankrollRoutes(mux *http.ServeMux, accounts *account.Service, chips *bankroll.Service, guard *guards) {
 	mux.HandleFunc("GET /v1/bankroll", func(writer http.ResponseWriter, request *http.Request) {
 		user, ok := authenticateRequest(writer, request, accounts)
 		if !ok {
@@ -539,6 +565,9 @@ func registerBankrollRoutes(mux *http.ServeMux, accounts *account.Service, chips
 		}
 		if chips == nil {
 			writeJSONError(writer, http.StatusServiceUnavailable, "service_unavailable")
+			return
+		}
+		if !guard.allow(writer, guard.userOps, user.UserID, "user_ops") {
 			return
 		}
 		var body struct {
@@ -583,7 +612,13 @@ func registerBankrollRoutes(mux *http.ServeMux, accounts *account.Service, chips
 	})
 }
 
-func registerRoomRoutes(mux *http.ServeMux, accounts *account.Service, rooms *room.Service, tables *tablemanager.Manager) {
+func registerRoomRoutes(
+	mux *http.ServeMux,
+	accounts *account.Service,
+	rooms *room.Service,
+	tables *tablemanager.Manager,
+	guard *guards,
+) {
 	mux.HandleFunc("GET /v1/rooms/preview", func(writer http.ResponseWriter, request *http.Request) {
 		if _, ok := authenticateRequest(writer, request, accounts); !ok {
 			return
@@ -607,6 +642,9 @@ func registerRoomRoutes(mux *http.ServeMux, accounts *account.Service, rooms *ro
 		}
 		if rooms == nil {
 			writeJSONError(writer, http.StatusServiceUnavailable, "service_unavailable")
+			return
+		}
+		if !guard.allow(writer, guard.userOps, user.UserID, "user_ops") {
 			return
 		}
 		var body struct {
@@ -648,6 +686,9 @@ func registerRoomRoutes(mux *http.ServeMux, accounts *account.Service, rooms *ro
 		}
 		if rooms == nil {
 			writeJSONError(writer, http.StatusServiceUnavailable, "service_unavailable")
+			return
+		}
+		if !guard.allow(writer, guard.userOps, user.UserID, "user_ops") {
 			return
 		}
 		var body struct {
@@ -698,6 +739,9 @@ func registerRoomRoutes(mux *http.ServeMux, accounts *account.Service, rooms *ro
 		if !ok {
 			return
 		}
+		if !guard.allow(writer, guard.userOps, user.UserID, "user_ops") {
+			return
+		}
 		if rooms == nil {
 			writeJSONError(writer, http.StatusServiceUnavailable, "service_unavailable")
 			return
@@ -719,6 +763,9 @@ func registerRoomRoutes(mux *http.ServeMux, accounts *account.Service, rooms *ro
 	mux.HandleFunc("POST /v1/rooms/leave", func(writer http.ResponseWriter, request *http.Request) {
 		user, ok := authenticateRequest(writer, request, accounts)
 		if !ok {
+			return
+		}
+		if !guard.allow(writer, guard.userOps, user.UserID, "user_ops") {
 			return
 		}
 		if rooms == nil {
