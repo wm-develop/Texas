@@ -39,11 +39,19 @@
 `TRUSTED_PROXIES` 填写允许采信 `X-Forwarded-For` 的代理地址或网段，逗号分隔：
 
 ```dotenv
-# 宿主机 nginx 通过 Docker 桥接网络访问容器，容器看到的是网桥网关
-TRUSTED_PROXIES=172.17.0.1
+# 宿主机 nginx 经 Docker 端口转发进入容器，容器看到的来源是它所在网络的网关。
+# 用网段而不是单个地址：重建网络后网关可能变化，网段写法不会悄悄失效。
+TRUSTED_PROXIES=127.0.0.1,172.20.0.0/16
 ```
 
-确认实际地址：在游戏服务容器日志里找一条请求的来源，或执行 `docker network inspect bridge` 查看 `Gateway`。若前面还有云厂商负载均衡，把它的网段一并加入，例如 `172.17.0.1,100.64.0.0/10`。
+**确认实际网段时不要看默认 `bridge` 网络**——按部署手册游戏服务容器在自建的 `texas-internal` 网络上。直接问容器：
+
+```bash
+docker inspect texas-game-server   -f '{{range $name, $net := .NetworkSettings.Networks}}{{$name}}: gateway={{$net.Gateway}} ip={{$net.IPAddress}}{{"
+"}}{{end}}'
+```
+
+输出形如 `texas-internal: gateway=172.20.0.1 ip=172.20.0.3`，取网关所在的 `/16` 网段。若前面还有云厂商负载均衡，把它的网段一并加入，例如 `127.0.0.1,172.20.0.0/16,100.64.0.0/10`。
 
 **安全边界**：只有直连方在该列表内时才读取转发头，否则一律用直连 IP。因此填错成公网网段不会让限流失效，只是可信范围过宽；**留空**则代理后所有请求同源，限流形同虚设。
 
@@ -99,8 +107,8 @@ curl -s -H "Authorization: Bearer $METRICS_TOKEN" http://127.0.0.1:8080/metrics
 sudo tee /opt/texas/alert.env >/dev/null <<'EOF'
 # 接收告警的 webhook。未配置时告警只写系统日志，不阻塞任何任务。
 TEXAS_ALERT_WEBHOOK=
-# 载荷格式：generic | wecom | feishu | bark
-TEXAS_ALERT_FORMAT=generic
+# 载荷格式：dingtalk | wecom | feishu | bark | generic
+TEXAS_ALERT_FORMAT=dingtalk
 # 可选：告警标题中的主机名，默认取 hostname
 # TEXAS_ALERT_HOST=texas-prod
 # 可选：备份过期阈值（小时），默认 36
@@ -188,7 +196,7 @@ sudo /opt/texas/bin/texas-reconcile.sh
 以下新增变量写入游戏服务的环境文件（`/opt/texas/secrets/game-server.env` 或部署时使用的位置），改动后需重建/重启游戏服务容器：
 
 ```dotenv
-TRUSTED_PROXIES=172.17.0.1
+TRUSTED_PROXIES=127.0.0.1,172.20.0.0/16
 METRICS_TOKEN=<至少16位随机字符串>
 # 限流保持默认即可；只在确有需要时覆盖
 # RATE_LIMIT_AUTH_PER_IP=30/5m
