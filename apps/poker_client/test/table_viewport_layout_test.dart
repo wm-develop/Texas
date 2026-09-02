@@ -11,10 +11,14 @@ void main() {
     );
 
     expect(layout.canvasSize, const Size(1280, 720));
-    expect(layout.supportsSideChat, isTrue);
+    // 1280 宽同时停靠聊天与下注区会把公共牌区挤到 288（< 5 张牌的 330），
+    // 因此这个宽度下聊天改为弹窗，牌桌拿回宽度。
+    expect(layout.supportsSideChat, isFalse);
     expect(layout.seatVerticalRadius, 0.88);
     expect(layout.seatHorizontalRadius, 0.94);
-    expect(layout.tableRect, const Rect.fromLTWH(104, 62, 912, 526));
+    // 下注区移出底部，牌桌纵向从 526 增至 614
+    expect(layout.tableRect, const Rect.fromLTWH(104, 62, 944, 614));
+    expect(layout.boardRect.width, greaterThan(5 * 66));
   });
 
   test('fills a wide phone while limiting poker table stretching', () {
@@ -28,7 +32,7 @@ void main() {
       closeTo(const Size(2400, 1080).aspectRatio, 0.001),
     );
     expect(layout.tableRect.width, TableViewportLayout.maxTableWidth);
-    expect(layout.tableRect.height, 526);
+    expect(layout.tableRect.height, 614);
   });
 
   test('enlarges content on a logical-size landscape phone', () {
@@ -100,16 +104,21 @@ void main() {
     }
   });
 
-  test('centers the table when the side chat is closed', () {
+  test('聊天收起时牌桌在下注区左侧的空间内居中', () {
     final layout = TableViewportLayout.fromSize(
       const Size(1600, 720),
       chatVisible: false,
     );
 
     expect(layout.tableRect.width, TableViewportLayout.maxTableWidth);
+    // 右栏恒定被下注区占用，所以牌桌不再相对整幅画布居中，
+    // 而是在「左边距 ~ 右栏内缘」之间居中；两侧留白应当相等。
+    const leftMargin = 104.0;
+    final railInnerEdge =
+        layout.canvasSize.width - TableViewportLayout.betRailWidth;
     expect(
-      layout.tableRect.left,
-      closeTo(layout.canvasSize.width - layout.tableRect.right, 0.001),
+      layout.tableRect.left - leftMargin,
+      closeTo(railInnerEdge - layout.tableRect.right, 0.001),
     );
   });
 

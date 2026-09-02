@@ -347,11 +347,13 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                               interactions: _activeInteractions,
                             ),
                           ),
+                          // 大屏聊天面板放左侧，与右侧下注区分居两栏；
+                          // 手机保持点按钮弹出独立窗口，不常驻。
                           if (showSideChat)
                             Positioned(
-                              right: 18,
+                              left: 18,
                               top: 86,
-                              bottom: 104,
+                              bottom: 24,
                               width: 230,
                               child: TableChatPanel(
                                 client: _gameSocket,
@@ -361,50 +363,34 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                                 onClose: _toggleChat,
                               ),
                             ),
-                          if (viewport.isCompactLandscape)
-                            // 手机：聊天入口在右栏顶部，下注区贴底，便于拇指够到
-                            Positioned(
-                              right: 8,
-                              top: 8,
-                              bottom: 8,
-                              width:
-                                  TableViewportLayout.compactRightRailWidth -
-                                  16,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
+                          // 两种布局族同构：右栏竖排下注区，贴底便于够到。
+                          Positioned(
+                            right: viewport.isCompactLandscape ? 8 : 16,
+                            top: viewport.isCompactLandscape ? 8 : 86,
+                            bottom: viewport.isCompactLandscape ? 8 : 18,
+                            width:
+                                (viewport.isCompactLandscape
+                                    ? TableViewportLayout
+                                          .compactRightRailWidth
+                                    : TableViewportLayout.betRailWidth) -
+                                (viewport.isCompactLandscape ? 16 : 32),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                if (viewport.isCompactLandscape ||
+                                    !showSideChat)
                                   chatEntryButton,
-                                  const Spacer(),
-                                  TableActionBar(
-                                    client: _gameSocket,
-                                    userId: widget.session.user.userId,
-                                    smallBlind: widget.room.rules.smallBlind,
-                                    onRebuy: _showRebuyDialog,
-                                    vertical: true,
-                                  ),
-                                ],
-                              ),
-                            )
-                          else ...[
-                            if (!showSideChat)
-                              Positioned(
-                                right: 24,
-                                bottom: 172,
-                                child: chatEntryButton,
-                              ),
-                            // 大屏：动作区不再横跨整幅宽度，让开右侧聊天栏
-                            Positioned(
-                              right: showSideChat ? 262 : 24,
-                              bottom: 18,
-                              width: 470,
-                              child: TableActionBar(
-                                client: _gameSocket,
-                                userId: widget.session.user.userId,
-                                smallBlind: widget.room.rules.smallBlind,
-                                onRebuy: _showRebuyDialog,
-                              ),
+                                const Spacer(),
+                                TableActionBar(
+                                  client: _gameSocket,
+                                  userId: widget.session.user.userId,
+                                  smallBlind: widget.room.rules.smallBlind,
+                                  onRebuy: _showRebuyDialog,
+                                  vertical: true,
+                                ),
+                              ],
                             ),
-                          ],
+                          ),
                         ],
                       ),
                     ),

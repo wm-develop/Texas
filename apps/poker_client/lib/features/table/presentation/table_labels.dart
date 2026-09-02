@@ -37,6 +37,7 @@ String actionLabel(String action, int actionTo) => switch (action) {
 
 String suggestionLabel(String label) => switch (label) {
   'min_raise' => '最小加注',
+  'max_raise' => '最大加注',
   'quarter_pot' => '1/4 池',
   'third_pot' => '1/3 池',
   'half_pot' => '1/2 池',

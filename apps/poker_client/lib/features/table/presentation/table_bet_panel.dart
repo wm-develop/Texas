@@ -353,6 +353,27 @@ class _SizingControls extends StatelessWidget {
 
 enum _ButtonTone { danger, neutral, primary }
 
+/// 动作按钮配色。
+///
+/// 三个可用态的颜色都必须明显亮于面板底色，否则玩家会把「弃牌」「跟注」当成
+/// 不可点击的灰键——这正是上一版低饱和深色方案的问题。禁用态则单独用一个低
+/// 彩度的暗色，与任何可用态都拉开差距，让"不能点"一眼可辨。
+class TableActionPalette {
+  const TableActionPalette._();
+
+  /// 动作区面板底色，用作对比基准。
+  static const Color panelBackground = Color(0xFF0A1C18);
+
+  static const Color fold = Color(0xFFC4453C);
+  static const Color passive = Color(0xFF2E9E7B);
+  static const Color aggressive = Color(0xFFE0A83A);
+
+  static const Color disabledBackground = Color(0xFF243530);
+  static const Color disabledForeground = Color(0x66FFFFFF);
+
+  static const List<Color> enabledTones = [fold, passive, aggressive];
+}
+
 class _ActionButton extends StatelessWidget {
   const _ActionButton({
     required this.label,
@@ -368,13 +389,16 @@ class _ActionButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final style = FilledButton.styleFrom(
-      minimumSize: const Size(0, 42),
+      minimumSize: const Size(0, 44),
       padding: const EdgeInsets.symmetric(horizontal: 10),
       backgroundColor: switch (tone) {
-        _ButtonTone.danger => const Color(0xFF9E3B3B),
-        _ButtonTone.neutral => const Color(0xFF2C5C4E),
-        _ButtonTone.primary => const Color(0xFFB8892C),
+        _ButtonTone.danger => TableActionPalette.fold,
+        _ButtonTone.neutral => TableActionPalette.passive,
+        _ButtonTone.primary => TableActionPalette.aggressive,
       },
+      foregroundColor: Colors.white,
+      disabledBackgroundColor: TableActionPalette.disabledBackground,
+      disabledForegroundColor: TableActionPalette.disabledForeground,
       textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
     );
     return FilledButton(

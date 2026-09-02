@@ -18,6 +18,9 @@ class TableViewportLayout {
   static const double maxCanvasAspect = 2.35;
   static const double maxTableWidth = 1040;
   static const double compactMaxTableWidth = 1160;
+  /// 大屏的下注区与手机同构：右侧竖排。左侧留给聊天，牌桌上下因此可以做满。
+  /// 内容宽度与手机右栏一致（248-32 与 216-16 都是 200），两端手感相同。
+  static const double betRailWidth = 232;
   static const double compactLeftRailWidth = 168;
   /// 右栏承载竖排下注区，因此比左栏宽；牌桌下方相应只留很窄的一条。
   static const double compactRightRailWidth = 216;
@@ -88,21 +91,27 @@ class TableViewportLayout {
         ? compactDesignHeight
         : designHeight;
     final canvasSize = Size(canvasHeight * canvasAspect, canvasHeight);
-    final supportsSideChat = !isCompactLandscape && canvasSize.width >= 1180;
+    // 右栏恒定占用后，只有画布足够宽才容得下「聊天 + 牌桌 + 下注区」三者：
+    // 牌桌至少要能放下 5 张公共牌（boardRect 左右各内缩 240，故需 810），
+    // 加上左右两栏即 810 + 264 + 232。达不到时聊天改为弹窗，与手机一致。
+    final supportsSideChat = !isCompactLandscape && canvasSize.width >= 1320;
     final reserveChat = chatVisible && supportsSideChat;
+    // 两种布局族都是「左信息、右操作」：右栏恒为下注区，左栏在大屏上留给
+    // 聊天面板；聊天收起时左右对称，牌桌保持居中。
+    final baseRight = isCompactLandscape ? compactRightRailWidth : betRailWidth;
+    // 左栏只在聊天停靠时才需要宽预留；否则保持窄边距，把宽度让给牌桌，
+    // 牌桌随后在「左边距到右栏」之间居中，视觉上仍然平衡。
     final baseLeft = isCompactLandscape
         ? compactLeftRailWidth
+        : reserveChat
+        ? 264.0
         : canvasSize.width < 1160
         ? 64.0
         : 104.0;
-    final baseRight = isCompactLandscape
-        ? compactRightRailWidth
-        : reserveChat
-        ? 264.0
-        : baseLeft;
     final top = isCompactLandscape ? 8.0 : 62.0;
     // 紧凑布局的动作区移到右栏后，底部只需留出本轮下注筹码的呼吸空间。
-    final bottom = isCompactLandscape ? 24.0 : 132.0;
+    // 下注区移出底部后，两种布局都只需为本轮下注筹码留出呼吸空间。
+    final bottom = isCompactLandscape ? 24.0 : 44.0;
     final tableHeight = canvasHeight - top - bottom;
     final availableTableWidth = math.max(
       1.0,

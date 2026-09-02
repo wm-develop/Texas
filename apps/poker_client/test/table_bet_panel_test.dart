@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:poker_client/core/network/game_socket_client.dart';
 import 'package:poker_client/features/table/presentation/table_action_bar.dart';
+import 'package:poker_client/features/table/presentation/table_bet_panel.dart';
 
 /// 构造一份轮到自己行动的快照。
 /// `stack` 与 `streetBet` 决定全下额度；`maxRaiseTo` 模拟服务端向下取整的上界。
@@ -245,5 +246,28 @@ void main() {
     expect(find.text('弃牌'), findsOneWidget);
     expect(find.text('跟注 20'), findsOneWidget);
     expect(find.text('加注 40'), findsOneWidget);
+  });
+  group('按钮配色', () {
+    test('三个可用态都明显亮于面板底色，不会被当成禁用键', () {
+      final background = TableActionPalette.panelBackground.computeLuminance();
+      for (final tone in TableActionPalette.enabledTones) {
+        expect(
+          tone.computeLuminance(),
+          greaterThan(background + 0.08),
+          reason: '$tone 与面板底色对比不足，看起来像不可点击',
+        );
+      }
+    });
+
+    test('禁用态与每个可用态都拉开距离', () {
+      final disabled = TableActionPalette.disabledBackground.computeLuminance();
+      for (final tone in TableActionPalette.enabledTones) {
+        expect(
+          (tone.computeLuminance() - disabled).abs(),
+          greaterThan(0.05),
+          reason: '$tone 与禁用色太接近，无法一眼分辨能不能点',
+        );
+      }
+    });
   });
 }

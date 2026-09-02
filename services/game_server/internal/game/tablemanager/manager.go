@@ -1482,6 +1482,7 @@ func betSuggestions(
 		}
 	}
 	result := make([]BetSuggestion, 0, 7)
+	allInTarget := player.StreetBet + player.Stack
 	if options.CanBet || options.CanRaise {
 		fractions := []struct {
 			label       string
@@ -1506,7 +1507,16 @@ func betSuggestions(
 				label = "min_raise"
 			}
 			if target > options.MaxRaiseTo {
+				// 能全下时，被压到上限的档位与全下额度相差不到一个小盲
+				// （MaxRaiseTo 就是全下额度向下取整的结果），保留它只会出现
+				// 「满池 260」和「全下 265」两个几乎同额、标签却完全不同的按钮。
+				if options.CanAllIn && allInTarget-options.MaxRaiseTo < smallBlind {
+					continue
+				}
+				// 不能全下时保留该档位，但标签必须跟着改：否则按钮写着
+				// 「1/2 池」，实际却是玩家能加的最大额，与半个底池毫无关系。
 				target = options.MaxRaiseTo
+				label = "max_raise"
 			}
 			if _, exists := seenTargets[target]; exists {
 				continue
@@ -1521,7 +1531,7 @@ func betSuggestions(
 	}
 	if options.CanAllIn {
 		result = append(result, BetSuggestion{
-			Label: "all_in", Action: holdem.ActionAllIn, RaiseTo: player.StreetBet + player.Stack,
+			Label: "all_in", Action: holdem.ActionAllIn, RaiseTo: allInTarget,
 		})
 	}
 	return result
