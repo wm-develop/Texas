@@ -4,7 +4,7 @@
 
 ## 项目状态
 
-当前源码基线为 `v0.1.1`。阶段 0～2 已完成，阶段 3 的账户筹码、PostgreSQL、管理治理和单实例生产部署链路已经落地，项目已具备可供熟人联机测试的 MVP：
+当前源码基线为 `v0.2.0`。账户筹码、PostgreSQL 持久化、管理治理和单实例生产部署链路均已落地，项目已具备可供熟人联机使用的完整功能：
 
 - 注册、登录、好友房、房间码和动态扩展至最多 10 人的座位/准备流程，创建房间无需预设人数。
 - 房主身份在牌桌中明确标识；房主离桌后按加入先后顺序自动转移，最后一名玩家离桌时才关闭房间。
@@ -22,7 +22,7 @@
 - Web、Windows、Android、HarmonyOS 构建验证。
 - 10 个独立 WebSocket 客户端连续完成 100 手，1000 条玩家账本记录逐手守恒。
 
-阶段 3 的单实例纵向链路已完成。账户娱乐筹码余额、无支付虚拟充值、最近筹码流水、房主自定义盲注/最大带入、玩家自主带入、手间补码、输光自动补码和离桌返还均已接入；盲注最低为 10/20，普通下注和加注统一使用小盲整数倍。PostgreSQL 已覆盖账户/会话、钱包流水、房间成员、牌局行动与历史、结算账本、文字聊天和管理员治理；关键带入、补码、结算和返还采用事务、行锁与请求幂等。真实 PostgreSQL 集成测试及单实例云端部署已经完成。
+账户娱乐筹码余额、无支付虚拟充值、最近筹码流水、房主自定义盲注/最大带入、玩家自主带入、手间补码、输光自动补码和离桌返还均已接入；盲注最低为 10/20，普通下注和加注统一使用小盲整数倍。PostgreSQL 已覆盖账户/会话、钱包流水、房间成员、牌局行动与历史、结算账本、文字聊天和管理员治理；关键带入、补码、结算和返还采用事务、行锁与请求幂等。真实 PostgreSQL 集成测试及单实例云端部署已经完成。定时备份与恢复演练、分层限流、指标与告警、CI 和优雅停机也已在生产环境验证。
 
 当前仍是**单游戏服务实例**，进程异常后进行中的那一手会作废。多实例与 Redis 已评估并决定暂缓，理由与触发条件见 [ADR-002](docs/decisions/ADR-002-MULTI-INSTANCE.md)。24 小时稳定性与弱网验收的工具和清单已就绪但尚未实跑。完整的已实现/未实现边界与后续顺序见[项目现状](docs/PROJECT_STATUS.md)。
 
@@ -34,53 +34,25 @@
 
 管理员登录后可从右上角齿轮进入“服务器管理”，查看账号在线状态、筹码、文字禁言状态及所在房间，修改用户名和钱包筹码，将玩家请出房间，禁言或解除禁言，批量创建/停用/恢复/删除账号、重置密码，以及开启或关闭新用户注册。禁言对已连接牌桌立即生效，并在 PostgreSQL 中持久化；删除为保留历史数据的软删除。正在牌桌中的账号必须先离桌才能调整筹码、停用或删除。所有已登录用户均可点击大厅右上角自己的登录用户名进入个人信息页，修改登录用户名、牌桌昵称和密码。
 
-## 文档索引
-
-先读**当前事实**，再按需要查其余分类。历史规划不作为事实来源。
-
-**当前事实**
-
-- [项目现状](docs/PROJECT_STATUS.md)：已实现/未实现的精确边界，任何冲突以本文为准
-- [项目交接文档](docs/PROJECT_HANDOVER.md)：接手开发的入口与阅读顺序
-- [德州扑克规则规格 v1](docs/TEXAS_HOLDEM_RULES_V1.md)
-- [WebSocket 协议 v1](docs/WEBSOCKET_PROTOCOL_V1.md)
-- [隐私说明与账号注销规则](docs/PRIVACY_NOTICE.md)
-
-**自建与运维**
-
-- [从零自建部署指南](docs/SELF_HOSTING_GUIDE.md)
-- [生产环境更新手册](docs/PRODUCTION_UPDATE_GUIDE.md)
-- [数据库备份与恢复指南](docs/BACKUP_AND_RESTORE_GUIDE.md)
-- [运行保障指南：限流、指标与告警](docs/OPERATIONS_GUIDE.md)
-- [验收指南：稳定性、弱网与发布冒烟](docs/ACCEPTANCE_GUIDE.md)
-- [Android 发布签名配置指南](docs/ANDROID_SIGNING_GUIDE.md)
-- [开发环境与工具链](docs/TOOLCHAIN_STATUS.md)：已验证的版本组合与兼容性约束
-
-**决策记录**
-
-- [ADR-001：牌桌语音采用腾讯云 TRTC](docs/decisions/ADR-001-VOICE-RTC.md)
-- [ADR-002：多实例与 Redis（暂不实施）](docs/decisions/ADR-002-MULTI-INSTANCE.md)
-
-**历史与发布**
-
-- [开发历程](docs/DEVELOPMENT_HISTORY.md)：从选型至今的时间线，解释“为什么是现在这样”
-- [产品与架构规划](docs/PRODUCT_ARCHITECTURE_PLAN.md)：最初的产品与架构评审记录，部分内容已被实现取代
-- [v0.1.0](docs/releases/v0.1.0.md) · [v0.1.1](docs/releases/v0.1.1.md) · [v0.2.0](docs/releases/v0.2.0.md) 发布说明
-
 ## 目录结构
 
 ```text
-apps/poker_client/       Flutter OH 客户端
-services/game_server/    Go 游戏服务
-docs/                    当前事实、运维手册、决策记录与历史
-docs/local/              仅本机保留的运维副本，不进入仓库
-CLAUDE.md                Claude Code 接手与仓库工作约定
+apps/poker_client/       Flutter OH 客户端；目录内 README 说明四端构建命令与产物位置
+services/game_server/    Go 游戏服务；目录内 README 说明配置项与本地运行，
+                         migrations/README.md 说明迁移编号规则与执行方式
+docs/                    规范、运维手册、决策记录与历史
+docs/local/              仅维护者本机保留的运维副本，整目录不进入仓库
+scripts/                 仓库卫生检查等辅助脚本
+deploy/                  备份、对账、告警与稳定性观测脚本
+CLAUDE.md                Claude Code 接手与仓库工作约定（本机文件，不提交）
 .env.example             本地配置模板
 ```
 
 `.toolchains`、`.cache`、`.tmp`、构建目录、IDE 配置和真实密钥均为本地文件，不提交版本库。
 
-## 环境要求
+## 本地开发
+
+### 环境要求
 
 - Flutter OH：`oh-3.41.9-dev` 系列，项目验证版本为 `3.41.10-ohos-0.0.3-beta`。
 - Go：1.27 或兼容版本。
@@ -91,7 +63,9 @@ CLAUDE.md                Claude Code 接手与仓库工作约定
 
 首次运行前，将 `.env.example` 复制为 `.env`，填写自己的 TRTC 配置。`.env` 和 HarmonyOS 本机签名配置已被 Git 忽略，禁止提交真实密钥。
 
-## 启动服务端
+> **构建失败、SDK 版本冲突，或想知道哪些依赖版本是被验证过的**，查[开发环境与工具链](docs/TOOLCHAIN_STATUS.md)。它记录了四端已验证的版本组合，以及几条必须遵守的兼容性约束——例如 `tencent_rtc_sdk` 为什么锁在 `13.4.3`、HarmonyOS 为什么必须开 `useNormalizedOHMUrl`、`permission_handler` 为什么不能升到 13.x。
+
+### 启动服务端
 
 在 `services/game_server` 目录运行：
 
@@ -101,7 +75,7 @@ go run .\cmd\server
 
 若 Go 未加入 `PATH`，可使用项目外或本地忽略目录中的 Go 可执行文件。服务默认监听 `http://127.0.0.1:8080`，也会从仓库根目录 `.env` 加载 TRTC 配置。
 
-## 运行客户端
+### 运行客户端
 
 在 `apps/poker_client` 目录执行。Web 和 Windows 访问本机服务时可以使用：
 
@@ -124,3 +98,32 @@ flutter run -d <设备ID> `
   --dart-define=GAME_SERVER_URL=ws://<电脑IP>:8080/ws `
   --dart-define=GAME_HTTP_SERVER_URL=http://<电脑IP>:8080
 ```
+
+## 自建一台自己的服务器
+
+本项目只发布源码，每个人用自己的服务器、TRTC 账号和签名。按顺序做：
+
+1. **从零部署**——买机器、装 Docker 与 PostgreSQL、配 TLS 与反向代理、跑迁移、启动服务：[从零自建部署指南](docs/SELF_HOSTING_GUIDE.md)。
+2. **配好备份再让朋友进来**——牌局数据只在你这一台机器上，没有备份就等于没有。定时备份、归档校验、异地复制和恢复演练：[数据库备份与恢复指南](docs/BACKUP_AND_RESTORE_GUIDE.md)。**备份脚本静默失败是最危险的情况**，该文档给出了能在 36 小时内发现它的巡检方案。
+3. **打开限流与告警**——公网上的服务会被扫。分层限流、可信代理、令牌保护的 `/metrics`、健康巡检和钉钉/企业微信告警：[运行保障指南](docs/OPERATIONS_GUIDE.md)。
+4. **以后升级到新版本时**——拉代码、跑迁移、换容器、出问题怎么回滚：[生产环境更新手册](docs/PRODUCTION_UPDATE_GUIDE.md)。注意游戏服务会等牌桌打完当前手再退出，`docker stop` 必须给足宽限期，该文档写明了具体命令。
+
+自建前请先读一遍[隐私说明](docs/PRIVACY_NOTICE.md)：它是客户端内那份说明的同源正文，写明了服务器会保存什么、不保存什么。**你作为服务器搭建者，就是这些数据的实际保管人**，有必要让来打牌的朋友知道这件事。
+
+## 构建与发布
+
+- **Android Release 要能覆盖安装上一版**，必须先配好独立的发布签名，否则两台电脑构建出的包会因签名不一致而无法互相覆盖：[Android 发布签名配置指南](docs/ANDROID_SIGNING_GUIDE.md)。
+- **发新版本之前**，先按[验收指南](docs/ACCEPTANCE_GUIDE.md)跑一遍：24 小时稳定性观测（判定协程泄漏、内存增长与静默重启）、9 个弱网与断线场景、四端冒烟清单。这三件事自动化测试都替代不了，文档里附了可直接填写的记录模板。
+- **每个版本改了什么、升级时要注意什么**，见发布说明：[v0.2.0](docs/releases/v0.2.0.md) · [v0.1.1](docs/releases/v0.1.1.md) · [v0.1.0](docs/releases/v0.1.0.md)。
+
+## 规则与协议
+
+- **改动牌局规则、下注金额语义或位置计算之前**，先看[德州扑克规则规格](docs/TEXAS_HOLDEM_RULES_V1.md)。它是服务端规则引擎、客户端展示和自动化测试的共同依据；实现与它冲突时，应先确认产品决策，再在同一个提交里更新规则、测试和代码。
+- **要写第三方客户端，或改动服务端与客户端之间的消息**，看[WebSocket 协议](docs/WEBSOCKET_PROTOCOL_V1.md)。它描述了快照驱动的消息模型、幂等与序号补发、按接收者裁剪的隐私边界、优雅停机语义和全部错误码。
+
+## 接手开发
+
+- **第一次接手这个项目**（包括让 AI 接手），从[项目交接文档](docs/PROJECT_HANDOVER.md)开始。它给出阅读顺序、不可越界的产品红线、关键实现约束和易踩坑清单。
+- **想知道某个设计为什么是现在这样**，看[开发历程](docs/DEVELOPMENT_HISTORY.md)：从选型到当前版本的时间线，包括那些踩过的坑和它们的解法。
+- **准备改变技术栈或产品边界，或想确认某个产品问题当初是怎么定的**，看[产品决策与架构背景](docs/PRODUCT_DECISIONS.md)。里面记着一批已经定论、不需要重新讨论的问题，例如为什么不做游客账号、为什么不允许牌局中途入座、为什么不给房主一键禁言。
+- 两条影响面较大的技术决策单独成文：[ADR-001](docs/decisions/ADR-001-VOICE-RTC.md) 说明语音为什么用腾讯云 TRTC 以及客户端语音层的边界；[ADR-002](docs/decisions/ADR-002-MULTI-INSTANCE.md) 说明多实例与 Redis 为什么**暂不实施**、真要做时必须满足哪些约束、以及什么条件下重新评估。
