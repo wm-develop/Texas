@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:poker_client/core/auth/auth_session.dart';
+import 'package:poker_client/core/legal/privacy_notice.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
 
 class AuthPage extends StatefulWidget {
@@ -189,6 +190,28 @@ class _AuthPageState extends State<AuthPage> {
             child: Text(_submitting ? '请稍候…' : (_registering ? '注册并进入' : '登录')),
           ),
         ),
+        if (_registering) ...[
+          SizedBox(height: compact ? 4 : 8),
+          Wrap(
+            alignment: WrapAlignment.center,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              const Text(
+                '注册即表示你已阅读',
+                style: TextStyle(color: Colors.white60, fontSize: 12),
+              ),
+              TextButton(
+                onPressed: () => showPrivacyNoticeDialog(context),
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: const Text('《隐私说明》', style: TextStyle(fontSize: 12)),
+              ),
+            ],
+          ),
+        ],
       ],
     );
   }

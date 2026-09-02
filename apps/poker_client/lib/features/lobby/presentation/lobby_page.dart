@@ -25,6 +25,7 @@ class LobbyPage extends StatefulWidget {
     required this.onUpdateUsername,
     required this.onUpdateDisplayName,
     required this.onChangePassword,
+    this.onDeleteAccount,
     required this.accessTokenProvider,
     required this.settings,
     required this.onLogout,
@@ -44,6 +45,9 @@ class LobbyPage extends StatefulWidget {
   final Future<AppUser> Function(String displayName) onUpdateDisplayName;
   final Future<AuthSession> Function(String currentPassword, String newPassword)
   onChangePassword;
+
+  /// 自行注销；为 null 时个人信息页不显示注销入口。
+  final Future<void> Function(String password)? onDeleteAccount;
   final Future<String> Function({bool forceRefresh}) accessTokenProvider;
   final AppSettingsController settings;
   final VoidCallback onLogout;
@@ -210,6 +214,7 @@ class _LobbyPageState extends State<LobbyPage> {
         onUpdateUsername: widget.onUpdateUsername,
         onUpdateDisplayName: widget.onUpdateDisplayName,
         onChangePassword: widget.onChangePassword,
+        onDeleteAccount: widget.onDeleteAccount,
       ),
     ),
   );
@@ -820,6 +825,8 @@ String _bankrollReasonLabel(String reason) => switch (reason) {
   'rebuy' => '牌桌补码',
   'hand_settlement' => '牌局结算',
   'cash_out' => '离桌返还',
+  'admin_adjustment' => '管理员调整',
+  'account_deletion' => '账号注销转移',
   _ => reason,
 };
 
@@ -829,6 +836,8 @@ IconData _bankrollReasonIcon(String reason) => switch (reason) {
   'rebuy' => Icons.add_circle_outline,
   'hand_settlement' => Icons.style_outlined,
   'cash_out' => Icons.logout,
+  'admin_adjustment' => Icons.admin_panel_settings_outlined,
+  'account_deletion' => Icons.person_remove_outlined,
   _ => Icons.toll,
 };
 

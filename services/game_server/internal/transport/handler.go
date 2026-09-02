@@ -52,11 +52,13 @@ func NewHandler(logger *slog.Logger, options Options) http.Handler {
 	mux.HandleFunc("GET /healthz", handleHealth)
 	mux.HandleFunc("GET /readyz", handleReadiness(options.Readiness))
 	registerAccountRoutes(mux, options.Accounts, presence, guard)
+	registerAccountDeletionRoute(mux, options.Accounts, options.Bankroll, options.Rooms, guard)
 	registerBankrollRoutes(mux, options.Accounts, options.Bankroll, guard)
 	registerAdminRoutes(
 		mux, options.Accounts, options.Bankroll, options.Rooms, options.Tables,
 		options.Chat, presence, webSockets.disconnectUsers,
 	)
+	registerAdminAuditRoute(mux, options.Accounts)
 	registerRoomRoutes(mux, options.Accounts, options.Rooms, options.Tables, guard)
 	registerHistoryRoutes(mux, options.Accounts, options.History)
 	mux.Handle("GET /ws", webSockets)

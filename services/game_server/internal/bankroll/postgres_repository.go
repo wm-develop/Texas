@@ -497,6 +497,105 @@ func (repository *PostgresRepository) Entries(ctx context.Context, userID string
 	return result, nil
 }
 
+func (repository *PostgresRepository) TransferWallet(
+	ctx context.Context,
+	fromUserID, toUserID, requestID string,
+	reason Reason,
+	referenceID string,
+	now time.Time,
+) (Snapshot, error) {
+	if fromUserID == "" || toUserID == "" || fromUserID == toUserID {
+		return Snapshot{}, Error{Code: "invalid_user"}
+	}
+	transaction, err := repository.database.BeginTx(ctx, nil)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("begin wallet transfer: %w", err)
+	}
+	// 固定按 user_id 顺序加锁，避免两笔互相转账的事务死锁
+	first, second := fromUserID, toUserID
+	if second < first {
+		first, second = second, first
+	}
+	balances := map[string]int64{}
+	revisions := map[string]uint64{}
+	for _, userID := range []string{first, second} {
+		wallet, revision, err := lockWallet(ctx, transaction, userID)
+		if err != nil {
+			_ = transaction.Rollback()
+			return Snapshot{}, err
+		}
+		balances[userID], revisions[userID] = wallet, revision
+	}
+	if previous, found, err := entrySnapshot(ctx, transaction, fromUserID, requestID); err != nil {
+		_ = transaction.Rollback()
+		return Snapshot{}, err
+	} else if found {
+		if err := transaction.Commit(); err != nil {
+			return Snapshot{}, fmt.Errorf("commit repeated wallet transfer: %w", err)
+		}
+		return previous, nil
+	}
+	var tableChips int64
+	if err := transaction.QueryRowContext(
+		ctx,
+		`SELECT COALESCE(SUM(table_chips), 0) FROM room_members WHERE user_id = $1`,
+		fromUserID,
+	).Scan(&tableChips); err != nil {
+		_ = transaction.Rollback()
+		return Snapshot{}, fmt.Errorf("check table balance before transfer: %w", err)
+	}
+	if tableChips != 0 {
+		_ = transaction.Rollback()
+		return Snapshot{}, Error{Code: "user_in_room"}
+	}
+	amount := balances[fromUserID]
+	if balances[toUserID] > maximumChipAmount-amount {
+		_ = transaction.Rollback()
+		return Snapshot{}, Error{Code: "invalid_chip_amount"}
+	}
+	fromRevision := revisions[fromUserID] + 1
+	toRevision := revisions[toUserID] + 1
+	toWallet := balances[toUserID] + amount
+	for _, update := range []struct {
+		userID   string
+		wallet   int64
+		revision uint64
+	}{{fromUserID, 0, fromRevision}, {toUserID, toWallet, toRevision}} {
+		if _, err := transaction.ExecContext(
+			ctx,
+			`UPDATE account_wallets
+             SET wallet_chips = $2, revision = $3, updated_at = $4
+             WHERE user_id = $1`,
+			update.userID, update.wallet, update.revision, now,
+		); err != nil {
+			_ = transaction.Rollback()
+			return Snapshot{}, fmt.Errorf("update wallet transfer: %w", err)
+		}
+	}
+	entries := []Entry{
+		{
+			EntryID: entryID(fromUserID, requestID), RequestID: requestID, UserID: fromUserID,
+			ReferenceID: referenceID, Reason: reason, WalletDelta: -amount,
+			WalletBalanceAfter: 0, RevisionAfter: fromRevision, CreatedAt: now,
+		},
+		{
+			EntryID: entryID(toUserID, requestID), RequestID: requestID, UserID: toUserID,
+			ReferenceID: referenceID, Reason: reason, WalletDelta: amount,
+			WalletBalanceAfter: toWallet, RevisionAfter: toRevision, CreatedAt: now,
+		},
+	}
+	for _, entry := range entries {
+		if err := insertEntry(ctx, transaction, entry); err != nil {
+			_ = transaction.Rollback()
+			return Snapshot{}, err
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return Snapshot{}, fmt.Errorf("commit wallet transfer: %w", err)
+	}
+	return Snapshot{UserID: fromUserID, WalletChips: 0, Revision: fromRevision}, nil
+}
+
 func lockWallet(ctx context.Context, transaction *sql.Tx, userID string) (int64, uint64, error) {
 	var wallet int64
 	var revision uint64

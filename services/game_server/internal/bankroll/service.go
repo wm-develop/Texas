@@ -75,6 +75,17 @@ func (service *Service) ApplySettlement(ctx context.Context, tableID, handID str
 	return service.repository.ApplySettlement(ctx, tableID, handID, balances, maximum, service.now())
 }
 
+// TransferWallet 把一名用户的全部钱包筹码转给另一名用户，用于账号注销。
+// referenceID 写入双方流水的 reference_id，便于事后追溯来源。
+func (service *Service) TransferWallet(ctx context.Context, fromUserID, toUserID, requestID, referenceID string) (Snapshot, error) {
+	if fromUserID == "" || toUserID == "" || fromUserID == toUserID || !ValidRequestID(requestID) {
+		return Snapshot{}, Error{Code: "invalid_request"}
+	}
+	return service.repository.TransferWallet(
+		ctx, fromUserID, toUserID, requestID, ReasonAccountDeletion, referenceID, service.now(),
+	)
+}
+
 func (service *Service) CashOut(ctx context.Context, userID, tableID, requestID string) (Snapshot, error) {
 	if userID == "" || tableID == "" || !ValidRequestID(requestID) {
 		return Snapshot{}, Error{Code: "invalid_request"}

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
 import 'package:poker_client/features/admin/domain/managed_user.dart';
+import 'package:poker_client/features/admin/presentation/admin_audit_page.dart';
 
 class AdminPage extends StatefulWidget {
   const AdminPage({required this.accessTokenProvider, super.key});
@@ -61,6 +62,11 @@ class _AdminPageState extends State<AdminPage> {
       appBar: AppBar(
         title: const Text('服务器管理'),
         actions: [
+          IconButton(
+            onPressed: _openAudit,
+            icon: const Icon(Icons.fact_check_outlined),
+            tooltip: '审计记录',
+          ),
           IconButton(
             onPressed: _busy ? null : _load,
             icon: const Icon(Icons.refresh),
@@ -698,6 +704,18 @@ class _AdminPageState extends State<AdminPage> {
       await _load();
       _showMessage('已创建 $created 个账号');
     });
+  }
+
+  void _openAudit() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => AdminAuditPage(
+          loader: ({String userId = ''}) => _withAccessToken(
+            (token) => _api.adminAuditEvents(accessToken: token, userId: userId),
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _run(Future<void> Function() operation) async {

@@ -38,6 +38,7 @@ type RegistrationSettings struct {
 type AuditEvent struct {
 	EventID     string         `json:"eventId"`
 	ActorUserID string         `json:"actorUserId"`
+	RoomID      string         `json:"roomId,omitempty"`
 	EventType   string         `json:"eventType"`
 	Metadata    map[string]any `json:"metadata"`
 	CreatedAt   time.Time      `json:"createdAt"`

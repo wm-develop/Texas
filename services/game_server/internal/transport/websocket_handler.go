@@ -367,10 +367,11 @@ func (client *webSocketClient) setVoiceState(message protocol.Envelope) error {
 	if !decodePayload(message.Payload, &payload) {
 		return client.sendError(message, protocol.TypeSystemError, "invalid_request", 0)
 	}
-	client.server.hub.setVoiceState(client.roomID, protocol.VoiceMemberState{
+	wasJoined := client.server.hub.setVoiceState(client.roomID, protocol.VoiceMemberState{
 		UserID: client.user.UserID, DisplayName: client.user.DisplayName,
 		Joined: payload.Joined, MicrophoneEnabled: payload.Joined && payload.MicrophoneEnabled,
 	})
+	client.recordVoiceTransition(client.roomID, wasJoined, payload.Joined, payload.MicrophoneEnabled)
 	if err := client.respond(message, protocol.TypeTableVoiceStateSet, payload); err != nil {
 		return err
 	}
@@ -645,7 +646,9 @@ func (client *webSocketClient) disconnect() {
 		return
 	}
 	client.server.hub.unregister(client)
-	client.server.hub.removeVoiceState(roomID, client.user.UserID)
+	if client.server.hub.removeVoiceState(roomID, client.user.UserID) {
+		client.recordVoiceEvent(roomID, voiceEventLeft, map[string]any{"reason": "disconnected"})
+	}
 	client.server.tables.Disconnect(context.Background(), client.user.UserID, roomID)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -660,7 +663,9 @@ func (client *webSocketClient) leave(ctx context.Context) {
 		return
 	}
 	client.server.hub.unregister(client)
-	client.server.hub.removeVoiceState(roomID, client.user.UserID)
+	if client.server.hub.removeVoiceState(roomID, client.user.UserID) {
+		client.recordVoiceEvent(roomID, voiceEventLeft, map[string]any{"reason": "left_table"})
+	}
 	client.server.tables.Disconnect(ctx, client.user.UserID, roomID)
 	client.roomID = ""
 	_ = client.server.hub.broadcastSnapshots(ctx, client.server.tables, roomID, nil)
@@ -746,26 +751,32 @@ func (hub *tableHub) clientsFor(roomID string) []*webSocketClient {
 	return result
 }
 
-func (hub *tableHub) setVoiceState(roomID string, state protocol.VoiceMemberState) {
+// setVoiceState 更新成员语音状态，返回该成员此前是否已在语音频道中。
+func (hub *tableHub) setVoiceState(roomID string, state protocol.VoiceMemberState) (wasJoined bool) {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
 	if hub.voice[roomID] == nil {
 		hub.voice[roomID] = make(map[string]protocol.VoiceMemberState)
 	}
+	_, wasJoined = hub.voice[roomID][state.UserID]
 	if !state.Joined {
 		delete(hub.voice[roomID], state.UserID)
-		return
+		return wasJoined
 	}
 	hub.voice[roomID][state.UserID] = state
+	return wasJoined
 }
 
-func (hub *tableHub) removeVoiceState(roomID, userID string) {
+// removeVoiceState 移除成员语音状态，返回该成员此前是否在语音频道中。
+func (hub *tableHub) removeVoiceState(roomID, userID string) (wasJoined bool) {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
+	_, wasJoined = hub.voice[roomID][userID]
 	delete(hub.voice[roomID], userID)
 	if len(hub.voice[roomID]) == 0 {
 		delete(hub.voice, roomID)
 	}
+	return wasJoined
 }
 
 func (hub *tableHub) voiceStatesFor(roomID string) []protocol.VoiceMemberState {

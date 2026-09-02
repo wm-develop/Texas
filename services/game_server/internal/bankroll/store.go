@@ -18,6 +18,8 @@ const (
 	ReasonSettlement   Reason = "hand_settlement"
 	ReasonCashOut      Reason = "cash_out"
 	ReasonAdminAdjust  Reason = "admin_adjustment"
+	// ReasonAccountDeletion 记录注销账号时钱包整体转入管理员钱包的两笔流水。
+	ReasonAccountDeletion Reason = "account_deletion"
 )
 
 type Snapshot struct {
@@ -50,6 +52,10 @@ type Repository interface {
 	TransferToTable(ctx context.Context, userID, tableID, requestID string, amount, maximum int64, reason Reason, now time.Time) (Snapshot, error)
 	ApplySettlement(ctx context.Context, tableID, handID string, balances map[string]int64, maximum int64, now time.Time) error
 	CashOut(ctx context.Context, userID, tableID, requestID string, now time.Time) (Snapshot, error)
+	// TransferWallet 把 fromUserID 的全部钱包筹码转给 toUserID，双方各记一条
+	// reason 流水且 reference_id 为 referenceID。fromUserID 必须没有牌桌余额。
+	// 按 (fromUserID, requestID) 幂等，返回 fromUserID 转出后的快照。
+	TransferWallet(ctx context.Context, fromUserID, toUserID, requestID string, reason Reason, referenceID string, now time.Time) (Snapshot, error)
 	Entries(ctx context.Context, userID string, limit int) ([]Entry, error)
 }
 
@@ -280,6 +286,52 @@ func (repository *MemoryRepository) snapshotLocked(userID, tableID string) Snaps
 
 func (repository *MemoryRepository) appendLocked(entry Entry) {
 	repository.entries = append(repository.entries, entry)
+}
+
+func (repository *MemoryRepository) TransferWallet(
+	_ context.Context,
+	fromUserID, toUserID, requestID string,
+	reason Reason,
+	referenceID string,
+	now time.Time,
+) (Snapshot, error) {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	if previous, ok := repository.results[idempotencyKey(fromUserID, requestID)]; ok {
+		return previous, nil
+	}
+	if fromUserID == "" || toUserID == "" || fromUserID == toUserID {
+		return Snapshot{}, Error{Code: "invalid_user"}
+	}
+	from := repository.accountLocked(fromUserID)
+	to := repository.accountLocked(toUserID)
+	for _, balance := range from.tables {
+		if balance != 0 {
+			return Snapshot{}, Error{Code: "user_in_room"}
+		}
+	}
+	amount := from.wallet
+	if to.wallet > maximumChipAmount-amount {
+		return Snapshot{}, Error{Code: "invalid_chip_amount"}
+	}
+	from.wallet = 0
+	from.revision++
+	to.wallet += amount
+	to.revision++
+	result := repository.snapshotLocked(fromUserID, "")
+	recipient := repository.snapshotLocked(toUserID, "")
+	repository.appendLocked(Entry{
+		EntryID: entryID(fromUserID, requestID), RequestID: requestID, UserID: fromUserID,
+		ReferenceID: referenceID, Reason: reason, WalletDelta: -amount,
+		WalletBalanceAfter: result.WalletChips, RevisionAfter: result.Revision, CreatedAt: now,
+	})
+	repository.appendLocked(Entry{
+		EntryID: entryID(toUserID, requestID), RequestID: requestID, UserID: toUserID,
+		ReferenceID: referenceID, Reason: reason, WalletDelta: amount,
+		WalletBalanceAfter: recipient.WalletChips, RevisionAfter: recipient.Revision, CreatedAt: now,
+	})
+	repository.results[idempotencyKey(fromUserID, requestID)] = result
+	return result, nil
 }
 
 func idempotencyKey(userID, requestID string) string { return userID + "\x00" + requestID }

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:poker_client/core/auth/auth_session.dart';
+import 'package:poker_client/core/legal/privacy_notice.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
 
 class ProfilePage extends StatefulWidget {
@@ -8,6 +9,7 @@ class ProfilePage extends StatefulWidget {
     required this.onUpdateUsername,
     required this.onUpdateDisplayName,
     required this.onChangePassword,
+    this.onDeleteAccount,
     super.key,
   });
 
@@ -16,6 +18,9 @@ class ProfilePage extends StatefulWidget {
   final Future<AppUser> Function(String displayName) onUpdateDisplayName;
   final Future<AuthSession> Function(String currentPassword, String newPassword)
   onChangePassword;
+
+  /// 自行注销。为 null 时不显示注销入口。成功后由调用方清除登录态。
+  final Future<void> Function(String password)? onDeleteAccount;
 
   @override
   State<ProfilePage> createState() => _ProfilePageState();
@@ -81,6 +86,21 @@ class _ProfilePageState extends State<ProfilePage> {
                         icon: const Icon(Icons.password_outlined),
                         label: const Text('修改密码'),
                       ),
+                      const SizedBox(height: 18),
+                      TextButton.icon(
+                        onPressed: () => showPrivacyNoticeDialog(context),
+                        icon: const Icon(Icons.privacy_tip_outlined),
+                        label: const Text('隐私说明'),
+                      ),
+                      if (widget.onDeleteAccount != null && !_user.isAdmin)
+                        TextButton.icon(
+                          onPressed: _busy ? null : _deleteAccount,
+                          style: TextButton.styleFrom(
+                            foregroundColor: Colors.redAccent,
+                          ),
+                          icon: const Icon(Icons.person_remove_outlined),
+                          label: const Text('注销账号'),
+                        ),
                     ],
                   ),
                 ),
@@ -243,6 +263,62 @@ class _ProfilePageState extends State<ProfilePage> {
     });
   }
 
+  Future<void> _deleteAccount() async {
+    var password = '';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('注销账号'),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                '注销后：\n'
+                '• 账号不能再登录，原用户名可被重新注册；\n'
+                '• 钱包中剩余的娱乐筹码将转入服务器管理员账户，并记录来源；\n'
+                '• 牌局历史和账本予以保留，但不再关联你的用户名；\n'
+                '• 此操作不可撤销。\n\n'
+                '请输入当前密码以确认。',
+                style: TextStyle(height: 1.5),
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                onChanged: (value) => password = value,
+                obscureText: true,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: '当前密码',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('确认注销'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await _run(() async {
+      await widget.onDeleteAccount!(password);
+      if (!mounted) return;
+      // 登录态已由调用方清除，退回到根路由让应用切换到登录页
+      Navigator.of(context).popUntil((route) => route.isFirst);
+    });
+  }
+
   Future<void> _run(Future<void> Function() operation) async {
     if (_busy) return;
     setState(() {
@@ -273,6 +349,10 @@ class _ProfilePageState extends State<ProfilePage> {
         'invalid_current_password' => '当前密码不正确',
         'invalid_password' => '新密码必须为 8～128 位',
         'authentication_required' => '登录状态已失效，请重新登录',
+        'user_in_room' => '请先离开房间再注销账号',
+        'protected_account' => '管理员账号不能自行注销',
+        'admin_unavailable' => '服务器没有可接收筹码的管理员账号，暂时无法注销',
+        'rate_limited' => '密码错误次数过多，请稍后再试',
         _ => '修改失败（${error.code}）',
       };
     }

@@ -325,6 +325,66 @@ func (service *Service) ChangeOwnPassword(
 	return result, nil
 }
 
+// VerifyOwnPassword 校验当前用户的密码，用于注销等破坏性自助操作的二次确认。
+func (service *Service) VerifyOwnPassword(user User, password string) error {
+	if !service.passwords.Verify(password, user.PasswordHash) {
+		return Error{Code: "invalid_current_password"}
+	}
+	return nil
+}
+
+// EarliestActiveAdmin 返回创建时间最早的在用管理员，作为注销账号筹码的接收方。
+func (service *Service) EarliestActiveAdmin(ctx context.Context) (User, error) {
+	users, err := service.repository.ListUsers(ctx)
+	if err != nil {
+		return User{}, err
+	}
+	var chosen User
+	for _, candidate := range users {
+		if candidate.Role != RoleAdmin || candidate.Status != StatusActive {
+			continue
+		}
+		if chosen.UserID == "" || candidate.CreatedAt.Before(chosen.CreatedAt) {
+			chosen = candidate
+		}
+	}
+	if chosen.UserID == "" {
+		return User{}, Error{Code: "admin_unavailable"}
+	}
+	return chosen, nil
+}
+
+// DeletedUsername 是注销后写回的用户名：超过普通用户名长度上限，
+// 因此不可能与任何新注册的用户名冲突，同时保持 user_id 可追溯。
+func DeletedUsername(userID string) string { return "deleted_" + userID }
+
+// DeletedDisplayName 是注销后对外显示的昵称。
+const DeletedDisplayName = "已注销用户"
+
+// SelfDelete 完成用户自行注销：改写用户名与昵称、置为已删除、撤销全部会话，
+// 并记录审计。管理员不能自行注销，避免服务器失去管理入口。
+// 筹码转移由调用方在此之前完成，参数只用于审计记录。
+func (service *Service) SelfDelete(ctx context.Context, user User, recipientUserID string, transferredChips int64) error {
+	if user.Role == RoleAdmin {
+		return Error{Code: "protected_account"}
+	}
+	err := service.repository.SelfDelete(
+		ctx, user.UserID, DeletedUsername(user.UserID), DeletedDisplayName, service.config.Now(),
+	)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return Error{Code: "user_not_found"}
+		}
+		return err
+	}
+	return service.recordAudit(ctx, user.UserID, "account.self_deleted", map[string]any{
+		"targetUserId":     user.UserID,
+		"previousUsername": user.Username,
+		"recipientUserId":  recipientUserID,
+		"transferredChips": transferredChips,
+	})
+}
+
 func (service *Service) AuthorizeAdmin(actor User) error {
 	return requireAdmin(actor)
 }
@@ -479,6 +539,41 @@ func (service *Service) recordAudit(ctx context.Context, actorUserID, eventType 
 	}
 	return service.repository.RecordAudit(ctx, AuditEvent{
 		EventID: eventID, ActorUserID: actorUserID, EventType: eventType,
+		Metadata: metadata, CreatedAt: service.config.Now(),
+	})
+}
+
+const (
+	defaultAuditLimit = 100
+	maximumAuditLimit = 500
+)
+
+// ListAudit 供管理员查询审计事件；Limit 缺省为 100，最多 500。
+func (service *Service) ListAudit(ctx context.Context, actor User, query AuditQuery) ([]AuditEvent, error) {
+	if err := requireAdmin(actor); err != nil {
+		return nil, err
+	}
+	if query.Limit <= 0 {
+		query.Limit = defaultAuditLimit
+	}
+	if query.Limit > maximumAuditLimit {
+		query.Limit = maximumAuditLimit
+	}
+	return service.repository.ListAudit(ctx, query)
+}
+
+// RecordRoomEvent 记录与房间相关的元数据事件（例如语音加入/退出），
+// 供传输层调用；与管理审计共用同一张表和查询界面。
+func (service *Service) RecordRoomEvent(ctx context.Context, actorUserID, roomID, eventType string, metadata map[string]any) error {
+	eventID, err := service.randomValue("aud_", 12)
+	if err != nil {
+		return err
+	}
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	return service.repository.RecordAudit(ctx, AuditEvent{
+		EventID: eventID, ActorUserID: actorUserID, RoomID: roomID, EventType: eventType,
 		Metadata: metadata, CreatedAt: service.config.Now(),
 	})
 }

@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 import 'package:poker_client/core/auth/auth_session.dart';
+import 'package:poker_client/features/admin/domain/audit_event.dart';
 import 'package:poker_client/features/admin/domain/managed_user.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_entry.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
@@ -66,6 +67,18 @@ class GameApiClient {
         if (requestAdmin) 'requestAdmin': true,
       },
       expectedStatus: 201,
+    ),
+  );
+
+  Future<AuditLog> adminAuditEvents({
+    required String accessToken,
+    int limit = 200,
+    String userId = '',
+  }) async => AuditLog.fromJson(
+    await _get(
+      'v1/admin/audit?limit=$limit'
+          '${userId.isEmpty ? '' : '&userId=${Uri.encodeQueryComponent(userId)}'}',
+      token: accessToken,
     ),
   );
 
@@ -253,6 +266,19 @@ class GameApiClient {
       body: {'currentPassword': currentPassword, 'newPassword': newPassword},
     ),
   );
+
+  /// 自行注销账号。成功后服务端已撤销全部会话，调用方应直接清除本地登录态。
+  Future<void> deleteAccount({
+    required String accessToken,
+    required String password,
+  }) async {
+    await _request(
+      'v1/users/me/delete',
+      token: accessToken,
+      body: {'password': password},
+      expectedStatus: 204,
+    );
+  }
 
   Future<FriendRoom> createRoom({
     required String accessToken,

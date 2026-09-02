@@ -192,6 +192,8 @@
 
 `table.voice.state` 的 `members` 包含 `userId`、`displayName`、`joined`、`microphoneEnabled`，按 `userId` 排序。说话状态由 RTC 音量回调在客户端实时计算，不经过游戏服务转发。连接断开或离桌时服务端自动移除对应语音成员状态。
 
+语音加入/退出的**元数据**会持久化到审计表（事件 `voice.joined`、`voice.left`，带 `roomId`；`voice.left` 的 `reason` 为 `self`、`left_table` 或 `disconnected`），只在加入状态真正变化时记录，仅切换麦克风不记录，也不记录任何音频内容。管理员可通过 `GET /v1/admin/audit?limit=&userId=` 查询。
+
 聊天历史**不是**独立消息：加入牌桌时随 `table.joined` 的 `chatHistory` 字段一次性返回最近 50 条。
 
 ### 5.4 房间关闭与强制离桌

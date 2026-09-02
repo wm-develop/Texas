@@ -229,6 +229,41 @@ func (repository *PostgresRepository) UpdateStatuses(ctx context.Context, actorU
 	return nil
 }
 
+func (repository *PostgresRepository) SelfDelete(
+	ctx context.Context,
+	userID, anonymizedUsername, anonymizedDisplayName string,
+	now time.Time,
+) error {
+	transaction, err := repository.database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin self delete: %w", err)
+	}
+	// 改写用户名即释放 users_username_normalized_idx 上的原值，允许重新注册
+	result, err := transaction.ExecContext(
+		ctx,
+		`UPDATE users
+         SET username = $2, display_name = $3, status = 'deleted', updated_at = $4
+         WHERE user_id = $1 AND status <> 'deleted'`,
+		userID, anonymizedUsername, anonymizedDisplayName, now,
+	)
+	if err != nil {
+		_ = transaction.Rollback()
+		return postgresAccountError("self delete", err)
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		_ = transaction.Rollback()
+		return ErrNotFound
+	}
+	if _, err := transaction.ExecContext(ctx, `DELETE FROM refresh_sessions WHERE user_id = $1`, userID); err != nil {
+		_ = transaction.Rollback()
+		return fmt.Errorf("revoke sessions on self delete: %w", err)
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit self delete: %w", err)
+	}
+	return nil
+}
+
 func (repository *PostgresRepository) RegistrationEnabled(ctx context.Context) (bool, error) {
 	var enabled bool
 	if err := repository.database.QueryRowContext(
@@ -260,9 +295,9 @@ func (repository *PostgresRepository) RecordAudit(ctx context.Context, event Aud
 	_, err = repository.database.ExecContext(
 		ctx,
 		`INSERT INTO audit_events (
-            event_id, actor_user_id, event_type, metadata, created_at
-         ) VALUES ($1, $2, $3, $4, $5)`,
-		event.EventID, event.ActorUserID, event.EventType, metadata, event.CreatedAt,
+            event_id, actor_user_id, room_id, event_type, metadata, created_at
+         ) VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6)`,
+		event.EventID, event.ActorUserID, event.RoomID, event.EventType, metadata, event.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("record account audit: %w", err)
@@ -367,3 +402,43 @@ func postgresAccountError(operation string, err error) error {
 }
 
 var _ Repository = (*PostgresRepository)(nil)
+
+func (repository *PostgresRepository) ListAudit(ctx context.Context, query AuditQuery) ([]AuditEvent, error) {
+	rows, err := repository.database.QueryContext(
+		ctx,
+		`SELECT event_id, COALESCE(actor_user_id, ''), COALESCE(room_id, ''), event_type, metadata, created_at
+         FROM audit_events
+         WHERE $1 = ''
+            OR actor_user_id = $1
+            OR metadata->>'targetUserId' = $1
+            OR metadata->>'recipientUserId' = $1
+            OR (jsonb_typeof(metadata->'targetUserIds') = 'array' AND metadata->'targetUserIds' ? $1)
+         ORDER BY created_at DESC, event_id DESC
+         LIMIT $2`,
+		query.UserID, query.Limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list audit events: %w", err)
+	}
+	defer rows.Close()
+	events := make([]AuditEvent, 0)
+	for rows.Next() {
+		var event AuditEvent
+		var metadata []byte
+		if err := rows.Scan(
+			&event.EventID, &event.ActorUserID, &event.RoomID, &event.EventType, &metadata, &event.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan audit event: %w", err)
+		}
+		if len(metadata) > 0 {
+			if err := json.Unmarshal(metadata, &event.Metadata); err != nil {
+				return nil, fmt.Errorf("decode audit metadata: %w", err)
+			}
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate audit events: %w", err)
+	}
+	return events, nil
+}

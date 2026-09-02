@@ -122,6 +122,7 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
         onUpdateUsername: _updateUsername,
         onUpdateDisplayName: _updateDisplayName,
         onChangePassword: _changePassword,
+        onDeleteAccount: _deleteAccount,
         accessTokenProvider: _accessToken,
         settings: _settings,
         onLogout: _logout,
@@ -296,6 +297,20 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
     );
     if (mounted) setState(() => _session = _session?.copyWith(user: user));
     return user;
+  }
+
+  Future<void> _deleteAccount(String password) async {
+    await _authorized(
+      (token) => _api.deleteAccount(accessToken: token, password: password),
+    );
+    // 服务端已撤销全部会话，本地直接清除登录态，不再调用远端登出
+    _presenceTimer?.cancel();
+    if (!mounted) return;
+    setState(() {
+      _session = null;
+      _bankroll = null;
+      _room = null;
+    });
   }
 
   Future<AuthSession> _changePassword(

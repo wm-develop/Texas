@@ -26,9 +26,14 @@ type Repository interface {
 	UpdateDisplayName(ctx context.Context, userID, displayName string, now time.Time) error
 	UpdatePassword(ctx context.Context, userID, passwordHash string, now time.Time) error
 	UpdateStatuses(ctx context.Context, actorUserID string, userIDs []string, status Status, now time.Time) error
+	// SelfDelete 原子地完成用户自行注销：改写用户名与昵称以释放原用户名、
+	// 状态置为 deleted、撤销全部会话。已注销或不存在的账号返回 ErrNotFound。
+	SelfDelete(ctx context.Context, userID, anonymizedUsername, anonymizedDisplayName string, now time.Time) error
 	RegistrationEnabled(ctx context.Context) (bool, error)
 	SetRegistrationEnabled(ctx context.Context, actorUserID string, enabled bool, now time.Time) error
 	RecordAudit(ctx context.Context, event AuditEvent) error
+	// ListAudit 按时间倒序返回审计事件；query.UserID 非空时只返回该用户作为操作者或对象的事件。
+	ListAudit(ctx context.Context, query AuditQuery) ([]AuditEvent, error)
 	SaveSession(ctx context.Context, session Session) error
 	SessionByAccessHash(ctx context.Context, tokenHash string) (Session, error)
 	SessionByRefreshHash(ctx context.Context, tokenHash string) (Session, error)
@@ -249,6 +254,28 @@ func (repository *MemoryRepository) SessionByRefreshHash(_ context.Context, toke
 	return repository.sessionsByID[sessionID], nil
 }
 
+func (repository *MemoryRepository) SelfDelete(
+	_ context.Context,
+	userID, anonymizedUsername, anonymizedDisplayName string,
+	_ time.Time,
+) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	user, exists := repository.usersByID[userID]
+	if !exists || user.Status == StatusDeleted {
+		return ErrNotFound
+	}
+	// 释放原用户名，使其可以被重新注册
+	delete(repository.userIDByUsername, strings.ToLower(user.Username))
+	user.Username = anonymizedUsername
+	user.DisplayName = anonymizedDisplayName
+	user.Status = StatusDeleted
+	repository.usersByID[userID] = user
+	repository.userIDByUsername[strings.ToLower(anonymizedUsername)] = userID
+	repository.deleteUserSessionsLocked(userID)
+	return nil
+}
+
 func (repository *MemoryRepository) DeleteSession(_ context.Context, sessionID string) error {
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
@@ -271,4 +298,50 @@ func (repository *MemoryRepository) deleteUserSessionsLocked(userID string) {
 		delete(repository.sessionIDByAccess, session.AccessTokenHash)
 		delete(repository.sessionIDByRefresh, session.RefreshTokenHash)
 	}
+}
+
+// AuditQuery 描述审计查询条件。Limit 由服务层裁剪到合法范围。
+type AuditQuery struct {
+	UserID string
+	Limit  int
+}
+
+// auditMatchesUser 判断事件是否与某用户相关：作为操作者、对象或筹码接收方。
+func auditMatchesUser(event AuditEvent, userID string) bool {
+	if userID == "" || event.ActorUserID == userID {
+		return true
+	}
+	for _, key := range []string{"targetUserId", "recipientUserId"} {
+		if value, _ := event.Metadata[key].(string); value == userID {
+			return true
+		}
+	}
+	switch targets := event.Metadata["targetUserIds"].(type) {
+	case []string:
+		for _, target := range targets {
+			if target == userID {
+				return true
+			}
+		}
+	case []any:
+		for _, target := range targets {
+			if value, _ := target.(string); value == userID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (repository *MemoryRepository) ListAudit(_ context.Context, query AuditQuery) ([]AuditEvent, error) {
+	repository.mu.RLock()
+	defer repository.mu.RUnlock()
+	result := make([]AuditEvent, 0, query.Limit)
+	for index := len(repository.auditEvents) - 1; index >= 0 && len(result) < query.Limit; index-- {
+		event := repository.auditEvents[index]
+		if auditMatchesUser(event, query.UserID) {
+			result = append(result, event)
+		}
+	}
+	return result, nil
 }

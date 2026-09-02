@@ -21,9 +21,10 @@
 
 - 用户名和密码注册/登录、轮换式 Refresh Token、注销和会话撤销。
 - 登录用户名、牌桌昵称和密码的个人资料修改。
+- 用户自行注销账号：密码二次确认、须不在房间内、钱包筹码整体转入最早的在用管理员并记 `account_deletion` 流水、原用户名可再注册；注册页与个人信息页内置隐私说明。
 - 娱乐筹码钱包、无支付虚拟充值、不可变流水、入桌带入、手间补码和离桌返还。
 - 首位管理员一次性初始化；注册开关、账号创建/停用/恢复/软删除、批量操作、密码重置、用户名和筹码调整。
-- 管理员查看在线状态、当前房间并强制离桌；持久化文字禁言和管理审计。
+- 管理员查看在线状态、当前房间并强制离桌；持久化文字禁言和管理审计，客户端「审计记录」页可按类别/用户/房间查询管理操作、账号变更与语音加入/退出元数据。
 
 ### 房间与牌局
 
@@ -79,7 +80,7 @@ TRTC：牌桌语音
 
 ## 4. 数据库版本
 
-当前共有六组迁移：
+当前共有七组迁移：
 
 1. `000001_phase3_core`：账户、会话、钱包、房间、手牌、聊天和账本基础表。
 2. `000002_admin_console`：角色、账号状态、注册开关和管理审计。
@@ -87,6 +88,7 @@ TRTC：牌桌语音
 4. `000004_chat_moderation`：持久化文字禁言。
 5. `000005_runout_boards`：发两次公共牌和分池结算。
 6. `000006_dynamic_room_capacity`：创建房间不预设人数，容量动态扩展至 10 人。
+7. `000007_account_deletion`：账本 `reason` 约束增加 `account_deletion`，用于账号注销时钱包整体转入管理员。
 
 生产环境必须先运行 `migrate up`，再启动对应版本游戏服务。服务启动会校验迁移版本和 SQL 校验和。
 
@@ -113,7 +115,7 @@ TRTC：牌桌语音
 - 运行中的牌桌状态主要在内存中。数据库保留业务记录，但服务进程异常退出后不能完整恢复进行中的一手牌。
 - 备份、恢复演练、账本对账、健康巡检与告警均已提供可执行方案（`deploy/backup/`、`deploy/monitor/`，见[备份恢复指南](BACKUP_AND_RESTORE_GUIDE.md)与[运行保障指南](OPERATIONS_GUIDE.md)）；2026-09-01 生产服务器已全部安装并验证：备份定时任务、异机复制、恢复演练、对账定时任务、健康巡检，以及钉钉告警通道（手动触发与 OnFailure 链路均实际收到消息）。24 小时故障注入尚未做。
 - 分层限流已实现：登录/注册/刷新按 IP、密码错误按用户名、房间与钱包操作按用户、TRTC 凭证按用户、单 IP WebSocket 并发上限；`TRUSTED_PROXIES` 提供可信代理解析。`/metrics` 以 Bearer 令牌保护，暴露 HTTP、WebSocket、牌桌动作、活跃牌桌、快照广播失败与限流计数。生产环境已配置 `TRUSTED_PROXIES`（`texas-internal` 网段）与 `METRICS_TOKEN`，`/metrics` 已验证仅接受令牌访问。
-- 举报、账号注销、隐私提示和语音加入/退出元数据尚未完成。
+- 账号注销（`POST /v1/users/me/delete`）与隐私说明已完成，规则见[隐私说明](PRIVACY_NOTICE.md)；举报因熟人局定位不做。语音加入/退出元数据以 `voice.joined`/`voice.left` 审计事件持久化，管理员可在客户端「审计记录」页（`GET /v1/admin/audit`）按类别、用户或房间查询全部管理操作、账号变更与语音进出。
 - 已有 GitHub Actions（`.github/workflows/ci.yml`）：服务端 gofmt/vet/test 与 -race、客户端 analyze/test、shellcheck 与仓库卫生检查。构建、迁移、发布和回滚仍是文档化的人工流程。
 - Android Release 签名已支持通过 `android/key.properties` 配置独立发布密钥（缺失时回退调试签名并告警），维护者需按[Android 发布签名配置指南](ANDROID_SIGNING_GUIDE.md)完成一次性配置；HarmonyOS 签名依赖维护者本机配置；iOS 未验证。
 - 客户端牌桌页已按职责拆分：`table_prototype_page.dart` 从 3180 行降至约 970 行，组件分入 `table_labels`、`table_card_widgets`、`table_status_widgets`、`table_board_center`、`table_seat_widgets`、`table_chat_panel`、`table_action_bar`、`table_rebuy_dialog`、`table_canvas`。提取出的组件为公开类，可被 Widget 测试直接覆盖。
@@ -125,9 +127,8 @@ TRTC：牌桌语音
 
 截至 2026-09-01，备份/演练/对账、成员生命周期属性测试、CI、牌桌页拆分与布局回归、分层限流、`/metrics` 与告警脚本均已落地。剩余顺序：
 
-1. 账号注销与隐私提示（举报因熟人局定位暂不做）。
-3. 清理 `internal/protocol/messages.go` 的死常量与 `revisionFromError` 的失效分支；继续从 `_TablePrototypePageState` 抽出连接/命令控制器。
-4. 24 小时稳定性与弱网验收、发布冒烟清单。
-5. 再设计 Redis 路由、单写者租约、牌桌快照恢复和多实例故障模型；不要直接把进程内状态复制到 Redis。
+1. 清理 `internal/protocol/messages.go` 的死常量与 `revisionFromError` 的失效分支；继续从 `_TablePrototypePageState` 抽出连接/命令控制器。
+2. 24 小时稳定性与弱网验收、发布冒烟清单。
+3. 再设计 Redis 路由、单写者租约、牌桌快照恢复和多实例故障模型；不要直接把进程内状态复制到 Redis。
 
 详细接手入口见[项目交接文档](PROJECT_HANDOVER.md)，完整开发演进见[开发历程](DEVELOPMENT_HISTORY.md)。
