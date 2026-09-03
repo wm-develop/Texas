@@ -347,7 +347,12 @@ AUTH_ACCESS_TOKEN_TTL_SECONDS=900
 AUTH_REFRESH_TOKEN_TTL_SECONDS=2592000
 TRUSTED_PROXIES=172.17.0.1
 METRICS_TOKEN=替换为至少16位随机字符串
+# 可选：低于该版本的客户端一律被拒（426），不配则完全不启用。
+# 编码为 major*1000000 + minor*1000 + patch，与客户端 versionCode 一致（0.2.1 → 2001）。
+MINIMUM_CLIENT_VERSION=2001
 ```
+
+`MINIMUM_CLIENT_VERSION` 用于开发期强制朋友更新客户端：旧客户端连上新服务端常会出难以定位的问题。**必须等新客户端分发完成后再调高它**，否则还没更新的人会立刻被挡在门外（这正是它的作用，但要挑时机）。取值就是新客户端 `pubspec.yaml` 里 `+` 后面那个数。
 
 `ALLOWED_ORIGINS` 必须使用英文逗号分隔完整来源，不能带路径、中文标点或末尾多余逗号。修改环境文件后必须重新创建游戏服务容器，单纯 `docker restart` 不会让容器重新读取修改后的 `--env-file`。
 

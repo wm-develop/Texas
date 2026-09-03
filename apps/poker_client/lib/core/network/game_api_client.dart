@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import 'package:poker_client/core/app_version.dart';
 import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/features/admin/domain/audit_event.dart';
 import 'package:poker_client/features/admin/domain/managed_user.dart';
@@ -10,6 +11,19 @@ import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
 import 'package:poker_client/features/table/domain/room_result.dart';
 import 'package:poker_client/features/history/domain/recent_hand.dart';
+
+/// 服务端要求更高版本的客户端（HTTP 426）。
+///
+/// 与普通接口错误分开：它不是某次操作失败，而是这个客户端整体不能再用了，
+/// 界面要据此进入阻断态而不是弹一条错误提示。
+class ClientTooOldException implements Exception {
+  const ClientTooOldException({required this.minimumVersionCode});
+
+  final int minimumVersionCode;
+
+  @override
+  String toString() => 'ClientTooOldException($minimumVersionCode)';
+}
 
 class GameApiException implements Exception {
   const GameApiException(this.code, {required this.statusCode});
@@ -426,6 +440,7 @@ class GameApiClient {
     final headers = <String, String>{
       'content-type': 'application/json; charset=utf-8',
       'accept': 'application/json',
+      clientVersionHeader: '$appVersionCode',
     };
     if (token != null) headers['authorization'] = 'Bearer $token';
     late final http.Response response;
@@ -444,6 +459,7 @@ class GameApiClient {
       return const {};
     }
     final decoded = _decode(response.bodyBytes);
+    _throwIfClientTooOld(response.statusCode, decoded);
     if (response.statusCode != expectedStatus) {
       throw GameApiException(
         decoded['error'] as String? ?? 'request_failed',
@@ -465,6 +481,7 @@ class GameApiClient {
             headers: {
               'accept': 'application/json',
               'authorization': 'Bearer $token',
+              clientVersionHeader: '$appVersionCode',
             },
           )
           .timeout(requestTimeout);
@@ -472,6 +489,7 @@ class GameApiClient {
       throw GameApiTimeoutException(path, requestTimeout);
     }
     final decoded = _decode(response.bodyBytes);
+    _throwIfClientTooOld(response.statusCode, decoded);
     if (response.statusCode != 200) {
       throw GameApiException(
         decoded['error'] as String? ?? 'request_failed',
@@ -481,9 +499,61 @@ class GameApiClient {
     return decoded;
   }
 
+  /// 查询服务端对客户端版本的要求。无需鉴权：登录之前就要能判断。
+  ///
+  /// 端点不存在（旧服务端）时返回 null——那种情况该更新的是服务端，
+  /// 客户端不该因此把自己锁死。
+  Future<ClientVersionRequirement?> clientVersionRequirement() async {
+    late final http.Response response;
+    try {
+      response = await _httpClient
+          .get(
+            _serverBaseUri.resolve('v1/client/version'),
+            headers: const {'accept': 'application/json'},
+          )
+          .timeout(requestTimeout);
+    } on Object {
+      return null;
+    }
+    if (response.statusCode != 200) return null;
+    try {
+      final decoded = _decode(response.bodyBytes);
+      return ClientVersionRequirement(
+        minimum: decoded['minimum'] as int? ?? 0,
+        recommended: decoded['recommended'] as int? ?? 0,
+      );
+    } on Object {
+      return null;
+    }
+  }
+
   void close() {
     if (_ownsClient) _httpClient.close();
   }
+}
+
+/// 服务端 426 表示这个客户端整体不能再用了，与单次操作失败区别对待。
+void _throwIfClientTooOld(int statusCode, Map<String, dynamic> decoded) {
+  if (statusCode != 426) return;
+  throw ClientTooOldException(
+    minimumVersionCode: decoded['minimum'] as int? ?? 0,
+  );
+}
+
+/// 服务端声明的客户端版本要求。
+class ClientVersionRequirement {
+  const ClientVersionRequirement({
+    required this.minimum,
+    required this.recommended,
+  });
+
+  /// 低于它就完全不能用；为 0 表示服务端没有启用版本门禁。
+  final int minimum;
+
+  /// 低于它只提示有新版本，不阻断；为 0 表示不提示。
+  final int recommended;
+
+  bool get blocksCurrentBuild => minimum > 0 && appVersionCode < minimum;
 }
 
 Map<String, dynamic> _decode(List<int> bytes) {

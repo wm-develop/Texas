@@ -14,6 +14,7 @@ import 'package:poker_client/features/history/domain/recent_hand.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
 import 'package:poker_client/features/lobby/presentation/lobby_page.dart';
 import 'package:poker_client/features/table/presentation/table_prototype_page.dart';
+import 'package:poker_client/features/update/presentation/update_required_page.dart';
 
 class PokerApp extends StatefulWidget {
   const PokerApp({super.key});
@@ -27,6 +28,9 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
   late final GameApiClient _api;
   late final AppSettingsController _settings;
   AuthSession? _session;
+  /// 版本过旧时阻断整个应用，连登录都不放行。
+  bool _clientTooOld = false;
+  int _minimumClientVersion = 0;
   FriendRoom? _room;
   BankrollSnapshot? _bankroll;
   Timer? _presenceTimer;
@@ -50,6 +54,8 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
     }
     _api = GameApiClient();
     _settings = AppSettingsController()..load();
+    // 必须排在 _api 之后：版本检查要用它。
+    unawaited(_recheckClientVersion());
   }
 
   @override
@@ -101,6 +107,14 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
   }
 
   Widget _home() {
+    // 版本门禁在最前面：开发期服务端改动频繁，旧客户端连上新服务端会出
+    // 各种难以定位的问题，因此完全阻断，连登录都不放行。
+    if (_clientTooOld) {
+      return UpdateRequiredPage(
+        minimumVersionCode: _minimumClientVersion,
+        onRetry: _recheckClientVersion,
+      );
+    }
     final session = _session;
     if (session == null) {
       return AuthPage(onLogin: _login, onRegister: _register);
@@ -334,6 +348,33 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
   ///
   /// [reason] 来自服务端的关闭原因（`removed_by_owner` 等）；拿不到时不弹窗，
   /// 因为那种情况多半是自己退的房或房间已关闭，突兀的提示反而误导。
+  /// 向服务端确认本客户端是否还够新。
+  ///
+  /// 端点不存在（旧服务端）或网络不通时不阻断——那种情况该更新的是服务端，
+  /// 或者只是暂时连不上，把客户端锁死只会更难排查。真正过旧的客户端在
+  /// 随后的任何一次请求上都会被服务端以 426 拒绝，同样会走到阻断页。
+  Future<void> _recheckClientVersion() async {
+    final requirement = await _api.clientVersionRequirement();
+    if (!mounted) return;
+    if (requirement == null) {
+      setState(() => _clientTooOld = false);
+      return;
+    }
+    setState(() {
+      _minimumClientVersion = requirement.minimum;
+      _clientTooOld = requirement.blocksCurrentBuild;
+    });
+  }
+
+  /// 任何一次请求被服务端以 426 拒绝时进入阻断态。
+  void _handleClientTooOld(ClientTooOldException error) {
+    if (!mounted) return;
+    setState(() {
+      _minimumClientVersion = error.minimumVersionCode;
+      _clientTooOld = true;
+    });
+  }
+
   Future<void> _removedFromRoom(String reason) async {
     if (!mounted || _room == null) return;
     setState(() => _room = null);
@@ -492,6 +533,11 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
     var token = await _accessToken();
     try {
       return await operation(token);
+    } on ClientTooOldException catch (error) {
+      // 服务端在任何接口上拒绝这个版本：整个应用进入阻断态，而不是把它
+      // 当成一次失败的操作反复重试。
+      _handleClientTooOld(error);
+      rethrow;
     } on GameApiException catch (error) {
       if (error.statusCode != 401) rethrow;
       token = await _accessToken(forceRefresh: true);

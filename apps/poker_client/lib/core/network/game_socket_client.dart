@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:poker_client/core/network/table_sequence_tracker.dart';
 import 'package:poker_client/features/table/domain/table_snapshot.dart';
+import 'package:poker_client/core/app_version.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 enum GameSocketStatus {
@@ -135,7 +136,16 @@ class GameSocketClient extends ChangeNotifier {
         forceRefresh: _forceRefreshOnNextConnect,
       );
       _forceRefreshOnNextConnect = false;
-      pendingChannel = WebSocketChannel.connect(Uri.parse(serverUrl));
+      // 浏览器的 WebSocket API 不允许设置自定义请求头，因此版本走查询参数；
+      // 服务端两种方式都认。
+      pendingChannel = WebSocketChannel.connect(
+        Uri.parse(serverUrl).replace(
+          queryParameters: {
+            ...Uri.parse(serverUrl).queryParameters,
+            clientVersionQuery: '$appVersionCode',
+          },
+        ),
+      );
       await pendingChannel.ready.timeout(connectTimeout);
       final channel = pendingChannel;
       _channel = channel;

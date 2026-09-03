@@ -47,6 +47,10 @@ type Options struct {
 	// InstanceID 标识本进程，随 session.authenticated 下发；客户端据此判断
 	// 重连后服务端是否已重启。为空时 NewHandler 生成随机值。
 	InstanceID string
+	// MinimumClientVersion 见 config.Config；为 0 时不启用版本门禁。
+	MinimumClientVersion int
+	// RecommendedClientVersion 见 config.Config；只提示不阻断。
+	RecommendedClientVersion int
 }
 
 func NewHandler(logger *slog.Logger, options Options) http.Handler {
@@ -58,6 +62,9 @@ func NewHandler(logger *slog.Logger, options Options) http.Handler {
 	guard := newGuards(options.TrustedProxies, options.RateLimits, options.Metrics)
 	webSockets := newWebSocketServer(logger, options, presence, guard)
 	mux.HandleFunc("GET /healthz", handleHealth)
+	registerClientVersionRoute(
+		mux, options.MinimumClientVersion, options.RecommendedClientVersion,
+	)
 	mux.HandleFunc("GET /readyz", handleReadiness(options.Readiness))
 	registerAccountRoutes(mux, options.Accounts, presence, guard)
 	registerAccountDeletionRoute(mux, options.Accounts, options.Bankroll, options.Rooms, guard)
@@ -83,6 +90,9 @@ func NewHandler(logger *slog.Logger, options Options) http.Handler {
 	if options.Metrics != nil {
 		handler = httpMetrics(options.Metrics, handler)
 	}
+	// 版本门禁包在最外层：只挡登录接口的话，已经登录的旧客户端还能继续连
+	// 牌桌；放在这里 WebSocket 升级也一并被覆盖。
+	handler = clientVersionGuard(options.MinimumClientVersion, handler)
 	return securityHeaders(configuredCORS(handler, options.AllowedOrigins))
 }
 
