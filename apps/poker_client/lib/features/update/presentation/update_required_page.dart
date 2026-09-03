@@ -27,14 +27,6 @@ class UpdateRequiredPage extends StatelessWidget {
       ? '请刷新页面获取最新版本。如果刷新后仍提示更新，请强制刷新一次以清除缓存。'
       : '请安装最新版本的客户端后再进入。';
 
-  static String _describe(int versionCode) {
-    if (versionCode <= 0) return '未知';
-    final major = versionCode ~/ 1000000;
-    final minor = (versionCode ~/ 1000) % 1000;
-    final patch = versionCode % 1000;
-    return '$major.$minor.$patch';
-  }
-
   @override
   Widget build(BuildContext context) {
     final hint = actionHintFor(defaultTargetPlatform, isWeb: kIsWeb);
@@ -62,7 +54,7 @@ class UpdateRequiredPage extends StatelessWidget {
                 const SizedBox(height: 14),
                 _line('当前版本', appVersionName),
                 if (minimumVersionCode > 0)
-                  _line('需要版本', _describe(minimumVersionCode)),
+                  _line('需要版本', describeVersionCode(minimumVersionCode)),
                 const SizedBox(height: 14),
                 Text(
                   hint,

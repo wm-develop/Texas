@@ -19,3 +19,25 @@ const int appVersionCode = 2001;
 /// 请求头，因此 WS 走查询参数，普通 HTTP 走请求头；服务端两者都认。
 const String clientVersionHeader = 'X-Client-Version';
 const String clientVersionQuery = 'clientVersion';
+
+/// 把版本号整数还原成 `major.minor.patch`。
+///
+/// 服务端只传整数（门禁比较的也是整数），界面要显示成人能读的形式。
+/// 0 或负数表示「未设置」。
+String describeVersionCode(int versionCode) {
+  if (versionCode <= 0) return '未限制';
+  final major = versionCode ~/ 1000000;
+  final minor = (versionCode ~/ 1000) % 1000;
+  final patch = versionCode % 1000;
+  return '$major.$minor.$patch';
+}
+
+/// 把一段输入解析成版本号整数。空串表示不限制（0）；非法输入返回 null，
+/// 由界面提示，而不是悄悄当成 0 把门禁关掉。
+int? parseVersionCode(String input) {
+  final trimmed = input.trim();
+  if (trimmed.isEmpty) return 0;
+  final value = int.tryParse(trimmed);
+  if (value == null || value < 0) return null;
+  return value;
+}

@@ -1,7 +1,9 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:poker_client/core/app_version.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
+import 'package:poker_client/features/admin/presentation/minimum_client_version_dialog.dart';
 import 'package:poker_client/features/admin/domain/managed_user.dart';
 import 'package:poker_client/features/admin/presentation/admin_audit_page.dart';
 
@@ -138,7 +140,7 @@ class _AdminPageState extends State<AdminPage> {
             avatar: const Icon(Icons.system_update_alt),
             label: Text(
               _minimumClientVersion > 0
-                  ? '最低客户端 ${_describeVersion(_minimumClientVersion)}'
+                  ? '最低客户端 ${describeVersionCode(_minimumClientVersion)}'
                   : '未限制客户端版本',
             ),
             onPressed: _busy ? null : _editMinimumClientVersion,
@@ -424,72 +426,17 @@ class _AdminPageState extends State<AdminPage> {
     });
   }
 
-  static String _describeVersion(int versionCode) {
-    if (versionCode <= 0) return '未限制';
-    final major = versionCode ~/ 1000000;
-    final minor = (versionCode ~/ 1000) % 1000;
-    final patch = versionCode % 1000;
-    return '$major.$minor.$patch';
-  }
-
   /// 调整最低客户端版本。服务端立即生效，不需要重启服务或改环境变量。
   Future<void> _editMinimumClientVersion() async {
-    final controller = TextEditingController(
-      text: _minimumClientVersion > 0 ? '$_minimumClientVersion' : '',
+    final minimum = await MinimumClientVersionDialog.show(
+      context,
+      current: _minimumClientVersion,
     );
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('最低客户端版本'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text(
-              '低于该版本的客户端会被拒绝连接，并看到更新提示。'
-              '填客户端 pubspec.yaml 里「+」后面那个数（0.2.1 → 2001）；'
-              '留空或填 0 表示不限制。',
-              style: TextStyle(color: Colors.white70, fontSize: 12),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: controller,
-              autofocus: true,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: '版本号',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
-            ),
-            const SizedBox(height: 10),
-            const Text(
-              '调高后还没更新的朋友会立刻被挡在门外，请在新客户端发出去之后再改。',
-              style: TextStyle(color: Colors.orangeAccent, fontSize: 12),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('保存'),
-          ),
-        ],
-      ),
-    );
-    controller.dispose();
-    if (confirmed != true || !mounted) return;
-    final minimum = int.tryParse(controller.text.trim()) ?? 0;
+    if (minimum == null || !mounted) return;
     await _run(() async {
       final value = await _withAccessToken(
-        (token) => _api.adminSetMinimumClientVersion(
-          accessToken: token,
-          minimum: minimum < 0 ? 0 : minimum,
-        ),
+        (token) =>
+            _api.adminSetMinimumClientVersion(accessToken: token, minimum: minimum),
       );
       if (mounted) setState(() => _minimumClientVersion = value);
     });

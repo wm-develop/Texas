@@ -287,3 +287,19 @@ ADR 已完成：[ADR-002](decisions/ADR-002-MULTI-INSTANCE.md)。结论是**暂�
 - [ ] 能按生产更新手册判断一次改动需要数据库、服务端还是仅客户端更新。
 
 完成这些项目后，再开始大规模重构或阶段 3 后续开发。
+
+## 发布新客户端的版本号流程
+
+版本号写在三处，必须一起改，漏改任何一处 `flutter test` 会失败：
+
+1. `apps/poker_client/pubspec.yaml` 的 `version: <name>+<code>`
+2. `apps/poker_client/ohos/AppScope/app.json5` 的 `versionName` 与 `versionCode`
+3. `apps/poker_client/lib/core/app_version.dart` 的 `appVersionName` 与 `appVersionCode`
+
+`code` 的编码为 `major*1000000 + minor*1000 + patch`（0.2.1 → 2001），四端统一；
+Android 的 `versionCode` 直接取 pubspec 里 `+` 后面那个数。
+
+改完版本号、构建并把安装包发给朋友之后，**用管理员账号在客户端的「服务器管理」
+页点「最低客户端版本」填入同一个数**即可强制未更新的人升级。它存在数据库里，
+立即生效，与本次服务端是否更新无关，也不需要登服务器改环境变量或重建容器。
+输入框下方会实时把数字还原成 `0.2.1` 这种形式，填错一位一眼就能看出来。
