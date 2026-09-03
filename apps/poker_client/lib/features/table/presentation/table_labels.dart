@@ -57,17 +57,30 @@ String suggestionButtonLabel(BetSuggestion suggestion, int streetBet) {
       '投入 $committed · 至 ${suggestion.raiseTo}';
 }
 
-String potAwardLabel(PotAward award, List<TableSeatSnapshot> seats) {
+String potAwardLabel(
+  PotAward award,
+  List<TableSeatSnapshot> seats, {
+  int totalPots = 1,
+}) {
   final names = award.payouts
       .map((payout) {
-        final name = seats
+        // 优先用服务端随结算下发的昵称：赢家赢完这手常常立刻离开房间，
+        // 那时座位已经没了，只靠座位反查会退化成显示用户 ID。
+        final seated = seats
             .where((seat) => seat.userId == payout.userId)
             .map((seat) => seat.displayName)
             .firstOrNull;
-        return '${name ?? payout.userId} +${payout.amount}';
+        final name = payout.displayName.isNotEmpty
+            ? payout.displayName
+            : (seated == null || seated.isEmpty ? '已离开的玩家' : seated);
+        return '$name +${payout.amount}';
       })
       .join('、');
-  final potName = award.potIndex == 0 ? '主池' : '边池 ${award.potIndex}';
+  // 只有 all in 造成投入档位差异时才会有第二个池；此时「主池」这个称呼
+  // 才有对照物，否则单池直接叫「底池」。
+  final potName = award.potIndex == 0
+      ? (totalPots > 1 ? '主池' : '底池')
+      : '边池 ${award.potIndex}';
   final runout = award.runoutIndex > 0 ? '第${award.runoutIndex}次 · ' : '';
   return '$runout$potName ${award.amount}：$names';
 }

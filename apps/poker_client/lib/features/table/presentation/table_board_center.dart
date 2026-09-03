@@ -238,7 +238,15 @@ class TableBoardCenterState extends State<TableBoardCenter> {
                   const SizedBox(height: 6),
                   for (final award in snapshot.settlement!.potAwards)
                     Text(
-                      potAwardLabel(award, snapshot.seats),
+                      potAwardLabel(
+                        award,
+                        snapshot.seats,
+                        // 发两次时同一个池会拆成多条，池数按 potIndex 去重
+                        totalPots: snapshot.settlement!.potAwards
+                            .map((each) => each.potIndex)
+                            .toSet()
+                            .length,
+                      ),
                       style: const TextStyle(
                         color: Color(0xFFF6D986),
                         fontSize: 12,

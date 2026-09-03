@@ -61,6 +61,9 @@ type runtime struct {
 	// the room mid-hand. Their wallet refund runs after the settlement writes
 	// the post-hand stacks; the display name keeps hand history readable.
 	pendingCashOuts map[string]string
+	// knownDisplayNames 记住本房间见过的昵称。赢家常常赢完这手就离开房间，
+	// 届时房间成员表里已经没有他，结算文案会退化成显示用户 ID。
+	knownDisplayNames map[string]string
 }
 
 const (
@@ -1152,6 +1155,12 @@ func (manager *Manager) persistSettlementLocked(runtime *runtime, roomValue room
 		for _, member := range roomValue.Members {
 			displayNames[member.UserID] = member.DisplayName
 		}
+		if runtime.knownDisplayNames == nil {
+			runtime.knownDisplayNames = make(map[string]string, len(displayNames))
+		}
+		for userID, displayName := range displayNames {
+			runtime.knownDisplayNames[userID] = displayName
+		}
 		players := runtime.engine.Players()
 		ledgerByPlayer := make(map[string]ledger.Entry, len(settlement.LedgerEntries))
 		for _, entry := range settlement.LedgerEntries {
@@ -1242,6 +1251,7 @@ func snapshotForRuntime(runtime *runtime, roomValue room.Room, recipientUserID s
 	result.OwnerUserID = roomValue.OwnerUserID
 	result.Draining = runtime.draining != nil && runtime.draining.Load()
 	result.JoinLocked = roomValue.JoinLocked
+	annotateSettlement(runtime, roomValue, &result)
 	if runtime.lastAction != nil {
 		lastAction := *runtime.lastAction
 		result.LastAction = &lastAction
@@ -1605,4 +1615,44 @@ func (manager *Manager) KickMember(ctx context.Context, ownerUserID, targetUserI
 		}
 	}
 	return manager.Leave(ctx, targetUserID)
+}
+
+// annotateSettlement 给结算明细补上昵称，并把底池对齐到结算总额。
+//
+// 两处都因为同一件事出错：赢家常常赢完这手就立刻离开房间。此后房间成员表
+// 和引擎座位里都没有他，于是结算文案退化成显示用户 ID，而底池（原本按在座
+// 玩家的投入累加）也会小于实际金额。昵称改为在结算时固化并随快照下发；
+// 底池在结算展示期间改用各池金额之和——发两次时每个池均分到各块牌面，
+// 所有 award 之和仍然等于本手总底池。
+func annotateSettlement(runtime *runtime, roomValue room.Room, result *Snapshot) {
+	if result.Settlement == nil || result.Settlement.HandID == "" {
+		return
+	}
+	if runtime.knownDisplayNames == nil {
+		runtime.knownDisplayNames = make(map[string]string, len(roomValue.Members))
+	}
+	for _, member := range roomValue.Members {
+		runtime.knownDisplayNames[member.UserID] = member.DisplayName
+	}
+
+	var settled int64
+	awards := make([]holdem.PotAward, len(result.Settlement.PotAwards))
+	for index, award := range result.Settlement.PotAwards {
+		settled += award.Amount
+		payouts := make([]holdem.Payout, len(award.Payouts))
+		for payoutIndex, payout := range award.Payouts {
+			if name := runtime.knownDisplayNames[payout.PlayerID]; name != "" {
+				payout.DisplayName = name
+			}
+			payouts[payoutIndex] = payout
+		}
+		award.Payouts = payouts
+		awards[index] = award
+	}
+	settlement := *result.Settlement
+	settlement.PotAwards = awards
+	result.Settlement = &settlement
+	if settled > 0 {
+		result.TotalPot = settled
+	}
 }

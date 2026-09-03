@@ -3,6 +3,7 @@ package holdem
 import (
 	"errors"
 	"sort"
+	"strings"
 )
 
 type Contribution struct {
@@ -30,7 +31,11 @@ type Contender struct {
 
 type Payout struct {
 	PlayerID string `json:"playerId"`
-	Amount   int64  `json:"amount"`
+	// DisplayName 由 tablemanager 在组装快照时填入；规则引擎不认识昵称。
+	// 结算文案必须自带昵称：赢家常常赢完这手就离开房间，届时房间成员表里
+	// 已经没有他，靠座位反查只能退化成显示用户 ID。
+	DisplayName string `json:"displayName,omitempty"`
+	Amount      int64  `json:"amount"`
 }
 
 type PotAward struct {
@@ -78,6 +83,10 @@ func BuildPots(contributions []Contribution) (PotBuildResult, error) {
 	}
 	sort.Slice(levels, func(left, right int) bool { return levels[left] < levels[right] })
 
+	// 上一层的有资格名单，用于合并参赛名单相同的相邻层，见下方说明。
+	var previousEligibleKey string
+	var hasPreviousPot bool
+
 	var previousLevel int64
 	for _, level := range levels {
 		participants := make([]Contribution, 0, len(contributions))
@@ -112,10 +121,24 @@ func BuildPots(contributions []Contribution) (PotBuildResult, error) {
 		for index, contribution := range eligible {
 			playerIDs[index] = contribution.PlayerID
 		}
+
+		// 边池的意义是「部分玩家无权争夺」，只有 all in 造成投入档位差异时
+		// 才会产生。弃牌者投入较少同样会切出一层，但那一层与下一层的有资格
+		// 名单完全相同——没人 all in 却显示出「边池 1」会让玩家莫名其妙。
+		// 名单相同的相邻层合并成一个池：同一批人比同样的牌，赢家必然相同，
+		// 合并后余数也只分一次，与真实牌桌一致。
+		eligibleKey := strings.Join(playerIDs, ",")
+		amount := layer * int64(len(participants))
+		if hasPreviousPot && eligibleKey == previousEligibleKey {
+			result.Pots[len(result.Pots)-1].Amount += amount
+			continue
+		}
 		result.Pots = append(result.Pots, Pot{
-			Amount:            layer * int64(len(participants)),
+			Amount:            amount,
 			EligiblePlayerIDs: playerIDs,
 		})
+		previousEligibleKey = eligibleKey
+		hasPreviousPot = true
 	}
 
 	return result, nil

@@ -165,3 +165,101 @@ func mustValue(t *testing.T, cards string) HandValue {
 	}
 	return value
 }
+
+// 边池的意义是「部分玩家无权争夺」，只有 all in 造成投入档位差异时才产生。
+// 弃牌者投入较少同样会切出一层，但那一层与下一层的有资格名单完全相同；
+// 此前它们各自成池，玩家会在没人 all in 的牌局里看到「边池 1」。
+func TestFoldedPlayersDoNotCreateSidePots(t *testing.T) {
+	result, err := BuildPots([]Contribution{
+		{PlayerID: "folded", Seat: 1, Amount: 100, Folded: true},
+		{PlayerID: "caller", Seat: 2, Amount: 500},
+		{PlayerID: "raiser", Seat: 3, Amount: 500},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Pots) != 1 {
+		t.Fatalf("no one is all in, so there must be a single pot, got %#v", result.Pots)
+	}
+	if result.Pots[0].Amount != 1_100 {
+		t.Fatalf("the folded player's chips belong to the main pot, got %d", result.Pots[0].Amount)
+	}
+	if len(result.Pots[0].EligiblePlayerIDs) != 2 {
+		t.Fatalf("only the two live players may win it: %#v", result.Pots[0].EligiblePlayerIDs)
+	}
+}
+
+// 多人在不同街弃牌同样不该切出边池。
+func TestMultipleFoldLevelsStillProduceOnePot(t *testing.T) {
+	result, err := BuildPots([]Contribution{
+		{PlayerID: "blind", Seat: 1, Amount: 10, Folded: true},
+		{PlayerID: "early", Seat: 2, Amount: 100, Folded: true},
+		{PlayerID: "middle", Seat: 3, Amount: 260, Folded: true},
+		{PlayerID: "hero", Seat: 4, Amount: 600},
+		{PlayerID: "villain", Seat: 5, Amount: 600},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Pots) != 1 {
+		t.Fatalf("folds must not create side pots, got %#v", result.Pots)
+	}
+	if result.Pots[0].Amount != 1_570 {
+		t.Fatalf("every chip belongs to the single pot, got %d", result.Pots[0].Amount)
+	}
+}
+
+// All in 造成的档位差异仍然必须切出边池：短码玩家赢不走他没投过的钱。
+func TestAllInStillCreatesSidePots(t *testing.T) {
+	result, err := BuildPots([]Contribution{
+		{PlayerID: "short", Seat: 1, Amount: 100},
+		{PlayerID: "mid", Seat: 2, Amount: 500},
+		{PlayerID: "deep", Seat: 3, Amount: 500},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Pots) != 2 {
+		t.Fatalf("expected a main pot plus one side pot, got %#v", result.Pots)
+	}
+	if result.Pots[0].Amount != 300 || len(result.Pots[0].EligiblePlayerIDs) != 3 {
+		t.Fatalf("main pot should be 100 from each of the three: %#v", result.Pots[0])
+	}
+	if result.Pots[1].Amount != 800 || len(result.Pots[1].EligiblePlayerIDs) != 2 {
+		t.Fatalf("the short stack must not be eligible for the side pot: %#v", result.Pots[1])
+	}
+}
+
+// 边池只按「谁有资格」切，弃牌者混在 all in 之间也不会多切一层。
+func TestFoldsBetweenAllInLevelsDoNotAddPots(t *testing.T) {
+	result, err := BuildPots([]Contribution{
+		{PlayerID: "folded", Seat: 1, Amount: 250, Folded: true},
+		{PlayerID: "short", Seat: 2, Amount: 100},
+		{PlayerID: "mid", Seat: 3, Amount: 600},
+		{PlayerID: "deep", Seat: 4, Amount: 600},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 100 一层（四人有份，三人有资格）；100→600 之间弃牌者只跟到 250，
+	// 但 250 那一层和 600 那一层的有资格名单都是 mid+deep，应当合并。
+	if len(result.Pots) != 2 {
+		t.Fatalf("expected exactly two pots, got %#v", result.Pots)
+	}
+	if result.Pots[0].Amount != 400 {
+		t.Fatalf("main pot = 100 from four players, got %d", result.Pots[0].Amount)
+	}
+	if result.Pots[1].Amount != 1_150 {
+		t.Fatalf("side pot should absorb the folded player's extra chips, got %d", result.Pots[1].Amount)
+	}
+	var total int64
+	for _, pot := range result.Pots {
+		total += pot.Amount
+	}
+	for _, refund := range result.Refunds {
+		total += refund
+	}
+	if total != 1_550 {
+		t.Fatalf("chips must be conserved, got %d", total)
+	}
+}

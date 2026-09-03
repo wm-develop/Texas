@@ -188,13 +188,22 @@ class RevealedHand {
 }
 
 class PotPayout {
-  const PotPayout({required this.userId, required this.amount});
+  const PotPayout({
+    required this.userId,
+    required this.displayName,
+    required this.amount,
+  });
 
   final String userId;
+
+  /// 服务端在结算时固化的昵称。赢家常常赢完这手就离开房间，那时座位已经
+  /// 没了，靠座位反查只能显示用户 ID。旧服务端不下发时为空。
+  final String displayName;
   final int amount;
 
   factory PotPayout.fromJson(Map<String, dynamic> json) => PotPayout(
     userId: json['playerId'] as String,
+    displayName: json['displayName'] as String? ?? '',
     amount: json['amount'] as int,
   );
 }
