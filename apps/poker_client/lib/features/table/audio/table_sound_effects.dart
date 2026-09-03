@@ -6,12 +6,36 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:poker_client/features/table/audio/table_action_sound_tracker.dart';
 
+/// 鸿蒙语音进行中提示音的出声方式。
+///
+/// 这块只能在鸿蒙真机上验证，三种方式各有取舍，因此保留为可切换的策略，
+/// 而不是把结论写死在代码里。
+enum HarmonyVoiceSoundStrategy {
+  /// 仍走普通音频插件，靠 CONCURRENCY_MIX_WITH_OTHERS 与通话流混音。
+  ///
+  /// 提示音是本地音效：音量正常、没有延迟。残留风险是插件仍会调用
+  /// setAudioSessionScene(MEDIA)，音量条可能仍跳成喇叭；只要语音不断，
+  /// 这是可以接受的瑕疵。
+  mixWithVoice,
+
+  /// 交给 TRTC 音频引擎播放（走通话流）。
+  ///
+  /// 确定不会掐掉语音，但声音要过为实时通话优化的链路，真机实测音量偏小、
+  /// 有延迟和断续——那条链路本来是给背景音乐用的，不是给 UI 音效用的。
+  throughVoiceEngine,
+
+  /// 语音进行中不出声。确定不影响通话，代价是鸿蒙语音里没有提示音。
+  silent,
+}
+
 class TableSoundEffects {
   TableSoundEffects({
     AudioPlayer? player,
     bool Function()? voiceSessionActive,
     TargetPlatform? platform,
-    Future<void> Function(AudioContext context)? configureGlobalAudio,
+    Future<void> Function(AudioContext context)? configureAudio,
+    HarmonyVoiceSoundStrategy harmonyVoiceStrategy =
+        HarmonyVoiceSoundStrategy.mixWithVoice,
     Future<void> Function(TableSoundEffect effect, double volume)? playClip,
     Future<void> Function(int id, String filePath, double volume)?
     playInVoiceSession,
@@ -21,8 +45,8 @@ class TableSoundEffects {
        _clipFilePath = clipFilePath,
        _voiceSessionActive = voiceSessionActive ?? _neverActive,
        _platform = platform ?? defaultTargetPlatform,
-       _configureGlobalAudio =
-           configureGlobalAudio ?? AudioPlayer.global.setAudioContext,
+       _configureAudio = configureAudio,
+       _harmonyVoiceStrategy = harmonyVoiceStrategy,
        _injectedPlayClip = playClip;
 
   static final Map<TableSoundEffect, Uint8List> _clips = {
@@ -40,7 +64,8 @@ class TableSoundEffects {
   final AudioPlayer? _injectedPlayer;
   final bool Function() _voiceSessionActive;
   final TargetPlatform _platform;
-  final Future<void> Function(AudioContext context) _configureGlobalAudio;
+  final Future<void> Function(AudioContext context)? _configureAudio;
+  final HarmonyVoiceSoundStrategy _harmonyVoiceStrategy;
   final Future<void> Function(TableSoundEffect effect, double volume)?
   _injectedPlayClip;
 
@@ -52,14 +77,14 @@ class TableSoundEffects {
   final Future<String?> Function(TableSoundEffect effect)? _clipFilePath;
   AudioPlayer? _createdPlayer;
   bool _disposed = false;
-  bool _globalAudioConfigured = false;
+  bool _audioContextConfigured = false;
 
   /// 真实播放器按需创建：它会注册持续的帧回调，测试注入播放出口后就不该
   /// 被构造出来。
   AudioPlayer get _player =>
       _injectedPlayer ?? (_createdPlayer ??= AudioPlayer());
 
-  /// HarmonyOS 语音进行中必须绕开普通音频插件。
+  /// 鸿蒙语音进行中：此时提示音与通话流会争夺应用级音频会话。
   ///
   /// 鸿蒙的音频焦点是应用级的：audioplayers 的 FocusManager 在每次播放前会
   /// 调用 setAudioSessionScene(AUDIO_SESSION_SCENE_MEDIA) 并以
@@ -69,40 +94,57 @@ class TableSoundEffects {
   /// 变喇叭），远端语音随之被压制。插件把这两个调用写死在原生侧，没有开放
   /// 给 Dart 配置。
   ///
-  /// 因此鸿蒙语音进行中改由 TRTC 的音频引擎播放提示音：声音走通话流，
-  /// 不产生第二个音频会话，语音和提示音得以并存。
-  /// 只影响 HarmonyOS 且只在语音进行中；不在语音里、以及其他平台不变。
-  bool get _usesVoiceSessionOutput =>
+  /// 应对方式见 [HarmonyVoiceSoundStrategy]。只影响 HarmonyOS 且只在语音
+  /// 进行中；不在语音里、以及其他平台一律走普通路径。
+  bool get _inHarmonyVoiceSession =>
       _platform == TargetPlatform.ohos && _voiceSessionActive();
 
-  /// 第二道保险：把鸿蒙的应用级并发策略从独占改成混音。
+  /// 把鸿蒙的应用级并发策略从独占改成混音。
   ///
   /// 插件默认用 CONCURRENCY_DEFAULT 激活音频会话，该模式「独占物理输出通道
-  /// 并压制其他音频」。改成 CONCURRENCY_MIX_WITH_OTHERS 后提示音与通话流
-  /// 混音播放，即使某条路径绕过了上面的让位判断也不会掐掉远端语音。
+  /// 并压制其他音频」，这正是提示音一响远端语音就消失的原因。改成
+  /// CONCURRENCY_MIX_WITH_OTHERS 后两者混音播放。
+  ///
+  /// 必须设到播放器本身：鸿蒙插件的全局 setAudioContext 只更新
+  /// defaultAudioContext（新建播放器的默认值），已存在的播放器不受影响，
+  /// 而决定并发模式的是 FocusManager 读到的 player.context。只设全局的话
+  /// 这层配置根本不会生效。两处都设，互不冲突。
+  ///
   /// 只在 HarmonyOS 上设置，不改动其他平台已验证的行为。
-  Future<void> _ensureGlobalAudioContext() async {
-    if (_globalAudioConfigured || _platform != TargetPlatform.ohos) return;
-    _globalAudioConfigured = true;
+  Future<void> _ensureAudioContext() async {
+    if (_audioContextConfigured || _platform != TargetPlatform.ohos) return;
+    _audioContextConfigured = true;
+    final context = AudioContextConfig(
+      focus: AudioContextConfigFocus.mixWithOthers,
+    ).build();
     try {
-      await _configureGlobalAudio(
-        AudioContextConfig(
-          focus: AudioContextConfigFocus.mixWithOthers,
-        ).build(),
-      );
+      final configure = _configureAudio;
+      if (configure != null) {
+        await configure(context);
+        return;
+      }
+      await AudioPlayer.global.setAudioContext(context);
+      await _player.setAudioContext(context);
     } on Object {
-      // 配置失败不能影响出声；让位判断本身已经覆盖了主要场景。
+      // 配置失败不能影响出声。
     }
   }
 
   Future<void> play(TableSoundEffect effect) async {
     if (_disposed) return;
     final volume = effect == TableSoundEffect.allIn ? 0.9 : 0.75;
-    if (_usesVoiceSessionOutput) {
-      await _playThroughVoiceSession(effect, volume);
-      return;
+    if (_inHarmonyVoiceSession) {
+      switch (_harmonyVoiceStrategy) {
+        case HarmonyVoiceSoundStrategy.silent:
+          return;
+        case HarmonyVoiceSoundStrategy.throughVoiceEngine:
+          await _playThroughVoiceSession(effect, volume);
+          return;
+        case HarmonyVoiceSoundStrategy.mixWithVoice:
+          break;
+      }
     }
-    await _ensureGlobalAudioContext();
+    await _ensureAudioContext();
     if (_disposed) return;
     final playClip = _injectedPlayClip;
     try {

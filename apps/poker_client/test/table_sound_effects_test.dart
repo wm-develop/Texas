@@ -18,11 +18,13 @@ class _Recorder {
     required TargetPlatform platform,
     required bool voiceActive,
     bool voiceOutputAvailable = true,
+    HarmonyVoiceSoundStrategy strategy = HarmonyVoiceSoundStrategy.mixWithVoice,
     Future<String?> Function(TableSoundEffect effect)? clipFilePath,
   }) => TableSoundEffects(
     platform: platform,
     voiceSessionActive: () => voiceActive,
-    configureGlobalAudio: (context) async => contexts.add(context),
+    harmonyVoiceStrategy: strategy,
+    configureAudio: (context) async => contexts.add(context),
     playClip: (effect, _) async => viaPlugin.add(effect),
     clipFilePath:
         clipFilePath ??
@@ -37,12 +39,11 @@ class _Recorder {
 }
 
 void main() {
-  group('鸿蒙语音进行中改走 RTC 音频通道', () {
-    test('语音进行中：提示音交给 RTC 播放，不碰普通音频插件', () async {
-      // 鸿蒙音频焦点是应用级的：audioplayers 播放前会把会话场景设成 MEDIA
-      // 并以 CONCURRENCY_DEFAULT 激活音频会话，独占输出并压制应用内其他
-      // 音频流，于是提示音一响，TRTC 通话流就被压制、音量条从话筒变喇叭。
-      // 交给 RTC 引擎播放后声音走通话流，语音与提示音得以并存。
+  group('鸿蒙语音进行中的提示音', () {
+    test('默认策略：语音中仍走普通插件，但先把并发模式改成混音', () async {
+      // 提示音一响远端语音就消失的原因是插件以 CONCURRENCY_DEFAULT 激活
+      // 音频会话——该模式独占输出通道并压制应用内其他音频流。改成混音后
+      // 两者可以并存，而且提示音仍是本地音效：音量正常、没有延迟。
       final recorder = _Recorder();
       final effects = recorder.effects(
         platform: TargetPlatform.ohos,
@@ -51,33 +52,49 @@ void main() {
 
       await effects.play(TableSoundEffect.chips);
 
-      expect(recorder.viaPlugin, isEmpty, reason: '语音中绝不能走普通音频插件');
+      expect(recorder.viaPlugin, [TableSoundEffect.chips]);
+      expect(recorder.viaVoiceSession, isEmpty);
       expect(
-        recorder.contexts,
-        isEmpty,
-        reason: '走 RTC 通道时不该去动全局音频上下文',
+        recorder.contexts.single.ohos.audioFocus,
+        AudioContextConfigFocus.mixWithOthers,
+        reason: '出声之前必须先解除独占，否则会掐掉远端语音',
       );
-      expect(recorder.viaVoiceSession, hasLength(1));
-      final (id, path, volume) = recorder.viaVoiceSession.single;
-      expect(id, TableSoundEffects.musicId(TableSoundEffect.chips));
-      expect(path, '/tmp/chips.wav');
-      expect(volume, 0.75);
     });
 
-    test('每种提示音有各自的音效 ID，连续触发不会互相打断', () async {
+    test('改用 RTC 通道策略时走通话流，带正确的音效 ID 与音量', () async {
       final recorder = _Recorder();
       final effects = recorder.effects(
         platform: TargetPlatform.ohos,
         voiceActive: true,
+        strategy: HarmonyVoiceSoundStrategy.throughVoiceEngine,
       );
 
       await effects.play(TableSoundEffect.chips);
       await effects.play(TableSoundEffect.allIn);
 
+      expect(recorder.viaPlugin, isEmpty);
       final ids = recorder.viaVoiceSession.map((call) => call.$1).toSet();
-      expect(ids, hasLength(2));
-      // All in 的音量更高，与普通插件路径保持一致
+      expect(ids, hasLength(2), reason: '每种音效一个固定 ID，避免互相打断');
+      expect(
+        recorder.viaVoiceSession.first.$2,
+        '/tmp/chips.wav',
+      );
       expect(recorder.viaVoiceSession.last.$3, 0.9);
+    });
+
+    test('静音策略下语音中完全不出声', () async {
+      final recorder = _Recorder();
+      final effects = recorder.effects(
+        platform: TargetPlatform.ohos,
+        voiceActive: true,
+        strategy: HarmonyVoiceSoundStrategy.silent,
+      );
+
+      await effects.play(TableSoundEffect.chips);
+
+      expect(recorder.viaPlugin, isEmpty);
+      expect(recorder.viaVoiceSession, isEmpty);
+      expect(recorder.contexts, isEmpty);
     });
 
     test('鸿蒙未加入语音：照常走普通音频插件', () async {
@@ -112,12 +129,13 @@ void main() {
       }
     });
 
-    test('RTC 通道不可用时安静跳过，绝不回退到普通音频插件', () async {
-      // 回退才是会掐掉远端语音的路径，宁可这一声不响
+    test('RTC 通道策略下通道不可用时安静跳过，绝不回退到普通音频插件', () async {
+      // 该策略的前提就是不碰普通插件，宁可这一声不响
       final recorder = _Recorder();
       final effects = recorder.effects(
         platform: TargetPlatform.ohos,
         voiceActive: true,
+        strategy: HarmonyVoiceSoundStrategy.throughVoiceEngine,
         voiceOutputAvailable: false,
       );
 
@@ -137,6 +155,7 @@ void main() {
         final effects = recorder.effects(
           platform: TargetPlatform.ohos,
           voiceActive: true,
+          strategy: HarmonyVoiceSoundStrategy.throughVoiceEngine,
           clipFilePath: clipFilePath,
         );
 
@@ -163,6 +182,7 @@ void main() {
 
   group('全局音频并发策略', () {
     test('鸿蒙上把焦点策略设为混音，且只设置一次', () async {
+      // 必须在出声之前设好，而且只设一次
       final recorder = _Recorder();
       final effects = recorder.effects(
         platform: TargetPlatform.ohos,
