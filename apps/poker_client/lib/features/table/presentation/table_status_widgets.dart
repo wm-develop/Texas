@@ -14,6 +14,7 @@ class TableRoomHeader extends StatelessWidget {
     required this.currentPlayers,
     required this.onLeave,
     required this.onSettings,
+    required this.onShowResult,
     this.compact = false,
     super.key,
   });
@@ -22,6 +23,9 @@ class TableRoomHeader extends StatelessWidget {
   final int currentPlayers;
   final Future<void> Function() onLeave;
   final VoidCallback onSettings;
+
+  /// 打开本房间战绩窗口。
+  final VoidCallback onShowResult;
   final bool compact;
 
   @override
@@ -63,6 +67,17 @@ class TableRoomHeader extends StatelessWidget {
                 tooltip: '离开房间',
               ),
               IconButton(
+                key: const ValueKey('room-result-button'),
+                onPressed: onShowResult,
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints.tightFor(
+                  width: 34,
+                  height: 34,
+                ),
+                icon: const Icon(Icons.leaderboard_outlined, size: 19),
+                tooltip: '本房间战绩',
+              ),
+              IconButton(
                 onPressed: onSettings,
                 visualDensity: VisualDensity.compact,
                 constraints: const BoxConstraints.tightFor(
@@ -91,6 +106,12 @@ class TableRoomHeader extends StatelessWidget {
               onPressed: onLeave,
               icon: const Icon(Icons.exit_to_app, size: 20),
               tooltip: '离开房间',
+            ),
+            IconButton(
+              key: const ValueKey('room-result-button'),
+              onPressed: onShowResult,
+              icon: const Icon(Icons.leaderboard_outlined, size: 20),
+              tooltip: '本房间战绩',
             ),
             IconButton(
               onPressed: onSettings,

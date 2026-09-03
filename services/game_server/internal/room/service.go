@@ -136,6 +136,14 @@ func (service *Service) CreateConfigured(ctx context.Context, owner Participant,
 	return Room{}, errors.New("could not allocate unique room identifiers")
 }
 
+// joinBlocked 判断房主是否已经关闭入口。
+func joinBlocked(value Room) error {
+	if value.JoinLocked {
+		return Error{Code: "join_locked"}
+	}
+	return nil
+}
+
 func (service *Service) JoinWithBuyIn(ctx context.Context, participant Participant, options JoinOptions) (Room, error) {
 	service.mu.Lock()
 	defer service.mu.Unlock()
@@ -151,6 +159,9 @@ func (service *Service) JoinWithBuyIn(ctx context.Context, participant Participa
 	value, err := service.repository.ByCode(ctx, strings.TrimSpace(options.Code))
 	if err != nil {
 		return Room{}, Error{Code: "room_not_found"}
+	}
+	if err := joinBlocked(value); err != nil {
+		return Room{}, err
 	}
 	if value.PasswordHash != "" && !service.passwords.Verify("room:"+options.Password, value.PasswordHash) {
 		return Room{}, Error{Code: "invalid_room_password"}
@@ -355,6 +366,9 @@ func (service *Service) Join(
 	value, err := service.repository.ByCode(ctx, strings.TrimSpace(code))
 	if err != nil {
 		return Room{}, Error{Code: "room_not_found"}
+	}
+	if err := joinBlocked(value); err != nil {
+		return Room{}, err
 	}
 	if value.PasswordHash != "" && !service.passwords.Verify("room:"+password, value.PasswordHash) {
 		return Room{}, Error{Code: "invalid_room_password"}
@@ -614,4 +628,51 @@ func (service *Service) randomCode() (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%06d", value.Int64()+100_000), nil
+}
+
+// SetJoinLocked 由房主开关房间入口。关闭入口只影响新加入者，已在房间内的
+// 成员不受影响。
+func (service *Service) SetJoinLocked(ctx context.Context, ownerUserID string, locked bool) (Room, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	value, err := service.repository.ByUser(ctx, ownerUserID)
+	if err != nil {
+		return Room{}, Error{Code: "room_not_found"}
+	}
+	if value.OwnerUserID != ownerUserID {
+		return Room{}, Error{Code: "owner_required"}
+	}
+	if value.JoinLocked == locked {
+		return value, nil
+	}
+	value.JoinLocked = locked
+	value.Revision++
+	if err := service.repository.Save(ctx, value); err != nil {
+		return Room{}, err
+	}
+	return value, nil
+}
+
+// RemoveMember 由房主把一名成员移出房间。
+//
+// 只做房间成员关系的校验与移除；「牌局进行中不能踢人」「被踢者的牌桌筹码
+// 如何返还」由 tablemanager 负责，与玩家自己离桌走同一条路径，避免出现两套
+// 结算逻辑。
+func (service *Service) RemoveMember(ctx context.Context, ownerUserID, targetUserID string) error {
+	value, err := service.repository.ByUser(ctx, ownerUserID)
+	if err != nil {
+		return Error{Code: "room_not_found"}
+	}
+	if value.OwnerUserID != ownerUserID {
+		return Error{Code: "owner_required"}
+	}
+	if targetUserID == ownerUserID {
+		return Error{Code: "cannot_remove_self"}
+	}
+	for _, member := range value.Members {
+		if member.UserID == targetUserID {
+			return nil
+		}
+	}
+	return Error{Code: "member_not_found"}
 }

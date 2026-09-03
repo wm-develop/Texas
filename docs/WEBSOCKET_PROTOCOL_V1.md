@@ -237,6 +237,7 @@
 | `totalPot` | 当前底池**总额** |
 | `settlement` | 结算结果，见 6.4 |
 | `maxBuyIn` | 房间单人最大带入 |
+| `joinLocked` | 房主是否已关闭房间入口；为 false 时省略 |
 | `draining` | 为 `true` 表示服务端正在优雅停机：本手打完后不再开新局，`table.ready.set {"ready": true}` 返回 `server_draining`，自动准备倒计时也不会安排；重启完成后该字段消失（见 6.8） |
 
 ### 6.2 `seats[]`

@@ -182,6 +182,8 @@ type Snapshot struct {
 	MaxBuyIn           int64                         `json:"maxBuyIn"`
 	// Draining 为 true 表示服务端正在优雅停机：本手结束后不再开新局。
 	Draining bool `json:"draining,omitempty"`
+	// JoinLocked 为 true 表示房主已关闭房间入口。
+	JoinLocked bool `json:"joinLocked,omitempty"`
 }
 
 func New(rooms *room.Service, random holdem.IntnSource) (*Manager, error) {
@@ -1239,6 +1241,7 @@ func snapshotForRuntime(runtime *runtime, roomValue room.Room, recipientUserID s
 	}
 	result.OwnerUserID = roomValue.OwnerUserID
 	result.Draining = runtime.draining != nil && runtime.draining.Load()
+	result.JoinLocked = roomValue.JoinLocked
 	if runtime.lastAction != nil {
 		lastAction := *runtime.lastAction
 		result.LastAction = &lastAction
@@ -1563,4 +1566,43 @@ func allReady(members []room.Member) bool {
 		}
 	}
 	return true
+}
+
+// KickMember 由房主把一名成员移出房间。
+//
+// 复用玩家自己离桌的同一条路径（Leave），而不是另写一套移除逻辑：那条路径
+// 已经处理了弃牌者的延迟返还、房主转移、最后一人离开时关闭房间等状态，
+// 另写一份必然会漏掉其中某几种。
+//
+// 只在手间允许踢人：牌局进行中把人踢走会牵扯底池归属与行动顺序，
+// 是筹码不守恒的高风险来源。
+func (manager *Manager) KickMember(ctx context.Context, ownerUserID, targetUserID string) (bool, error) {
+	roomValue, err := manager.rooms.Current(ctx, ownerUserID)
+	if err != nil {
+		return false, err
+	}
+	if roomValue.OwnerUserID != ownerUserID {
+		return false, room.Error{Code: "owner_required"}
+	}
+	if targetUserID == ownerUserID {
+		return false, room.Error{Code: "cannot_remove_self"}
+	}
+	var found bool
+	for _, member := range roomValue.Members {
+		if member.UserID == targetUserID {
+			found = true
+		}
+	}
+	if !found {
+		return false, room.Error{Code: "member_not_found"}
+	}
+	if runtime := manager.existingRuntime(roomValue.RoomID); runtime != nil {
+		runtime.mu.Lock()
+		phase := runtime.engine.Phase()
+		runtime.mu.Unlock()
+		if phase != holdem.PhaseWaiting && phase != holdem.PhaseWaitingNextHand {
+			return false, room.Error{Code: "hand_in_progress"}
+		}
+	}
+	return manager.Leave(ctx, targetUserID)
 }

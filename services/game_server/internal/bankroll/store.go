@@ -57,6 +57,9 @@ type Repository interface {
 	// 按 (fromUserID, requestID) 幂等，返回 fromUserID 转出后的快照。
 	TransferWallet(ctx context.Context, fromUserID, toUserID, requestID string, reason Reason, referenceID string, now time.Time) (Snapshot, error)
 	Entries(ctx context.Context, userID string, limit int) ([]Entry, error)
+	// RoomLedger 汇总某人在某个房间内的钱包收支：带入与补码为负，离桌返还
+	// 为正。净胜负还要加上此刻仍在牌桌上的筹码，见 Service.RoomResult。
+	RoomLedger(ctx context.Context, userID, roomID string) (RoomLedger, error)
 }
 
 type Error struct{ Code string }
@@ -338,3 +341,41 @@ func idempotencyKey(userID, requestID string) string { return userID + "\x00" + 
 func entryID(userID, requestID string) string        { return fmt.Sprintf("bank_%s_%s", userID, requestID) }
 
 var errInvalidRepository = errors.New("invalid bankroll repository")
+
+// RoomLedger 是某人在某个房间内的钱包收支汇总。
+type RoomLedger struct {
+	// BoughtIn 为累计从钱包投入牌桌的筹码（带入与补码）。
+	BoughtIn int64 `json:"boughtIn"`
+	// ReturnedToWallet 为累计从牌桌返还钱包的筹码（离桌返还）。
+	ReturnedToWallet int64 `json:"returnedToWallet"`
+}
+
+// RoomResult 是某人在某个房间内的净胜负。
+type RoomResult struct {
+	RoomID string `json:"roomId"`
+	// TableChips 为此刻仍在牌桌上的筹码。
+	TableChips int64 `json:"tableChips"`
+	RoomLedger
+	// Net 为净胜负：返还 + 桌上筹码 - 投入。为正表示赢。
+	Net int64 `json:"net"`
+}
+
+func (repository *MemoryRepository) RoomLedger(
+	_ context.Context,
+	userID, roomID string,
+) (RoomLedger, error) {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	var result RoomLedger
+	for _, entry := range repository.entries {
+		if entry.UserID != userID || entry.TableID != roomID {
+			continue
+		}
+		if entry.WalletDelta < 0 {
+			result.BoughtIn -= entry.WalletDelta
+		} else {
+			result.ReturnedToWallet += entry.WalletDelta
+		}
+	}
+	return result, nil
+}

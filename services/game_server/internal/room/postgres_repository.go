@@ -227,10 +227,12 @@ func (repository *PostgresRepository) Save(ctx context.Context, value Room) erro
 		ctx,
 		`UPDATE rooms SET owner_user_id = $2, preset = $3, password_hash = $4,
 		 max_players = $5, small_blind = $6, big_blind = $7, max_buy_in = $8,
-		 action_seconds = $9, revision = $10 WHERE room_id = $1 AND status <> 'closed'`,
+		 action_seconds = $9, join_locked = $10, revision = $11
+		 WHERE room_id = $1 AND status <> 'closed'`,
 		value.RoomID, value.OwnerUserID, value.Preset, value.PasswordHash,
 		value.MaxPlayers, value.Rules.SmallBlind, value.Rules.BigBlind,
-		value.Rules.MaxBuyIn, value.Rules.ActionSeconds, value.Revision,
+		value.Rules.MaxBuyIn, value.Rules.ActionSeconds, value.JoinLocked,
+		value.Revision,
 	)
 	if err != nil {
 		_ = transaction.Rollback()
@@ -317,7 +319,7 @@ func loadRoom(ctx context.Context, queryer roomQueryer, predicate string, argume
 		&value.RoomID, &value.Code, &value.OwnerUserID, &value.Preset,
 		&value.PasswordHash, &value.MaxPlayers, &value.Rules.SmallBlind,
 		&value.Rules.BigBlind, &value.Rules.MaxBuyIn, &value.Rules.ActionSeconds,
-		&revision, &value.CreatedAt,
+		&value.JoinLocked, &revision, &value.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Room{}, ErrNotFound
@@ -363,12 +365,12 @@ func insertRoom(ctx context.Context, transaction *sql.Tx, value Room) error {
 		ctx,
 		`INSERT INTO rooms (
 		 room_id, room_code, owner_user_id, preset, password_hash, max_players,
-		 small_blind, big_blind, max_buy_in, action_seconds, revision, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		 small_blind, big_blind, max_buy_in, action_seconds, join_locked, revision, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		value.RoomID, value.Code, value.OwnerUserID, value.Preset,
 		value.PasswordHash, value.MaxPlayers, value.Rules.SmallBlind,
 		value.Rules.BigBlind, value.Rules.MaxBuyIn, value.Rules.ActionSeconds,
-		value.Revision, value.CreatedAt,
+		value.JoinLocked, value.Revision, value.CreatedAt,
 	)
 	if err != nil {
 		return postgresRoomError("insert room", err)

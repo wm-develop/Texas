@@ -104,3 +104,31 @@ func IsErrorCode(err error, code string) bool {
 	var bankrollError Error
 	return errors.As(err, &bankrollError) && bankrollError.Code == code
 }
+
+// RoomResult 汇总某人在某个房间内的净胜负。
+//
+// 净胜负 = 离桌返还 + 此刻桌上筹码 - 累计带入。把桌上筹码计入的原因是
+// 玩家通常在牌局中途查看，此时这一局的盈亏还没有通过离桌返还落回钱包。
+func (service *Service) RoomResult(ctx context.Context, userID, roomID string) (RoomResult, error) {
+	if userID == "" || roomID == "" {
+		return RoomResult{}, Error{Code: "invalid_request"}
+	}
+	ledger, err := service.repository.RoomLedger(ctx, userID, roomID)
+	if err != nil {
+		return RoomResult{}, err
+	}
+	snapshot, err := service.repository.Snapshot(ctx, userID)
+	if err != nil {
+		return RoomResult{}, err
+	}
+	tableChips := int64(0)
+	if snapshot.TableID == roomID {
+		tableChips = snapshot.TableChips
+	}
+	return RoomResult{
+		RoomID:     roomID,
+		TableChips: tableChips,
+		RoomLedger: ledger,
+		Net:        ledger.ReturnedToWallet + tableChips - ledger.BoughtIn,
+	}, nil
+}

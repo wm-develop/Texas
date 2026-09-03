@@ -7,6 +7,7 @@ import 'package:poker_client/core/settings/settings_dialog.dart';
 import 'package:poker_client/core/platform/voice_chat_service_factory.dart';
 import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/core/network/game_socket_client.dart';
+import 'package:poker_client/core/network/game_api_client.dart';
 import 'package:poker_client/core/network/trtc_credential_client.dart';
 import 'package:poker_client/core/platform/native_display_cutout.dart';
 import 'package:poker_client/core/settings/app_settings.dart';
@@ -19,6 +20,8 @@ import 'package:poker_client/features/table/domain/table_seat.dart';
 import 'package:poker_client/features/table/presentation/table_labels.dart';
 import 'package:poker_client/features/table/presentation/table_action_bar.dart';
 import 'package:poker_client/features/table/presentation/table_automation_coordinator.dart';
+import 'package:poker_client/features/table/presentation/room_management_dialog.dart';
+import 'package:poker_client/features/table/presentation/room_result_dialog.dart';
 import 'package:poker_client/features/table/presentation/table_canvas.dart';
 import 'package:poker_client/features/table/presentation/table_deal_controller.dart';
 import 'package:poker_client/features/table/presentation/table_voice_controller.dart';
@@ -65,6 +68,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
   int _unreadChatCount = 0;
   late final GameSocketClient _gameSocket;
   late final TrtcCredentialClient _trtcCredentials;
+  late final GameApiClient _api;
   late final TableVoiceController _voice;
   Timer? _tableClock;
   String? _lastShownGameError;
@@ -94,6 +98,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
       userId: widget.session.user.userId,
     )..addListener(_refresh);
     unawaited(_gameSocket.connect());
+    _api = GameApiClient();
     _trtcCredentials = TrtcCredentialClient(
       serverBaseUri: Uri.parse(_gameHttpServerUrl),
     );
@@ -148,6 +153,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
       timer.cancel();
     }
     _trtcCredentials.close();
+    _api.close();
     widget.settings.removeListener(_settingsChanged);
     super.dispose();
   }
@@ -246,7 +252,14 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                     onOpenAdmin: widget.session.user.isAdmin
                         ? _openAdmin
                         : null,
+                    // 房间管理只对房主开放
+                    onOpenRoomManagement:
+                        _gameSocket.snapshot?.ownerUserId ==
+                            widget.session.user.userId
+                        ? _openRoomManagement
+                        : null,
                   ),
+                  onShowResult: _openRoomResult,
                 );
                 final connectionStatus = TableConnectionStatusBar(
                   client: _gameSocket,
@@ -407,6 +420,35 @@ class _TablePrototypePageState extends State<TablePrototypePage>
       ),
     );
   }
+
+  /// 本房间战绩，含本地换算比例。
+  Future<void> _openRoomResult() => showDialog<void>(
+    context: context,
+    builder: (_) => RoomResultDialog(
+      loadResult: () async {
+        final token = await widget.accessTokenProvider();
+        return _api.roomResult(token);
+      },
+    ),
+  );
+
+  /// 房主的房间管理。
+  Future<void> _openRoomManagement() => showDialog<void>(
+    context: context,
+    builder: (_) => RoomManagementDialog(
+      snapshot: _gameSocket.snapshot,
+      currentUserId: widget.session.user.userId,
+      joinLocked: _gameSocket.snapshot?.joinLocked ?? false,
+      onSetJoinLocked: (locked) async {
+        final token = await widget.accessTokenProvider();
+        return _api.setRoomJoinLocked(accessToken: token, locked: locked);
+      },
+      onRemoveMember: (userId) async {
+        final token = await widget.accessTokenProvider();
+        await _api.removeRoomMember(accessToken: token, userId: userId);
+      },
+    ),
+  );
 
   Future<void> _openAdmin() => Navigator.of(context).push(
     MaterialPageRoute<void>(

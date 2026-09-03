@@ -657,3 +657,23 @@ func insertEntry(ctx context.Context, transaction *sql.Tx, value Entry) error {
 }
 
 var _ Repository = (*PostgresRepository)(nil)
+
+func (repository *PostgresRepository) RoomLedger(
+	ctx context.Context,
+	userID, roomID string,
+) (RoomLedger, error) {
+	var result RoomLedger
+	err := repository.database.QueryRowContext(
+		ctx,
+		`SELECT
+             COALESCE(SUM(CASE WHEN wallet_delta < 0 THEN -wallet_delta ELSE 0 END), 0),
+             COALESCE(SUM(CASE WHEN wallet_delta > 0 THEN wallet_delta ELSE 0 END), 0)
+         FROM bankroll_entries
+         WHERE user_id = $1 AND room_id = $2`,
+		userID, roomID,
+	).Scan(&result.BoughtIn, &result.ReturnedToWallet)
+	if err != nil {
+		return RoomLedger{}, fmt.Errorf("summarise room ledger: %w", err)
+	}
+	return result, nil
+}

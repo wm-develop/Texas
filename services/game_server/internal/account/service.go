@@ -645,3 +645,22 @@ func validDisplayName(value string) bool {
 	}
 	return true
 }
+
+// IsAdministrator 报告某个用户是否为在用管理员。
+//
+// 供房主踢人时校验：房主是房间内的角色，管理员是服务器级角色，后者需要能
+// 进入任何房间处理纠纷，因此不能被房主踢出。这里只返回一个布尔值，不暴露
+// 任何账号资料，因此不需要管理员权限。
+func (service *Service) IsAdministrator(ctx context.Context, userID string) (bool, error) {
+	if userID == "" {
+		return false, nil
+	}
+	user, err := service.repository.UserByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return user.Role == RoleAdmin && user.Status == StatusActive, nil
+}

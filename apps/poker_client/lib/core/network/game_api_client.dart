@@ -8,6 +8,7 @@ import 'package:poker_client/features/admin/domain/managed_user.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_entry.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
+import 'package:poker_client/features/table/domain/room_result.dart';
 import 'package:poker_client/features/history/domain/recent_hand.dart';
 
 class GameApiException implements Exception {
@@ -369,6 +370,34 @@ class GameApiClient {
     return (payload['entries'] as List<dynamic>? ?? const [])
         .map((value) => BankrollEntry.fromJson(value as Map<String, dynamic>))
         .toList(growable: false);
+  }
+
+  /// 本人在当前房间内的净胜负。
+  Future<RoomResult> roomResult(String accessToken) async =>
+      RoomResult.fromJson(await _get('v1/rooms/current/result', token: accessToken));
+
+  /// 房主开关房间入口。只影响新加入者，房内成员不受影响。
+  Future<bool> setRoomJoinLocked({
+    required String accessToken,
+    required bool locked,
+  }) async =>
+      (await _request(
+            'v1/rooms/settings/join-lock',
+            token: accessToken,
+            body: {'locked': locked},
+          ))['joinLocked']
+          as bool;
+
+  /// 房主把一名成员移出房间。
+  Future<void> removeRoomMember({
+    required String accessToken,
+    required String userId,
+  }) async {
+    await _request(
+      'v1/rooms/members/$userId/remove',
+      token: accessToken,
+      body: const {},
+    );
   }
 
   Future<void> leaveRoom(String accessToken) async {

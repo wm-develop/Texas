@@ -36,13 +36,16 @@ type Member struct {
 }
 
 type Room struct {
-	RoomID       string    `json:"roomId"`
-	Code         string    `json:"code"`
-	OwnerUserID  string    `json:"ownerUserId"`
-	Preset       Preset    `json:"preset"`
-	Rules        Rules     `json:"rules"`
-	MaxPlayers   int       `json:"maxPlayers"`
-	Members      []Member  `json:"members"`
+	RoomID      string   `json:"roomId"`
+	Code        string   `json:"code"`
+	OwnerUserID string   `json:"ownerUserId"`
+	Preset      Preset   `json:"preset"`
+	Rules       Rules    `json:"rules"`
+	MaxPlayers  int      `json:"maxPlayers"`
+	Members     []Member `json:"members"`
+	// JoinLocked 为 true 时房主已关闭入口，新玩家无法加入；已在房间内的
+	// 成员不受影响。
+	JoinLocked   bool      `json:"joinLocked"`
 	Revision     uint64    `json:"revision"`
 	CreatedAt    time.Time `json:"createdAt"`
 	PasswordHash string    `json:"-"`
@@ -50,6 +53,7 @@ type Room struct {
 
 type Preview struct {
 	Code             string `json:"code"`
+	JoinLocked       bool   `json:"joinLocked"`
 	Rules            Rules  `json:"rules"`
 	MaxPlayers       int    `json:"maxPlayers"`
 	CurrentPlayers   int    `json:"currentPlayers"`

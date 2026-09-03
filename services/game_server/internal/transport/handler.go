@@ -68,6 +68,10 @@ func NewHandler(logger *slog.Logger, options Options) http.Handler {
 	)
 	registerAdminAuditRoute(mux, options.Accounts)
 	registerRoomRoutes(mux, options.Accounts, options.Rooms, options.Tables, guard)
+	registerRoomOwnerRoutes(
+		mux, options.Accounts, options.Rooms, options.Tables, options.Bankroll,
+		guard, webSockets.disconnectUsers,
+	)
 	registerHistoryRoutes(mux, options.Accounts, options.History)
 	mux.Handle("GET /ws", webSockets)
 	mux.Handle("POST /v1/trtc/credentials", trtcCredentialsHandler(options, guard))
