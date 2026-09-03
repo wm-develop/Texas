@@ -42,18 +42,26 @@ export default class EntryAbility extends FlutterAbility {
     });
   }
 
+  // 除了挖孔，还要让开手势导航条：平板横屏时它压在屏幕底部，落在那片区域的
+  // 按钮即使画出来了也点不动（触摸归系统）。两块区域都用系统的避让区接口取，
+  // 不猜固定像素。
+  private static readonly AVOID_AREA_TYPES: window.AvoidAreaType[] = [
+    window.AvoidAreaType.TYPE_CUTOUT,
+    window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR
+  ];
+
   private async readDisplayCutoutInsets(): Promise<DisplayCutoutInsets> {
     const mainWindow = await window.getLastWindow(this.context);
-    const avoidArea = mainWindow.getWindowAvoidArea(
-      window.AvoidAreaType.TYPE_CUTOUT
-    );
     const density = display.getDefaultDisplaySync().densityPixels;
     const divisor = density > 0 ? density : 1;
-    return {
-      left: avoidArea.leftRect.width / divisor,
-      top: avoidArea.topRect.height / divisor,
-      right: avoidArea.rightRect.width / divisor,
-      bottom: avoidArea.bottomRect.height / divisor
-    };
+    const insets: DisplayCutoutInsets = { left: 0, top: 0, right: 0, bottom: 0 };
+    for (const areaType of EntryAbility.AVOID_AREA_TYPES) {
+      const area = mainWindow.getWindowAvoidArea(areaType);
+      insets.left = Math.max(insets.left, area.leftRect.width / divisor);
+      insets.top = Math.max(insets.top, area.topRect.height / divisor);
+      insets.right = Math.max(insets.right, area.rightRect.width / divisor);
+      insets.bottom = Math.max(insets.bottom, area.bottomRect.height / divisor);
+    }
+    return insets;
   }
 }

@@ -220,9 +220,13 @@ class _TablePrototypePageState extends State<TablePrototypePage>
   @override
   Widget build(BuildContext context) {
     final mediaPadding = MediaQuery.paddingOf(context);
-    final remainingCutout = NativeDisplayCutout.remainingAfter(
-      _nativeDisplayCutout,
-      mediaPadding,
+    // 除了挖孔，还要让开手势导航条：平板横屏时它压在屏幕底部，落在那片
+    // 区域的按钮即使画出来了也点不动，因为触摸归系统。
+    final remainingCutout = NativeDisplayCutout.remainingSystemInsets(
+      nativeCutout: _nativeDisplayCutout,
+      mediaPadding: mediaPadding,
+      viewPadding: MediaQuery.viewPaddingOf(context),
+      systemGestureInsets: MediaQuery.systemGestureInsetsOf(context),
     );
     return Scaffold(
       body: DecoratedBox(
@@ -407,14 +411,22 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                                 if (viewport.isCompactLandscape ||
                                     !showSideChat)
                                   chatEntryButton,
-                                const Spacer(),
-                                TableActionBar(
-                                  client: _gameSocket,
-                                  userId: widget.session.user.userId,
-                                  smallBlind: widget.room.rules.smallBlind,
-                                  onRebuy: _showRebuyDialog,
-                                  vertical: true,
-                                  blocked: _deal.isAnimating,
+                                // 平板横屏时右栏可用高度会不够，此前多出来的
+                                // 部分被直接裁掉，最下面的按钮看不见也点不到。
+                                // 改成贴底可滚动：空间够时和原来一样贴在底部，
+                                // 不够时能滚出来，绝不会被裁掉。
+                                Expanded(
+                                  child: SingleChildScrollView(
+                                    reverse: true,
+                                    child: TableActionBar(
+                                      client: _gameSocket,
+                                      userId: widget.session.user.userId,
+                                      smallBlind: widget.room.rules.smallBlind,
+                                      onRebuy: _showRebuyDialog,
+                                      vertical: true,
+                                      blocked: _deal.isAnimating,
+                                    ),
+                                  ),
                                 ),
                               ],
                             ),

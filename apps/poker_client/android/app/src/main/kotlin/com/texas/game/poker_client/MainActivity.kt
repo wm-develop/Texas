@@ -40,24 +40,33 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    // 除了挖孔，还要让开手势导航条：平板横屏时它压在屏幕底部，落在那片区域的
+    // 按钮即使画出来了也点不动（触摸归系统）。两块区域都问系统要，不猜像素。
     private fun readDisplayCutoutInsets(): Map<String, Double> {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
             return zeroCutoutInsets()
         }
-        val cutout = window.decorView.rootWindowInsets?.displayCutout
-            ?: return zeroCutoutInsets()
+        val rootInsets = window.decorView.rootWindowInsets ?: return zeroCutoutInsets()
+        val cutout = rootInsets.displayCutout
         val waterfall = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            cutout.waterfallInsets
+            cutout?.waterfallInsets
+        } else {
+            null
+        }
+        val navigation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            rootInsets.getInsets(WindowInsets.Type.navigationBars())
         } else {
             null
         }
         val density = resources.displayMetrics.density.toDouble()
             .takeIf { it > 0 } ?: 1.0
+        fun inset(safe: Int?, waterfallEdge: Int?, navigationEdge: Int?): Double =
+            max(max(safe ?: 0, waterfallEdge ?: 0), navigationEdge ?: 0) / density
         return mapOf(
-            "left" to max(cutout.safeInsetLeft, waterfall?.left ?: 0) / density,
-            "top" to max(cutout.safeInsetTop, waterfall?.top ?: 0) / density,
-            "right" to max(cutout.safeInsetRight, waterfall?.right ?: 0) / density,
-            "bottom" to max(cutout.safeInsetBottom, waterfall?.bottom ?: 0) / density,
+            "left" to inset(cutout?.safeInsetLeft, waterfall?.left, navigation?.left),
+            "top" to inset(cutout?.safeInsetTop, waterfall?.top, navigation?.top),
+            "right" to inset(cutout?.safeInsetRight, waterfall?.right, navigation?.right),
+            "bottom" to inset(cutout?.safeInsetBottom, waterfall?.bottom, navigation?.bottom),
         )
     }
 

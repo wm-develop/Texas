@@ -70,6 +70,24 @@ String _turnSnapshot({
   },
 });
 
+/// 只建客户端并喂进快照，不铺界面：右栏的测试要自己搭布局。
+GameSocketClient _clientWith(String snapshotMessage) {
+  final client = GameSocketClient(
+    accessTokenProvider: ({bool forceRefresh = false}) async => 'token',
+    roomId: 'room_1',
+    userId: 'me',
+  );
+  client.debugHandleMessage(
+    jsonEncode({
+      'version': 1,
+      'type': 'table.joined',
+      'payload': {'roomId': 'room_1'},
+    }),
+  );
+  client.debugHandleMessage(snapshotMessage);
+  return client;
+}
+
 Future<GameSocketClient> _pumpPanel(
   WidgetTester tester,
   String snapshotMessage,
@@ -316,5 +334,93 @@ void main() {
       );
       expect(button.onPressed, isNull, reason: '$key 在发牌演出期间应当禁用');
     }
+  });
+  group('右栏空间不足时不裁掉按钮', () {
+    /// 复刻牌桌右栏：定高，顶部有房间信息占位，下注区贴底。
+    Future<void> pumpRail(
+      WidgetTester tester,
+      GameSocketClient client, {
+      required double height,
+    }) => tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Align(
+            alignment: Alignment.centerRight,
+            child: SizedBox(
+              width: 200,
+              height: height,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const SizedBox(height: 120, child: Placeholder()),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      reverse: true,
+                      child: TableActionBar(
+                        client: client,
+                        userId: 'me',
+                        smallBlind: 10,
+                        onRebuy: () {},
+                        vertical: true,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    testWidgets('平板横屏这类矮右栏不溢出，主操作仍贴在底部', (tester) async {
+      // 此前多出来的部分被直接裁掉：最下面的按钮看不见也点不到
+      final client = _clientWith(
+        _turnSnapshot(
+          canCheck: false,
+          toCall: 20,
+          suggestions: const [
+            {'label': 'quarter_pot', 'action': 'raise', 'raiseTo': 60},
+            {'label': 'half_pot', 'action': 'raise', 'raiseTo': 120},
+            {'label': 'pot', 'action': 'raise', 'raiseTo': 200},
+            {'label': 'all_in', 'action': 'all_in', 'raiseTo': 265},
+          ],
+        ),
+      );
+      await pumpRail(tester, client, height: 360);
+
+      expect(tester.takeException(), isNull, reason: '不能再出现溢出');
+
+      // 三个大按钮都在，且完整落在右栏范围内
+      final rail = tester.getRect(find.byType(SingleChildScrollView).first);
+      for (final label in const ['弃牌', '跟注 20', '加注 40']) {
+        final button = find.text(label);
+        expect(button, findsOneWidget, reason: label);
+        final box = tester.getRect(button);
+        expect(
+          box.bottom,
+          lessThanOrEqualTo(rail.bottom + 0.5),
+          reason: '$label 不能落到右栏之外',
+        );
+      }
+      client.dispose();
+    });
+
+    testWidgets('空间充足时行为与原来一致：贴底', (tester) async {
+      final client = _clientWith(
+        _turnSnapshot(canCheck: true, canBet: true, canRaise: false),
+      );
+      await pumpRail(tester, client, height: 900);
+
+      expect(tester.takeException(), isNull);
+      final rail = tester.getRect(find.byType(SingleChildScrollView).first);
+      final lastButton = tester.getRect(find.text('下注 40'));
+      expect(
+        rail.bottom - lastButton.bottom,
+        lessThan(60),
+        reason: '主操作应仍然贴在底部，便于够到',
+      );
+      client.dispose();
+    });
   });
 }
