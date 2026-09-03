@@ -2,26 +2,94 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:poker_client/features/table/audio/table_action_sound_tracker.dart';
 
 class TableSoundEffects {
-  TableSoundEffects({AudioPlayer? player}) : _player = player ?? AudioPlayer();
+  TableSoundEffects({
+    AudioPlayer? player,
+    bool Function()? voiceSessionActive,
+    TargetPlatform? platform,
+    Future<void> Function(AudioContext context)? configureGlobalAudio,
+    Future<void> Function(TableSoundEffect effect, double volume)? playClip,
+  }) : _injectedPlayer = player,
+       _voiceSessionActive = voiceSessionActive ?? _neverActive,
+       _platform = platform ?? defaultTargetPlatform,
+       _configureGlobalAudio =
+           configureGlobalAudio ?? AudioPlayer.global.setAudioContext,
+       _injectedPlayClip = playClip;
 
   static final Map<TableSoundEffect, Uint8List> _clips = {
     for (final effect in TableSoundEffect.values) effect: _buildClip(effect),
   };
 
-  final AudioPlayer _player;
+  static bool _neverActive() => false;
+
+  final AudioPlayer? _injectedPlayer;
+  final bool Function() _voiceSessionActive;
+  final TargetPlatform _platform;
+  final Future<void> Function(AudioContext context) _configureGlobalAudio;
+  final Future<void> Function(TableSoundEffect effect, double volume)?
+  _injectedPlayClip;
+  AudioPlayer? _createdPlayer;
   bool _disposed = false;
+  bool _globalAudioConfigured = false;
+
+  /// 真实播放器按需创建：它会注册持续的帧回调，测试注入播放出口后就不该
+  /// 被构造出来。
+  AudioPlayer get _player =>
+      _injectedPlayer ?? (_createdPlayer ??= AudioPlayer());
+
+  /// HarmonyOS 上语音进行中必须放弃提示音。
+  ///
+  /// 鸿蒙的音频焦点是应用级的：audioplayers 的 FocusManager 在每次播放前会
+  /// 调用 setAudioSessionScene(AUDIO_SESSION_SCENE_MEDIA) 并以
+  /// CONCURRENCY_DEFAULT 激活音频会话，而该模式会独占输出通道、压制应用内
+  /// 其他音频流。TRTC 的通话流和提示音在同一个应用里共用这一套策略，于是
+  /// 每次有人动作播一声提示音，系统音量类型就被改成媒体音量（音量条从话筒
+  /// 变喇叭），远端语音随之被压制。插件没有把这两个调用开放给 Dart 侧配置，
+  /// 唯一可靠的办法是语音进行中根本不走这条播放路径。
+  ///
+  /// 只影响 HarmonyOS 且只在语音进行中；不在语音里、以及其他平台照常播放。
+  bool get _suppressedByVoiceSession =>
+      _platform == TargetPlatform.ohos && _voiceSessionActive();
+
+  /// 第二道保险：把鸿蒙的应用级并发策略从独占改成混音。
+  ///
+  /// 插件默认用 CONCURRENCY_DEFAULT 激活音频会话，该模式「独占物理输出通道
+  /// 并压制其他音频」。改成 CONCURRENCY_MIX_WITH_OTHERS 后提示音与通话流
+  /// 混音播放，即使某条路径绕过了上面的让位判断也不会掐掉远端语音。
+  /// 只在 HarmonyOS 上设置，不改动其他平台已验证的行为。
+  Future<void> _ensureGlobalAudioContext() async {
+    if (_globalAudioConfigured || _platform != TargetPlatform.ohos) return;
+    _globalAudioConfigured = true;
+    try {
+      await _configureGlobalAudio(
+        AudioContextConfig(
+          focus: AudioContextConfigFocus.mixWithOthers,
+        ).build(),
+      );
+    } on Object {
+      // 配置失败不能影响出声；让位判断本身已经覆盖了主要场景。
+    }
+  }
 
   Future<void> play(TableSoundEffect effect) async {
+    if (_disposed || _suppressedByVoiceSession) return;
+    await _ensureGlobalAudioContext();
     if (_disposed) return;
+    final volume = effect == TableSoundEffect.allIn ? 0.9 : 0.75;
+    final playClip = _injectedPlayClip;
     try {
+      if (playClip != null) {
+        await playClip(effect, volume);
+        return;
+      }
       await _player.stop();
       await _player.play(
         BytesSource(_clips[effect]!, mimeType: 'audio/wav'),
-        volume: effect == TableSoundEffect.allIn ? 0.9 : 0.75,
+        volume: volume,
       );
     } on Object {
       // Keep action feedback available if a platform audio backend is
@@ -36,7 +104,8 @@ class TableSoundEffects {
 
   Future<void> dispose() async {
     _disposed = true;
-    await _player.dispose();
+    await _injectedPlayer?.dispose();
+    await _createdPlayer?.dispose();
   }
 }
 

@@ -74,7 +74,9 @@ class _TablePrototypePageState extends State<TablePrototypePage>
   String? _lastShownGameError;
   GameSocketStatus? _lastGameSocketStatus;
   final TableActionSoundTracker _actionSoundTracker = TableActionSoundTracker();
-  final TableSoundEffects _tableSoundEffects = TableSoundEffects();
+  late final TableSoundEffects _tableSoundEffects = TableSoundEffects(
+    voiceSessionActive: () => _voice.joined,
+  );
   late final TableAutomationCoordinator _automation;
   late final TableDealController _deal;
   bool _autoJoinAttempted = false;
