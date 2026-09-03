@@ -33,12 +33,6 @@ type Config struct {
 	// ShutdownDrainTimeout 是收到停机信号后等待所有牌桌打完当前手的上限；
 	// 到期仍在进行的手会随进程退出而作废。为 0 时不等待。
 	ShutdownDrainTimeout time.Duration
-	// MinimumClientVersion 是允许连接的最低客户端版本号，编码方式与客户端
-	// 的 versionCode 一致（major*1000000 + minor*1000 + patch，0.2.1 → 2001）。
-	// 为 0 时不启用版本门禁，现有部署行为不变。
-	MinimumClientVersion int
-	// RecommendedClientVersion 只用于提示「有新版本」，不阻断。为 0 时不提示。
-	RecommendedClientVersion int
 }
 
 // RateLimit 表示「每 Window 内最多 Burst 次」。
@@ -133,23 +127,6 @@ func Load() (Config, error) {
 			return Config{}, errors.New("DATABASE_AUTO_MIGRATE must be true or false")
 		}
 		config.AutoMigrate = autoMigrate
-	}
-	for _, setting := range []struct {
-		name   string
-		target *int
-	}{
-		{"MINIMUM_CLIENT_VERSION", &config.MinimumClientVersion},
-		{"RECOMMENDED_CLIENT_VERSION", &config.RecommendedClientVersion},
-	} {
-		text := strings.TrimSpace(os.Getenv(setting.name))
-		if text == "" {
-			continue
-		}
-		parsed, err := strconv.Atoi(text)
-		if err != nil || parsed < 0 {
-			return Config{}, fmt.Errorf("%s must be a non-negative integer", setting.name)
-		}
-		*setting.target = parsed
 	}
 	if proxies := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")); proxies != "" {
 		for _, entry := range strings.Split(proxies, ",") {

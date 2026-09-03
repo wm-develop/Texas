@@ -442,3 +442,30 @@ func (repository *PostgresRepository) ListAudit(ctx context.Context, query Audit
 	}
 	return events, nil
 }
+
+func (repository *PostgresRepository) MinimumClientVersion(ctx context.Context) (int, error) {
+	var version int
+	if err := repository.database.QueryRowContext(
+		ctx, `SELECT minimum_client_version FROM server_settings WHERE singleton = true`,
+	).Scan(&version); err != nil {
+		return 0, fmt.Errorf("load minimum client version: %w", err)
+	}
+	return version, nil
+}
+
+func (repository *PostgresRepository) SetMinimumClientVersion(
+	ctx context.Context,
+	actorUserID string,
+	version int,
+	now time.Time,
+) error {
+	if _, err := repository.database.ExecContext(
+		ctx,
+		`UPDATE server_settings SET minimum_client_version = $1, updated_by = $2, updated_at = $3
+         WHERE singleton = true`,
+		version, actorUserID, now,
+	); err != nil {
+		return fmt.Errorf("update minimum client version: %w", err)
+	}
+	return nil
+}

@@ -32,19 +32,15 @@ void main() {
   });
 
   group('版本要求查询', () {
-    test('读取最低与推荐版本', () async {
+    test('读取最低版本', () async {
       final client = _client(
-        (request) async => http.Response(
-          jsonEncode({'minimum': 3000, 'recommended': 3001}),
-          200,
-        ),
+        (request) async => http.Response(jsonEncode({'minimum': 3000}), 200),
       );
 
       final requirement = await client.clientVersionRequirement();
 
       expect(requirement, isNotNull);
       expect(requirement!.minimum, 3000);
-      expect(requirement.recommended, 3001);
       expect(
         requirement.blocksCurrentBuild,
         isTrue,
@@ -55,8 +51,7 @@ void main() {
 
     test('服务端没启用门禁时不阻断', () async {
       final client = _client(
-        (request) async =>
-            http.Response(jsonEncode({'minimum': 0, 'recommended': 0}), 200),
+        (request) async => http.Response(jsonEncode({'minimum': 0}), 200),
       );
 
       final requirement = await client.clientVersionRequirement();

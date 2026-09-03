@@ -197,6 +197,28 @@ class GameApiClient {
           as bool? ??
       false;
 
+  /// 当前生效的最低客户端版本；0 表示未启用门禁。
+  Future<int> adminMinimumClientVersion(String accessToken) async =>
+      (await _get(
+            'v1/admin/settings/client-version',
+            token: accessToken,
+          ))['minimum']
+          as int? ??
+      0;
+
+  /// 调整最低客户端版本，服务端立即生效，无需重启。
+  Future<int> adminSetMinimumClientVersion({
+    required String accessToken,
+    required int minimum,
+  }) async =>
+      (await _request(
+            'v1/admin/settings/client-version',
+            token: accessToken,
+            body: {'minimum': minimum},
+          ))['minimum']
+          as int? ??
+      0;
+
   Future<bool> adminRegistrationEnabled(String accessToken) async =>
       (await _get(
             'v1/admin/settings/registration',
@@ -518,10 +540,7 @@ class GameApiClient {
     if (response.statusCode != 200) return null;
     try {
       final decoded = _decode(response.bodyBytes);
-      return ClientVersionRequirement(
-        minimum: decoded['minimum'] as int? ?? 0,
-        recommended: decoded['recommended'] as int? ?? 0,
-      );
+      return ClientVersionRequirement(minimum: decoded['minimum'] as int? ?? 0);
     } on Object {
       return null;
     }
@@ -542,16 +561,10 @@ void _throwIfClientTooOld(int statusCode, Map<String, dynamic> decoded) {
 
 /// 服务端声明的客户端版本要求。
 class ClientVersionRequirement {
-  const ClientVersionRequirement({
-    required this.minimum,
-    required this.recommended,
-  });
+  const ClientVersionRequirement({required this.minimum});
 
   /// 低于它就完全不能用；为 0 表示服务端没有启用版本门禁。
   final int minimum;
-
-  /// 低于它只提示有新版本，不阻断；为 0 表示不提示。
-  final int recommended;
 
   bool get blocksCurrentBuild => minimum > 0 && appVersionCode < minimum;
 }

@@ -664,3 +664,42 @@ func (service *Service) IsAdministrator(ctx context.Context, userID string) (boo
 	}
 	return user.Role == RoleAdmin && user.Status == StatusActive, nil
 }
+
+// ClientVersionSettings 是服务端对客户端版本的要求。
+type ClientVersionSettings struct {
+	// Minimum 为 0 时不启用版本门禁。
+	Minimum int `json:"minimum"`
+}
+
+func (service *Service) ClientVersionSettings(ctx context.Context, actor User) (ClientVersionSettings, error) {
+	if err := requireAdmin(actor); err != nil {
+		return ClientVersionSettings{}, err
+	}
+	minimum, err := service.repository.MinimumClientVersion(ctx)
+	return ClientVersionSettings{Minimum: minimum}, err
+}
+
+// MinimumClientVersion 供版本门禁读取，不需要管理员身份。
+func (service *Service) MinimumClientVersion(ctx context.Context) (int, error) {
+	return service.repository.MinimumClientVersion(ctx)
+}
+
+func (service *Service) SetMinimumClientVersion(ctx context.Context, actor User, version int) (ClientVersionSettings, error) {
+	if err := requireAdmin(actor); err != nil {
+		return ClientVersionSettings{}, err
+	}
+	if version < 0 {
+		return ClientVersionSettings{}, Error{Code: "invalid_client_version"}
+	}
+	if err := service.repository.SetMinimumClientVersion(
+		ctx, actor.UserID, version, service.config.Now(),
+	); err != nil {
+		return ClientVersionSettings{}, err
+	}
+	if err := service.recordAudit(ctx, actor.UserID, "admin.client_version_changed", map[string]any{
+		"minimum": version,
+	}); err != nil {
+		return ClientVersionSettings{}, err
+	}
+	return ClientVersionSettings{Minimum: version}, nil
+}

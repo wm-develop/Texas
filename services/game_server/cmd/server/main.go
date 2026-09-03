@@ -174,8 +174,6 @@ func main() {
 			RateLimits:               appConfig.RateLimits,
 			Metrics:                  metricsRegistry,
 			MetricsToken:             appConfig.MetricsToken,
-			MinimumClientVersion:     appConfig.MinimumClientVersion,
-			RecommendedClientVersion: appConfig.RecommendedClientVersion,
 			Readiness: func(ctx context.Context) error {
 				if database == nil {
 					return nil

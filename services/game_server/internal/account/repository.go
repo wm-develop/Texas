@@ -31,6 +31,11 @@ type Repository interface {
 	SelfDelete(ctx context.Context, userID, anonymizedUsername, anonymizedDisplayName string, now time.Time) error
 	RegistrationEnabled(ctx context.Context) (bool, error)
 	SetRegistrationEnabled(ctx context.Context, actorUserID string, enabled bool, now time.Time) error
+	// MinimumClientVersion 是允许连接的最低客户端版本号，0 表示不启用门禁。
+	// 存在数据库而不是环境变量：只更新客户端时也能在管理界面里调整，
+	// 不必登服务器改 env 并重建容器。
+	MinimumClientVersion(ctx context.Context) (int, error)
+	SetMinimumClientVersion(ctx context.Context, actorUserID string, version int, now time.Time) error
 	RecordAudit(ctx context.Context, event AuditEvent) error
 	// ListAudit 按时间倒序返回审计事件；query.UserID 非空时只返回该用户作为操作者或对象的事件。
 	ListAudit(ctx context.Context, query AuditQuery) ([]AuditEvent, error)
@@ -48,6 +53,7 @@ type MemoryRepository struct {
 	sessionIDByAccess   map[string]string
 	sessionIDByRefresh  map[string]string
 	registrationEnabled bool
+	minimumClientVersion int
 	auditEvents         []AuditEvent
 }
 
@@ -198,6 +204,19 @@ func (repository *MemoryRepository) UpdateStatuses(_ context.Context, actorUserI
 			repository.deleteUserSessionsLocked(userID)
 		}
 	}
+	return nil
+}
+
+func (repository *MemoryRepository) MinimumClientVersion(_ context.Context) (int, error) {
+	repository.mu.RLock()
+	defer repository.mu.RUnlock()
+	return repository.minimumClientVersion, nil
+}
+
+func (repository *MemoryRepository) SetMinimumClientVersion(_ context.Context, _ string, version int, _ time.Time) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	repository.minimumClientVersion = version
 	return nil
 }
 

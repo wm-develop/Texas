@@ -81,7 +81,7 @@ TRTC：牌桌语音
 
 ## 4. 数据库版本
 
-当前共有八组迁移：
+当前共有九组迁移：
 
 1. `000001_phase3_core`：账户、会话、钱包、房间、手牌、聊天和账本基础表。
 2. `000002_admin_console`：角色、账号状态、注册开关和管理审计。
@@ -91,6 +91,7 @@ TRTC：牌桌语音
 6. `000006_dynamic_room_capacity`：创建房间不预设人数，容量动态扩展至 10 人。
 7. `000007_account_deletion`：账本 `reason` 约束增加 `account_deletion`，用于账号注销时钱包整体转入管理员。
 8. `000008_room_join_lock`：房间增加 `join_locked`，房主可临时关闭入口。
+9. `000009_client_version_gate`：`server_settings` 增加 `minimum_client_version`，管理员可随时调整客户端版本门槛。
 
 生产环境必须先运行 `migrate up`，再启动对应版本游戏服务。服务启动会校验迁移版本和 SQL 校验和。
 
@@ -122,7 +123,7 @@ TRTC：牌桌语音
 - 平板横屏右栏按钮被裁掉/点不动：一是右栏可用高度不足时下注区被直接裁掉，改为贴底可滚动；二是手势导航条压在屏幕底部、落在那片区域的按钮触摸归系统，原生避让区查询在挖孔之外补上导航条（HarmonyOS `TYPE_NAVIGATION_INDICATOR`、Android `navigationBars()`），Flutter 侧再用 `viewPadding`/`systemGestureInsets` 与已消费 padding 的差值兜底。**平板真机待验证。**
 - HarmonyOS 开麦后听不到远端（真机复现并定位）：真因是**牌局提示音**，不是 TRTC 角色切换。鸿蒙音频焦点是应用级的，`audioplayers` 的 `FocusManager` 每次播放前调用 `setAudioSessionScene(AUDIO_SESSION_SCENE_MEDIA)` 并以 `CONCURRENCY_DEFAULT` 激活音频会话，该模式独占物理输出通道并压制应用内其他音频流，于是每有玩家动作播一声提示音，系统音量类型就被改成媒体音量（音量条话筒变喇叭）、TRTC 通话流被压制。用户实测无动作时静置一分钟音量类型始终是话筒，独立佐证了这一点。真机排除法走了四轮：①语音中静音（可用但没提示音）；②交给 TRTC `startPlayMusic` 走通话流（不掐语音，但音量偏小、有延迟断续——那条链路是给背景音乐用的）；③把插件并发模式改成 `CONCURRENCY_MIX_WITH_OTHERS`（**实测无效**，证明致命的是 `setAudioSessionScene(MEDIA)` + `activateAudioSession` 这套会话切换本身，不是并发模式）；④当前方案：鸿蒙原生 `SoundPool` 通道（`com.texas.game.poker_client/table_sound`），系统为短音效提供的低时延通道，完全不经过 `AudioSessionManager`，usage 取 `STREAM_USAGE_MUSIC` 时按官方说明为混音模式、不打断其他音频。提示音字节先落盘（SoundPool 按路径播放，单个需 <1MB）。四种方式保留为 `HarmonyVoiceSoundStrategy`，改一个默认值即可切换。原生通道不可用时安静跳过，等同于静音，绝不回退到会掐断通话的路径。Android/Windows 行为不变。**待真机验证。**
 - HarmonyOS 语音仍使用音频通话场景、以主播身份进房且不切换角色（上一轮改动）：让所有人全程处于通话音量，与上面的修复叠加保留。
-- 客户端版本门禁：服务端配 `MINIMUM_CLIENT_VERSION`（不配则完全不启用，现有部署零影响），版本号用 `major*1000000 + minor*1000 + patch` 编码，四端与鸿蒙 `versionCode` 同一套，由 `app_version_test.dart` 锁住 Dart 常量 / pubspec / `app.json5` 三处一致。客户端每次请求带 `X-Client-Version`（WS 走 `clientVersion` 查询参数，浏览器不能设自定义头），门禁包在整个 mux 外层，WS 升级一并覆盖；过旧返回 426，客户端进入不可跳过的阻断页。`GET /v1/client/version` 无需鉴权；返回 404 说明服务端才是旧的，此时客户端不自锁。
+- 客户端版本门禁：最低版本存在数据库 `server_settings.minimum_client_version`（迁移 000009），管理员在客户端的服务器管理页调整，进程内原子缓存随之刷新，**立即生效且不需要改环境变量或重建容器**——只更新客户端的发布不必登服务器。为 0 时完全不启用。版本号用 `major*1000000 + minor*1000 + patch` 编码，四端与鸿蒙 `versionCode` 同一套，由 `app_version_test.dart` 锁住 Dart 常量 / pubspec / `app.json5` 三处一致。客户端每次请求带 `X-Client-Version`（WS 走 `clientVersion` 查询参数，浏览器不能设自定义头），门禁包在整个 mux 外层，WS 升级一并覆盖；过旧返回 426，客户端进入不可跳过的阻断页。登录、刷新令牌与「调整门槛」这三条路径豁免门禁，作为逃生通道：否则门槛设得比管理员自己的客户端还高时会把自己锁死。`GET /v1/client/version` 无需鉴权；返回 404 说明服务端才是旧的，此时客户端不自锁。
 - 分层限流已实现：登录/注册/刷新按 IP、密码错误按用户名、房间与钱包操作按用户、TRTC 凭证按用户、单 IP WebSocket 并发上限；`TRUSTED_PROXIES` 提供可信代理解析。`/metrics` 以 Bearer 令牌保护，暴露 HTTP、WebSocket、牌桌动作、活跃牌桌、快照广播失败与限流计数。生产环境已配置 `TRUSTED_PROXIES`（`texas-internal` 网段）与 `METRICS_TOKEN`，`/metrics` 已验证仅接受令牌访问。
 - 账号注销（`POST /v1/users/me/delete`）与隐私说明已完成，规则见[隐私说明](PRIVACY_NOTICE.md)；举报因熟人局定位不做。语音加入/退出元数据以 `voice.joined`/`voice.left` 审计事件持久化，管理员可在客户端「审计记录」页（`GET /v1/admin/audit`）按类别、用户或房间查询全部管理操作、账号变更与语音进出。
 - 已有 GitHub Actions（`.github/workflows/ci.yml`）：服务端 gofmt/vet/test 与 -race、客户端 analyze/test、shellcheck 与仓库卫生检查。构建、迁移、发布和回滚仍是文档化的人工流程。
