@@ -345,7 +345,7 @@ packages:
     source: hosted
     version: "1.9.1"
   path_provider:
-    dependency: transitive
+    dependency: "direct main"
     description:
       path: "packages/path_provider/path_provider"
       ref: HEAD

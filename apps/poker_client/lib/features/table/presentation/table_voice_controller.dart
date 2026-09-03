@@ -78,6 +78,24 @@ class TableVoiceController extends ChangeNotifier {
 
   Set<String> get mutedUserIds => _mutedUserIds;
 
+  /// 在语音会话内部播放一小段本地提示音。
+  ///
+  /// 鸿蒙上普通音频插件会把整个应用的音频会话切成媒体场景并独占输出，压制
+  /// 正在进行的通话；交给 RTC 引擎播放后两者可以并存。未加入语音时不做任何
+  /// 事，让调用方走普通播放路径。
+  Future<void> playLocalEffect({
+    required int id,
+    required String filePath,
+    required double volume,
+  }) async {
+    if (_disposed || !joined) return;
+    await _voiceChat.playLocalEffect(
+      id: id,
+      filePath: filePath,
+      volume: volume,
+    );
+  }
+
   /// 本地实际能听见的说话者：被静音的人不应显示说话动效，也不计入人数。
   Set<String> get audibleSpeakingUserIds =>
       _speakingUserIds.difference(_mutedUserIds);

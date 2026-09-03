@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:tencent_rtc_sdk/trtc_cloud.dart';
 import 'package:tencent_rtc_sdk/trtc_cloud_def.dart';
 import 'package:tencent_rtc_sdk/trtc_cloud_listener.dart';
+import 'package:tencent_rtc_sdk/tx_audio_effect_manager.dart';
 import 'package:tencent_rtc_sdk/tx_device_manager.dart';
 
 import 'microphone_permission.dart';
@@ -175,6 +176,34 @@ class TrtcVoiceChatService implements VoiceChatService {
   Future<void> setPlaybackVolume(double volume) async {
     _ensureUsable();
     _cloud?.setAudioPlayoutVolume((volume.clamp(0, 1) * 100).round());
+  }
+
+  @override
+  Future<void> playLocalEffect({
+    required int id,
+    required String filePath,
+    required double volume,
+  }) async {
+    if (_disposed || !_joined) return;
+    final cloud = _cloud;
+    if (cloud == null || filePath.trim().isEmpty) return;
+    try {
+      final effects = cloud.getAudioEffectManager();
+      // 同一音效连续触发时先停掉上一次，避免叠在一起
+      effects.stopPlayMusic(id);
+      effects.startPlayMusic(
+        AudioMusicParam(
+          id: id,
+          path: filePath,
+          publish: false,
+          isShortFile: true,
+        ),
+      );
+      effects.setMusicPlayoutVolume(id, (volume.clamp(0, 1) * 100).round());
+    } on Object {
+      // 提示音是附属功能，任何失败都不能影响通话本身；也绝不回退到
+      // 普通音频插件，那正是会掐掉远端语音的路径。
+    }
   }
 
   @override

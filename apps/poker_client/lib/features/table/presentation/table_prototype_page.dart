@@ -15,6 +15,7 @@ import 'package:poker_client/features/admin/presentation/admin_page.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
 import 'package:poker_client/features/table/audio/table_action_sound_tracker.dart';
+import 'package:poker_client/features/table/audio/table_sound_clip_files.dart';
 import 'package:poker_client/features/table/audio/table_sound_effects.dart';
 import 'package:poker_client/features/table/domain/table_seat.dart';
 import 'package:poker_client/features/table/presentation/table_labels.dart';
@@ -74,8 +75,16 @@ class _TablePrototypePageState extends State<TablePrototypePage>
   String? _lastShownGameError;
   GameSocketStatus? _lastGameSocketStatus;
   final TableActionSoundTracker _actionSoundTracker = TableActionSoundTracker();
+  final TableSoundClipFiles _soundClipFiles = TableSoundClipFiles();
   late final TableSoundEffects _tableSoundEffects = TableSoundEffects(
     voiceSessionActive: () => _voice.joined,
+    // 鸿蒙语音进行中改由 RTC 引擎出声，避免普通音频插件压制通话流
+    clipFilePath: _soundClipFiles.pathFor,
+    playInVoiceSession: (id, filePath, volume) => _voice.playLocalEffect(
+      id: id,
+      filePath: filePath,
+      volume: volume,
+    ),
   );
   late final TableAutomationCoordinator _automation;
   late final TableDealController _deal;

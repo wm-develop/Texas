@@ -1,33 +1,70 @@
+import 'dart:io';
+
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:poker_client/features/table/audio/table_action_sound_tracker.dart';
+import 'package:poker_client/features/table/audio/table_sound_clip_files.dart';
 import 'package:poker_client/features/table/audio/table_sound_effects.dart';
 
-/// 记录每一次真正到达播放出口的提示音。测试不构造真实播放器：它会注册
-/// 持续的帧回调，测试环境里跑不完。
+/// 记录提示音走了哪条出声路径。测试不构造真实播放器：它会注册持续的帧
+/// 回调，测试环境里跑不完。
 class _Recorder {
-  final played = <TableSoundEffect>[];
+  final viaPlugin = <TableSoundEffect>[];
+  final viaVoiceSession = <(int, String, double)>[];
   final contexts = <AudioContext>[];
 
   TableSoundEffects effects({
     required TargetPlatform platform,
     required bool voiceActive,
+    bool voiceOutputAvailable = true,
+    Future<String?> Function(TableSoundEffect effect)? clipFilePath,
   }) => TableSoundEffects(
     platform: platform,
     voiceSessionActive: () => voiceActive,
     configureGlobalAudio: (context) async => contexts.add(context),
-    playClip: (effect, _) async => played.add(effect),
+    playClip: (effect, _) async => viaPlugin.add(effect),
+    clipFilePath:
+        clipFilePath ??
+        (voiceOutputAvailable
+            ? (effect) async => '/tmp/${effect.name}.wav'
+            : null),
+    playInVoiceSession: voiceOutputAvailable
+        ? (id, filePath, volume) async =>
+              viaVoiceSession.add((id, filePath, volume))
+        : null,
   );
 }
 
 void main() {
-  group('HarmonyOS 语音进行中让位提示音', () {
-    test('鸿蒙 + 语音进行中：完全不走播放路径', () async {
+  group('鸿蒙语音进行中改走 RTC 音频通道', () {
+    test('语音进行中：提示音交给 RTC 播放，不碰普通音频插件', () async {
       // 鸿蒙音频焦点是应用级的：audioplayers 播放前会把会话场景设成 MEDIA
-      // 并以 CONCURRENCY_DEFAULT 激活音频会话，该模式独占物理输出通道并
-      // 压制应用内其他音频流，于是每有玩家动作播一声提示音，系统音量类型
-      // 就被改成媒体音量（音量条话筒变喇叭）、TRTC 通话流被压制。
+      // 并以 CONCURRENCY_DEFAULT 激活音频会话，独占输出并压制应用内其他
+      // 音频流，于是提示音一响，TRTC 通话流就被压制、音量条从话筒变喇叭。
+      // 交给 RTC 引擎播放后声音走通话流，语音与提示音得以并存。
+      final recorder = _Recorder();
+      final effects = recorder.effects(
+        platform: TargetPlatform.ohos,
+        voiceActive: true,
+      );
+
+      await effects.play(TableSoundEffect.chips);
+
+      expect(recorder.viaPlugin, isEmpty, reason: '语音中绝不能走普通音频插件');
+      expect(
+        recorder.contexts,
+        isEmpty,
+        reason: '走 RTC 通道时不该去动全局音频上下文',
+      );
+      expect(recorder.viaVoiceSession, hasLength(1));
+      final (id, path, volume) = recorder.viaVoiceSession.single;
+      expect(id, TableSoundEffects.musicId(TableSoundEffect.chips));
+      expect(path, '/tmp/chips.wav');
+      expect(volume, 0.75);
+    });
+
+    test('每种提示音有各自的音效 ID，连续触发不会互相打断', () async {
       final recorder = _Recorder();
       final effects = recorder.effects(
         platform: TargetPlatform.ohos,
@@ -37,15 +74,13 @@ void main() {
       await effects.play(TableSoundEffect.chips);
       await effects.play(TableSoundEffect.allIn);
 
-      expect(recorder.played, isEmpty, reason: '语音进行中不能触发任何音频播放');
-      expect(
-        recorder.contexts,
-        isEmpty,
-        reason: '让位时连全局音频上下文都不该去碰',
-      );
+      final ids = recorder.viaVoiceSession.map((call) => call.$1).toSet();
+      expect(ids, hasLength(2));
+      // All in 的音量更高，与普通插件路径保持一致
+      expect(recorder.viaVoiceSession.last.$3, 0.9);
     });
 
-    test('鸿蒙 + 未加入语音：照常播放', () async {
+    test('鸿蒙未加入语音：照常走普通音频插件', () async {
       final recorder = _Recorder();
       final effects = recorder.effects(
         platform: TargetPlatform.ohos,
@@ -54,11 +89,12 @@ void main() {
 
       await effects.play(TableSoundEffect.chips);
 
-      expect(recorder.played, [TableSoundEffect.chips]);
+      expect(recorder.viaPlugin, [TableSoundEffect.chips]);
+      expect(recorder.viaVoiceSession, isEmpty);
     });
 
-    test('其他平台即使在语音里也照常播放', () async {
-      // Android 与 Windows 已验证可用，不能因为这个鸿蒙专属问题被削弱
+    test('其他平台即使在语音里也照常走普通音频插件', () async {
+      // Android 与 Windows 已验证可以一边语音一边提示音，不能被改动
       for (final platform in const [
         TargetPlatform.android,
         TargetPlatform.windows,
@@ -71,11 +107,43 @@ void main() {
 
         await effects.play(TableSoundEffect.allIn);
 
-        expect(
-          recorder.played,
-          [TableSoundEffect.allIn],
-          reason: '$platform 的提示音不应被改动',
+        expect(recorder.viaPlugin, [TableSoundEffect.allIn], reason: '$platform');
+        expect(recorder.viaVoiceSession, isEmpty, reason: '$platform');
+      }
+    });
+
+    test('RTC 通道不可用时安静跳过，绝不回退到普通音频插件', () async {
+      // 回退才是会掐掉远端语音的路径，宁可这一声不响
+      final recorder = _Recorder();
+      final effects = recorder.effects(
+        platform: TargetPlatform.ohos,
+        voiceActive: true,
+        voiceOutputAvailable: false,
+      );
+
+      await effects.play(TableSoundEffect.chips);
+
+      expect(recorder.viaPlugin, isEmpty);
+      expect(recorder.viaVoiceSession, isEmpty);
+    });
+
+    test('落盘失败或抛错时同样安静跳过', () async {
+      for (final clipFilePath
+          in <Future<String?> Function(TableSoundEffect)>[
+            (_) async => null,
+            (_) async => throw const FileSystemException('no space'),
+          ]) {
+        final recorder = _Recorder();
+        final effects = recorder.effects(
+          platform: TargetPlatform.ohos,
+          voiceActive: true,
+          clipFilePath: clipFilePath,
         );
+
+        await effects.play(TableSoundEffect.chips);
+
+        expect(recorder.viaPlugin, isEmpty);
+        expect(recorder.viaVoiceSession, isEmpty);
       }
     });
 
@@ -89,7 +157,7 @@ void main() {
 
       await effects.play(TableSoundEffect.chips);
 
-      expect(recorder.played, isEmpty);
+      expect(recorder.viaPlugin, isEmpty);
     });
   });
 
@@ -122,6 +190,55 @@ void main() {
       await effects.play(TableSoundEffect.chips);
 
       expect(recorder.contexts, isEmpty);
+    });
+  });
+
+  group('提示音落盘', () {
+    late Directory directory;
+
+    setUp(() async {
+      directory = await Directory.systemTemp.createTemp('table_sound_test');
+    });
+    tearDown(() async {
+      if (directory.existsSync()) await directory.delete(recursive: true);
+    });
+
+    test('写出可播放的 WAV，并且同一音效只写一次', () async {
+      var calls = 0;
+      final files = TableSoundClipFiles(
+        directory: () async {
+          calls++;
+          return directory;
+        },
+      );
+
+      final first = await files.pathFor(TableSoundEffect.chips);
+      final second = await files.pathFor(TableSoundEffect.chips);
+
+      expect(first, isNotNull);
+      expect(second, first);
+      expect(calls, 1, reason: '路径应被缓存，不必反复解析目录');
+      final bytes = await File(first!).readAsBytes();
+      expect(String.fromCharCodes(bytes.sublist(0, 4)), 'RIFF');
+      expect(String.fromCharCodes(bytes.sublist(8, 12)), 'WAVE');
+      expect(bytes, TableSoundEffects.clipBytes(TableSoundEffect.chips));
+    });
+
+    test('不同音效写到不同文件', () async {
+      final files = TableSoundClipFiles(directory: () async => directory);
+
+      final chips = await files.pathFor(TableSoundEffect.chips);
+      final fold = await files.pathFor(TableSoundEffect.fold);
+
+      expect(chips, isNot(fold));
+    });
+
+    test('目录不可用时返回 null 而不是抛错', () async {
+      final files = TableSoundClipFiles(
+        directory: () async => throw const FileSystemException('unavailable'),
+      );
+
+      expect(await files.pathFor(TableSoundEffect.chips), isNull);
     });
   });
 }

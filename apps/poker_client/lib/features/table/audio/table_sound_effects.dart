@@ -13,7 +13,12 @@ class TableSoundEffects {
     TargetPlatform? platform,
     Future<void> Function(AudioContext context)? configureGlobalAudio,
     Future<void> Function(TableSoundEffect effect, double volume)? playClip,
+    Future<void> Function(int id, String filePath, double volume)?
+    playInVoiceSession,
+    Future<String?> Function(TableSoundEffect effect)? clipFilePath,
   }) : _injectedPlayer = player,
+       _playInVoiceSession = playInVoiceSession,
+       _clipFilePath = clipFilePath,
        _voiceSessionActive = voiceSessionActive ?? _neverActive,
        _platform = platform ?? defaultTargetPlatform,
        _configureGlobalAudio =
@@ -26,12 +31,25 @@ class TableSoundEffects {
 
   static bool _neverActive() => false;
 
+  /// 提示音的原始 WAV 字节，供落盘给 RTC 引擎播放。
+  static Uint8List clipBytes(TableSoundEffect effect) => _clips[effect]!;
+
+  /// RTC 音效 ID：每种提示音一个固定值，避免连续触发时互相打断。
+  static int musicId(TableSoundEffect effect) => 9100 + effect.index;
+
   final AudioPlayer? _injectedPlayer;
   final bool Function() _voiceSessionActive;
   final TargetPlatform _platform;
   final Future<void> Function(AudioContext context) _configureGlobalAudio;
   final Future<void> Function(TableSoundEffect effect, double volume)?
   _injectedPlayClip;
+
+  /// 语音会话内部的出声通道（HarmonyOS 用 TRTC 音频引擎播放）。
+  final Future<void> Function(int id, String filePath, double volume)?
+  _playInVoiceSession;
+
+  /// 提示音落盘后的文件路径，RTC 引擎按路径播放。
+  final Future<String?> Function(TableSoundEffect effect)? _clipFilePath;
   AudioPlayer? _createdPlayer;
   bool _disposed = false;
   bool _globalAudioConfigured = false;
@@ -41,18 +59,20 @@ class TableSoundEffects {
   AudioPlayer get _player =>
       _injectedPlayer ?? (_createdPlayer ??= AudioPlayer());
 
-  /// HarmonyOS 上语音进行中必须放弃提示音。
+  /// HarmonyOS 语音进行中必须绕开普通音频插件。
   ///
   /// 鸿蒙的音频焦点是应用级的：audioplayers 的 FocusManager 在每次播放前会
   /// 调用 setAudioSessionScene(AUDIO_SESSION_SCENE_MEDIA) 并以
   /// CONCURRENCY_DEFAULT 激活音频会话，而该模式会独占输出通道、压制应用内
   /// 其他音频流。TRTC 的通话流和提示音在同一个应用里共用这一套策略，于是
   /// 每次有人动作播一声提示音，系统音量类型就被改成媒体音量（音量条从话筒
-  /// 变喇叭），远端语音随之被压制。插件没有把这两个调用开放给 Dart 侧配置，
-  /// 唯一可靠的办法是语音进行中根本不走这条播放路径。
+  /// 变喇叭），远端语音随之被压制。插件把这两个调用写死在原生侧，没有开放
+  /// 给 Dart 配置。
   ///
-  /// 只影响 HarmonyOS 且只在语音进行中；不在语音里、以及其他平台照常播放。
-  bool get _suppressedByVoiceSession =>
+  /// 因此鸿蒙语音进行中改由 TRTC 的音频引擎播放提示音：声音走通话流，
+  /// 不产生第二个音频会话，语音和提示音得以并存。
+  /// 只影响 HarmonyOS 且只在语音进行中；不在语音里、以及其他平台不变。
+  bool get _usesVoiceSessionOutput =>
       _platform == TargetPlatform.ohos && _voiceSessionActive();
 
   /// 第二道保险：把鸿蒙的应用级并发策略从独占改成混音。
@@ -76,10 +96,14 @@ class TableSoundEffects {
   }
 
   Future<void> play(TableSoundEffect effect) async {
-    if (_disposed || _suppressedByVoiceSession) return;
-    await _ensureGlobalAudioContext();
     if (_disposed) return;
     final volume = effect == TableSoundEffect.allIn ? 0.9 : 0.75;
+    if (_usesVoiceSessionOutput) {
+      await _playThroughVoiceSession(effect, volume);
+      return;
+    }
+    await _ensureGlobalAudioContext();
+    if (_disposed) return;
     final playClip = _injectedPlayClip;
     try {
       if (playClip != null) {
@@ -99,6 +123,24 @@ class TableSoundEffects {
             ? SystemSoundType.alert
             : SystemSoundType.click,
       );
+    }
+  }
+
+  /// 走 RTC 通道出声。任何一步不可用就安静跳过这次提示音，
+  /// 绝不回退到普通音频插件——那正是会掐掉远端语音的路径。
+  Future<void> _playThroughVoiceSession(
+    TableSoundEffect effect,
+    double volume,
+  ) async {
+    final play = _playInVoiceSession;
+    final resolvePath = _clipFilePath;
+    if (play == null || resolvePath == null) return;
+    try {
+      final filePath = await resolvePath(effect);
+      if (filePath == null || _disposed) return;
+      await play(musicId(effect), filePath, volume);
+    } on Object {
+      // 提示音是附属功能，失败不能影响牌局或通话。
     }
   }
 

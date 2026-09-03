@@ -49,6 +49,12 @@ dependencies:
       path: permission_handler_ohos
   web_socket_channel: 3.0.3
   tencent_rtc_sdk: 13.4.3
+  # 提示音落盘给 TRTC 音频引擎按路径播放（鸿蒙语音中的出声通道）。
+  # 必须与 audioplayers 鸿蒙分支引用同一个 git 来源，否则版本求解冲突。
+  path_provider:
+    git:
+      url: https://gitcode.com/openharmony-sig/flutter_packages.git
+      path: packages/path_provider/path_provider
   shared_preferences:
     git:
       url: https://gitcode.com/openharmony-sig/flutter_packages.git

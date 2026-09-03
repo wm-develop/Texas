@@ -52,6 +52,15 @@ class FakeVoiceChatService implements VoiceChatService {
     remoteMuted[userId] = muted;
   }
 
+  final localEffects = <(int, String, double)>[];
+
+  @override
+  Future<void> playLocalEffect({
+    required int id,
+    required String filePath,
+    required double volume,
+  }) async => localEffects.add((id, filePath, volume));
+
   @override
   Future<void> setPlaybackVolume(double value) async => volume = value;
 

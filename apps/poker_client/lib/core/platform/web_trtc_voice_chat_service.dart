@@ -151,6 +151,15 @@ class WebTrtcVoiceChatService implements VoiceChatService {
   }
 
   @override
+  Future<void> playLocalEffect({
+    required int id,
+    required String filePath,
+    required double volume,
+  }) async {
+    // 该冲突是 HarmonyOS 独有的，本平台无需在语音通道内播提示音。
+  }
+
+  @override
   Future<void> setPlaybackVolume(double volume) async {
     _ensureUsable();
     try {
