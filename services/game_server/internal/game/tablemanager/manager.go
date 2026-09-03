@@ -53,6 +53,10 @@ type runtime struct {
 	persistedHandID          string
 	actions                  []history.Action
 	lastAction               *ConfirmedActionSnapshot
+	// online 记录当前保持 WebSocket 连接的用户，独立于引擎座位。
+	// 牌局进行中加入的玩家在结算前没有引擎座位，Join 时的 SetConnected 落空；
+	// 若入座时一律写成断线，他会一直显示「已断线」，服务端自动准备也会跳过他。
+	online map[string]bool
 	// pendingCashOuts holds userID → display name for folded players who left
 	// the room mid-hand. Their wallet refund runs after the settlement writes
 	// the post-hand stacks; the display name keeps hand history readable.
@@ -227,7 +231,8 @@ func (manager *Manager) Join(ctx context.Context, userID string, roomID string) 
 	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
-	if err := syncMembers(runtime.engine, roomValue); err != nil {
+	runtime.online[userID] = true
+	if err := syncMembers(runtime.engine, roomValue, runtime.online); err != nil {
 		return Snapshot{}, err
 	}
 	if err := runtime.engine.SetConnected(userID, true); err != nil {
@@ -252,6 +257,7 @@ func (manager *Manager) Disconnect(ctx context.Context, userID string, roomID st
 	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
+	delete(runtime.online, userID)
 	_ = runtime.engine.SetConnected(userID, false)
 	if runtime.engine.Phase() == holdem.PhaseWaiting || runtime.engine.Phase() == holdem.PhaseWaitingNextHand {
 		// A short platform/network reconnect must not be treated as the player
@@ -281,7 +287,7 @@ func (manager *Manager) SetReady(ctx context.Context, userID string, ready bool)
 	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
-	if err := syncMembers(runtime.engine, roomValue); err != nil {
+	if err := syncMembers(runtime.engine, roomValue, runtime.online); err != nil {
 		return Snapshot{}, err
 	}
 	if !runtime.autoReadyDeadline.IsZero() {
@@ -425,7 +431,7 @@ func (manager *Manager) Snapshot(ctx context.Context, userID string, roomID stri
 	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
-	if err := syncMembers(runtime.engine, roomValue); err != nil {
+	if err := syncMembers(runtime.engine, roomValue, runtime.online); err != nil {
 		return Snapshot{}, err
 	}
 	return snapshotForRuntime(runtime, roomValue, userID)
@@ -806,6 +812,7 @@ func (manager *Manager) runtimeFor(roomValue room.Room) (*runtime, error) {
 		holeCardViewRequests:     make(map[string]holeCardViewRequest),
 		privateHoleCardViews:     make(map[string]map[string]holdem.RevealedHand),
 		seatSwapRequests:         make(map[string]seatSwapRequest),
+		online:                   make(map[string]bool),
 	}
 	manager.tables[roomValue.RoomID] = created
 	return created, nil
@@ -1189,7 +1196,7 @@ func (manager *Manager) notifySnapshot(roomID string) {
 	}
 }
 
-func syncMembers(engine *holdem.Table, roomValue room.Room) error {
+func syncMembers(engine *holdem.Table, roomValue room.Room, online map[string]bool) error {
 	players := engine.Players()
 	byID := make(map[string]holdem.Player, len(players))
 	for _, player := range players {
@@ -1208,7 +1215,9 @@ func syncMembers(engine *holdem.Table, roomValue room.Room) error {
 			if err := engine.AddPlayer(member.UserID, member.Seat, member.Stack); err != nil {
 				return err
 			}
-			if err := engine.SetConnected(member.UserID, false); err != nil {
+			// 中途加入者在结算后才入座，此时他多半早已连着；按真实在线状态落座，
+			// 否则他会一直显示「已断线」，服务端自动准备也会跳过他。
+			if err := engine.SetConnected(member.UserID, online[member.UserID]); err != nil {
 				return err
 			}
 		}

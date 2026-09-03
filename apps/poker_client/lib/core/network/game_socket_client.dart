@@ -53,6 +53,17 @@ class GameSocketClient extends ChangeNotifier {
   bool _disposed = false;
   Duration _serverClockOffset = Duration.zero;
   bool _actionPending = false;
+
+  /// 动作提交后等待回执的看门狗。回执只会以 table.action.accepted /
+  /// table.action.rejected / system.error 三种形态之一到达；若都没等到，
+  /// 说明这条请求已经随连接一起丢失，必须把按钮放开，否则玩家会一直
+  /// 处于「怎么点都没反应」的状态。requestId 保证重发不会重复执行。
+  Timer? _actionWatchdog;
+  static const Duration actionAckTimeout = Duration(seconds: 5);
+
+  /// 本连接已被同一账号的新连接取代（服务端关闭码 4001）。
+  /// 此时不能再自动重连去抢回连接，否则两个客户端会互相踢来踢去。
+  bool _superseded = false;
   int? _pendingRevision;
   final TableSequenceTracker _sequences = TableSequenceTracker();
   bool _recoveringSequenceGap = false;
@@ -106,6 +117,7 @@ class GameSocketClient extends ChangeNotifier {
   DateTime get serverNow => DateTime.now().add(_serverClockOffset);
 
   Future<void> connect() async {
+    _superseded = false;
     if (_status == GameSocketStatus.connecting ||
         _status == GameSocketStatus.connected ||
         _status == GameSocketStatus.authenticated ||
@@ -202,6 +214,7 @@ class GameSocketClient extends ChangeNotifier {
     if (snapshot == null || snapshot.handId.isEmpty || actionPending) return;
     _actionPending = true;
     _pendingRevision = snapshot.tableRevision;
+    _armActionWatchdog();
     notifyListeners();
     final requestId = _requestId();
     _send(
@@ -338,8 +351,7 @@ class GameSocketClient extends ChangeNotifier {
             if (_errorMessage == 'sequence_gap') _errorMessage = null;
             if (_pendingRevision != null &&
                 _snapshot!.tableRevision != _pendingRevision) {
-              _actionPending = false;
-              _pendingRevision = null;
+              _clearPendingAction();
             }
           }
         case 'table.replay.completed':
@@ -352,8 +364,7 @@ class GameSocketClient extends ChangeNotifier {
             }
           }
         case 'table.action.accepted':
-          _actionPending = false;
-          _pendingRevision = null;
+          _clearPendingAction();
         case 'table.rebuy.accepted':
           _errorMessage = null;
         case 'table.chat.message':
@@ -396,9 +407,10 @@ class GameSocketClient extends ChangeNotifier {
               _forceRefreshOnNextConnect = true;
               unawaited(_channel?.sink.close());
             }
-            if (type == 'table.action.rejected') {
-              _actionPending = false;
-              _pendingRevision = null;
+            // system.error 同样意味着这条动作没有生效（例如 request_id_required
+            // 或分发前置校验失败）；只在 action.rejected 时放开会让按钮卡死。
+            if (type == 'table.action.rejected' || type == 'system.error') {
+              _clearPendingAction();
               // A rejection can arrive after the server has already advanced
               // its in-memory state but failed a later persistence step. Always
               // resync so the action bar cannot remain on an obsolete revision.
@@ -419,15 +431,44 @@ class GameSocketClient extends ChangeNotifier {
   }
 
   void _handleDone() {
+    if (_channel?.closeCode == supersededCloseCode) {
+      _superseded = true;
+      _heartbeatTimer?.cancel();
+      _clearPendingAction();
+      _errorMessage = 'superseded';
+      _setStatus(GameSocketStatus.disconnected);
+      return;
+    }
     _scheduleReconnect();
   }
 
-  void _scheduleReconnect() {
-    if (_disposed || _reconnectTimer?.isActive == true) return;
-    _heartbeatTimer?.cancel();
-    _setStatus(GameSocketStatus.reconnecting);
+  /// 服务端用这个关闭码通知旧连接：同一账号已从别处连上同一牌桌。
+  static const int supersededCloseCode = 4001;
+
+  void _clearPendingAction() {
+    _actionWatchdog?.cancel();
+    _actionWatchdog = null;
     _actionPending = false;
     _pendingRevision = null;
+  }
+
+  void _armActionWatchdog() {
+    _actionWatchdog?.cancel();
+    _actionWatchdog = Timer(actionAckTimeout, () {
+      if (!_actionPending) return;
+      _clearPendingAction();
+      _errorMessage = 'action_timeout';
+      // 回执迟迟不到，多半是状态已经不一致，顺手重新同步一次
+      requestSnapshot(reason: 'action_timeout');
+      notifyListeners();
+    });
+  }
+
+  void _scheduleReconnect() {
+    if (_disposed || _superseded || _reconnectTimer?.isActive == true) return;
+    _heartbeatTimer?.cancel();
+    _setStatus(GameSocketStatus.reconnecting);
+    _clearPendingAction();
     final seconds = 1 << _reconnectAttempts.clamp(0, 3);
     _reconnectAttempts++;
     _reconnectTimer = Timer(Duration(seconds: seconds), connect);
@@ -483,6 +524,7 @@ class GameSocketClient extends ChangeNotifier {
     _disposed = true;
     _reconnectTimer?.cancel();
     _heartbeatTimer?.cancel();
+    _actionWatchdog?.cancel();
     unawaited(_subscription?.cancel());
     unawaited(_channel?.sink.close());
     super.dispose();

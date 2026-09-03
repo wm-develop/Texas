@@ -15,7 +15,14 @@ enum DealKind { holeCards, board }
 /// 逐张演出，与正常街道保持一致。
 class TableDealController extends ChangeNotifier {
   TableDealController({DateTime Function()? now})
-    : _now = now ?? DateTime.now;
+    : _now = now ?? _monotonicNow;
+
+  /// 默认时钟基于 Stopwatch，而不是 DateTime.now()：手机 NTP 校时把系统时间
+  /// 往回拨时，墙钟算出的经过时间会变负，动画永远播不完，行动按钮会一直
+  /// 处于禁用态。单调时钟不受校时影响。
+  static final Stopwatch _stopwatch = Stopwatch()..start();
+  static final DateTime _epoch = DateTime.utc(2026);
+  static DateTime _monotonicNow() => _epoch.add(_stopwatch.elapsed);
 
   final DateTime Function() _now;
 

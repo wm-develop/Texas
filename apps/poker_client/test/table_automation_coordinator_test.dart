@@ -88,6 +88,39 @@ void main() {
       expect(_autoReady(coordinator, snapshot), isFalse);
     });
 
+    test('提交后长时间仍未就绪则重试，玩家主动取消时不重试', () {
+      // 服务端曾把在线玩家误判为断线并取消准备；客户端只提交一次就会
+      // 停在「倒计时走完却不准备」。
+      final coordinator = _coordinator();
+      final deadline = _now.subtract(const Duration(seconds: 1));
+      expect(
+        _autoReady(coordinator, _snapshot(autoReadyDeadline: deadline)),
+        isTrue,
+      );
+      final later = _now.add(TableAutomationCoordinator.autoReadyRetryAfter);
+      expect(
+        coordinator.shouldSubmitAutoReady(
+          snapshot: _snapshot(autoReadyDeadline: deadline),
+          serverNow: later,
+          socketJoined: true,
+        ),
+        isTrue,
+        reason: '超过重试间隔仍未就绪，应再提交一次',
+      );
+      expect(
+        coordinator.shouldSubmitAutoReady(
+          snapshot: _snapshot(
+            autoReadyDeadline: deadline,
+            autoReadyCancelled: true,
+          ),
+          serverNow: later.add(TableAutomationCoordinator.autoReadyRetryAfter),
+          socketJoined: true,
+        ),
+        isFalse,
+        reason: '玩家主动取消的意图必须被尊重',
+      );
+    });
+
     test('下一手重新计算', () {
       final coordinator = _coordinator();
       final deadline = _now.subtract(const Duration(seconds: 1));

@@ -15,6 +15,12 @@ class TableAutomationCoordinator {
   bool requestDialogOpen = false;
 
   String? _autoReadySubmittedHandId;
+  DateTime? _autoReadySubmittedAt;
+
+  /// 提交准备后等待服务端确认的时长；超过仍未就绪则重试。
+  /// 服务端曾因把在线玩家误判为断线而取消准备，客户端只提交一次就会
+  /// 停在「倒计时走完却不准备」。
+  static const Duration autoReadyRetryAfter = Duration(seconds: 3);
   String? _rebuyOfferedHandId;
   final Set<String> _handledRequestIds = {};
 
@@ -41,11 +47,17 @@ class TableAutomationCoordinator {
         ownSeat.ready ||
         // 筹码为 0 的玩家要先补码，替他准备只会立刻被服务端拒绝
         ownSeat.stack <= 0 ||
-        !socketJoined ||
-        _autoReadySubmittedHandId == snapshot.handId) {
+        !socketJoined) {
+      return false;
+    }
+    final submittedAt = _autoReadySubmittedAt;
+    if (_autoReadySubmittedHandId == snapshot.handId &&
+        submittedAt != null &&
+        serverNow.difference(submittedAt) < autoReadyRetryAfter) {
       return false;
     }
     _autoReadySubmittedHandId = snapshot.handId;
+    _autoReadySubmittedAt = serverNow;
     return true;
   }
 

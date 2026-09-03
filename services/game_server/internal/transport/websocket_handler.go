@@ -54,13 +54,22 @@ type webSocketClient struct {
 	roomID     string
 }
 
+// closeStatusSuperseded 通知旧连接它已被同一用户的新连接取代。4000–4999 是
+// WebSocket 留给应用自定义的关闭码区间。
+const closeStatusSuperseded websocket.StatusCode = 4001
+
 type tableHub struct {
 	mu        sync.Mutex
 	publishMu sync.Mutex
 	logger    *slog.Logger
 	clients   map[string]map[*webSocketClient]struct{}
-	buffers   map[string]*protocol.EventBuffer
-	voice     map[string]map[string]protocol.VoiceMemberState
+	// current 记录每个房间里每位用户当前生效的连接。手机网络切换时新连接
+	// 往往先加入，旧连接的关闭要等 TCP 超时后才被服务端察觉；若此时按旧
+	// 连接的关闭把玩家标为断线甚至取消准备，玩家明明在线却显示已断线，
+	// 自动准备也会失效。只有当前生效的连接断开才代表玩家真的离线。
+	current map[string]map[string]*webSocketClient
+	buffers map[string]*protocol.EventBuffer
+	voice   map[string]map[string]protocol.VoiceMemberState
 	// broadcastFailures 记录整桌无人收到快照的次数，对应 P0 加的全桌级告警日志。
 	broadcastFailures *metrics.Counter
 }
@@ -77,6 +86,7 @@ func newWebSocketServer(
 		hub: &tableHub{
 			logger:  logger,
 			clients: make(map[string]map[*webSocketClient]struct{}),
+			current: make(map[string]map[string]*webSocketClient),
 			buffers: make(map[string]*protocol.EventBuffer),
 			voice:   make(map[string]map[string]protocol.VoiceMemberState),
 		},
@@ -354,7 +364,15 @@ func (client *webSocketClient) join(ctx context.Context, message protocol.Envelo
 		client.leave(ctx)
 	}
 	client.roomID = roomID
-	client.server.hub.register(client)
+	if superseded := client.server.hub.register(client); superseded != nil {
+		// 同一用户的旧连接还挂着（多半是手机网络切换后尚未被察觉的死连接）：
+		// 主动关掉它，避免两条连接同时收快照、旧连接超时后又把玩家标为断线。
+		// 不直接改旧连接的字段——它的读循环还在另一个 goroutine 里跑；
+		// 关闭后它自己的 disconnect 会发现已不是当前连接而只做清理。
+		// 使用自定义关闭码，让仍然活着的旧客户端（例如另一个标签页）
+		// 知道自己被取代，不要再自动重连去抢回连接。
+		_ = superseded.connection.Close(closeStatusSuperseded, "superseded by a newer connection")
+	}
 	history := []chat.Message(nil)
 	if client.server.chat != nil {
 		history = client.server.chat.History(roomID, 50)
@@ -636,7 +654,11 @@ func (client *webSocketClient) recoverEvents(ctx context.Context, message protoc
 	}
 	if payload.LastSequence > 0 {
 		replayed, complete := client.server.hub.replay(client, payload.LastSequence)
-		if complete {
+		// 只有确实补发了事件才以 replay.completed 结束。客户端序号已追平却仍
+		// 主动请求快照（典型是动作被 stale_revision 拒绝后重新同步），说明它
+		// 手里的状态不可信，此时回一个空的 replay.completed 会让它带着过期的
+		// tableRevision 反复被拒，表现为下注按钮怎么点都没反应。
+		if complete && replayed > 0 {
 			return client.write(response(message, protocol.TypeTableReplayCompleted, protocol.ReplayCompletedPayload{
 				LastSequence: client.server.hub.latestSequence(client.roomID),
 				Replayed:     replayed,
@@ -655,7 +677,12 @@ func (client *webSocketClient) disconnect() {
 	if roomID == "" {
 		return
 	}
-	client.server.hub.unregister(client)
+	if !client.server.hub.unregister(client) {
+		// 已被同一用户的新连接取代：玩家仍然在线，牌桌状态与语音名单都
+		// 归新连接管，这里只清理自己。
+		client.roomID = ""
+		return
+	}
 	if client.server.hub.removeVoiceState(roomID, client.user.UserID) {
 		client.recordVoiceEvent(roomID, voiceEventLeft, map[string]any{"reason": "disconnected"})
 	}
@@ -672,7 +699,7 @@ func (client *webSocketClient) leave(ctx context.Context) {
 	if roomID == "" {
 		return
 	}
-	client.server.hub.unregister(client)
+	_ = client.server.hub.unregister(client)
 	if client.server.hub.removeVoiceState(roomID, client.user.UserID) {
 		client.recordVoiceEvent(roomID, voiceEventLeft, map[string]any{"reason": "left_table"})
 	}
@@ -716,16 +743,31 @@ func (client *webSocketClient) sendError(
 	return client.write(message)
 }
 
-func (hub *tableHub) register(client *webSocketClient) {
+// register 登记连接并把它设为该用户的当前连接；返回被它取代的旧连接（若有）。
+func (hub *tableHub) register(client *webSocketClient) (superseded *webSocketClient) {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
 	if hub.clients[client.roomID] == nil {
 		hub.clients[client.roomID] = make(map[*webSocketClient]struct{})
 	}
 	hub.clients[client.roomID][client] = struct{}{}
+	if hub.current == nil {
+		hub.current = make(map[string]map[string]*webSocketClient)
+	}
+	if hub.current[client.roomID] == nil {
+		hub.current[client.roomID] = make(map[string]*webSocketClient)
+	}
+	superseded = hub.current[client.roomID][client.user.UserID]
+	if superseded == client {
+		superseded = nil
+	}
+	hub.current[client.roomID][client.user.UserID] = client
+	return superseded
 }
 
-func (hub *tableHub) unregister(client *webSocketClient) {
+// unregister 移除连接。返回该连接是否仍是用户的当前连接：只有这种情况
+// 才应把玩家标为断线；已被新连接取代的旧连接退出时不能改动牌桌状态。
+func (hub *tableHub) unregister(client *webSocketClient) (wasCurrent bool) {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
 	clients := hub.clients[client.roomID]
@@ -733,6 +775,14 @@ func (hub *tableHub) unregister(client *webSocketClient) {
 	if len(clients) == 0 {
 		delete(hub.clients, client.roomID)
 	}
+	if hub.current[client.roomID][client.user.UserID] == client {
+		delete(hub.current[client.roomID], client.user.UserID)
+		if len(hub.current[client.roomID]) == 0 {
+			delete(hub.current, client.roomID)
+		}
+		return true
+	}
+	return false
 }
 
 func (hub *tableHub) bufferFor(roomID string) *protocol.EventBuffer {
