@@ -154,9 +154,12 @@ class _TableBetPanelState extends State<TableBetPanel> {
     final busy = widget.client.actionPending || widget.blocked;
     final amount = _currentAmount;
 
+    // 手机上按钮竖排、靠拇指操作，做得更高一些，试玩反馈原来的高度容易误触
+    final buttonHeight = widget.vertical ? 56.0 : 44.0;
     final fold = _ActionButton(
       key: const ValueKey('bet-fold-action'),
       label: '弃牌',
+      height: buttonHeight,
       tone: _ButtonTone.danger,
       onPressed: options.canFold && !busy
           ? () => widget.client.submitAction('fold')
@@ -166,6 +169,7 @@ class _TableBetPanelState extends State<TableBetPanel> {
         ? _ActionButton(
             key: const ValueKey('bet-check-call-action'),
             label: options.canCheck ? '过牌' : '跟注 ${options.toCall}',
+            height: buttonHeight,
             tone: _ButtonTone.neutral,
             onPressed: busy
                 ? null
@@ -178,6 +182,7 @@ class _TableBetPanelState extends State<TableBetPanel> {
         ? _ActionButton(
             key: const ValueKey('bet-aggressive-action'),
             label: model.actionLabelFor(amount),
+            height: buttonHeight,
             tone: _ButtonTone.primary,
             onPressed: busy ? null : _submitAggressive,
           )
@@ -383,17 +388,19 @@ class _ActionButton extends StatelessWidget {
     required this.label,
     required this.tone,
     required this.onPressed,
+    this.height = 44,
     super.key,
   });
 
   final String label;
   final _ButtonTone tone;
   final VoidCallback? onPressed;
+  final double height;
 
   @override
   Widget build(BuildContext context) {
     final style = FilledButton.styleFrom(
-      minimumSize: const Size(0, 44),
+      minimumSize: Size(0, height),
       padding: const EdgeInsets.symmetric(horizontal: 10),
       backgroundColor: switch (tone) {
         _ButtonTone.danger => TableActionPalette.fold,

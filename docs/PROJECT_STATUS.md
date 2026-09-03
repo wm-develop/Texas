@@ -116,6 +116,8 @@ TRTC：牌桌语音
 - 备份、恢复演练、账本对账、健康巡检与告警均已提供可执行方案（`deploy/backup/`、`deploy/monitor/`，见[备份恢复指南](BACKUP_AND_RESTORE_GUIDE.md)与[运行保障指南](OPERATIONS_GUIDE.md)）；2026-09-01 生产服务器已全部安装并验证：备份定时任务、异机复制、恢复演练、对账定时任务、健康巡检，以及钉钉告警通道（手动触发与 OnFailure 链路均实际收到消息）。24 小时故障注入尚未做。
 - `/metrics` 增加 `texas_goroutines`、`texas_memory_heap_bytes`、`texas_process_start_time_seconds` 三项运行时指标，供 `deploy/monitor/texas-soak.sh` 判断协程泄漏、内存增长与静默重启；脚本启动时会核对指标名，服务端改名后立即失败而非静默记 0。
 - 优雅停机已实现：`SIGTERM` 后停开新局、取消自动准备、广播 `draining` 快照并等待所有牌桌到达手间空档（`SHUTDOWN_DRAIN_TIMEOUT_SECONDS`，默认 120 秒），部署时须 `docker stop -t 150`。客户端凭 `session.authenticated` 的 `serverInstanceId` 识别服务端重启，若重连前那一手尚未结算则明确提示「本手作废、筹码已恢复到上一手结算后」。进行中的手仍无法跨重启恢复，见协议文档 6.8。
+- 2026-09-03 多人试玩暴露并修复三处连接状态缺陷：同一用户的旧连接关闭会把在线玩家标为断线并取消准备（现在只有当前生效连接的关闭才算离线，旧连接以关闭码 4001 被主动关掉）；牌局中途加入者结算后一律以断线入座（现在按真实在线状态入座）；动作被拒后客户端请求快照却只收到空的 `replay.completed`（现在显式请求一律回完整快照）。客户端另加动作回执 5 秒看门狗、`system.error` 也放开按钮、自动准备 3 秒后重试，发牌动画改用单调时钟。
+- HarmonyOS 开麦数秒后听不到远端：依据 TRTC 文档「麦上用户用通话音量、麦下用户用媒体音量」，语音聊天室场景的观众→主播角色切换会让系统音量类型来回切换（真机表现为音量条话筒图标变喇叭图标后远端静音）。Flutter SDK 13.4.3 未暴露 `setSystemVolumeType`，因此 HarmonyOS 改用音频通话场景、不切换角色，全程通话音量；Android/Windows 不变。**待真机验证。**
 - 分层限流已实现：登录/注册/刷新按 IP、密码错误按用户名、房间与钱包操作按用户、TRTC 凭证按用户、单 IP WebSocket 并发上限；`TRUSTED_PROXIES` 提供可信代理解析。`/metrics` 以 Bearer 令牌保护，暴露 HTTP、WebSocket、牌桌动作、活跃牌桌、快照广播失败与限流计数。生产环境已配置 `TRUSTED_PROXIES`（`texas-internal` 网段）与 `METRICS_TOKEN`，`/metrics` 已验证仅接受令牌访问。
 - 账号注销（`POST /v1/users/me/delete`）与隐私说明已完成，规则见[隐私说明](PRIVACY_NOTICE.md)；举报因熟人局定位不做。语音加入/退出元数据以 `voice.joined`/`voice.left` 审计事件持久化，管理员可在客户端「审计记录」页（`GET /v1/admin/audit`）按类别、用户或房间查询全部管理操作、账号变更与语音进出。
 - 已有 GitHub Actions（`.github/workflows/ci.yml`）：服务端 gofmt/vet/test 与 -race、客户端 analyze/test、shellcheck 与仓库卫生检查。构建、迁移、发布和回滚仍是文档化的人工流程。

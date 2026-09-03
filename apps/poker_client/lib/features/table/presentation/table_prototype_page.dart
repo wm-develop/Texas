@@ -238,7 +238,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                   currentPlayers:
                       _gameSocket.snapshot?.seats.length ??
                       widget.room.members.length,
-                  compact: viewport.isCompactLandscape,
+                  compact: true,
                   onLeave: _leaveTable,
                   onSettings: () => showAppSettingsDialog(
                     context,
@@ -250,7 +250,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                 );
                 final connectionStatus = TableConnectionStatusBar(
                   client: _gameSocket,
-                  compact: viewport.isCompactLandscape,
+                  compact: true,
                 );
                 final chatEntryButton = FilledButton.tonalIcon(
                   onPressed: viewport.supportsSideChat
@@ -280,10 +280,30 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                   mutedUserIds: _voice.mutedUserIds,
                   currentUserId: widget.session.user.userId,
                   displayName: widget.session.user.displayName,
-                  compact: viewport.isCompactLandscape,
+                  compact: true,
                   onJoinChanged: _voice.setJoined,
                   onMicrophoneChanged: _voice.setMicrophoneEnabled,
                   onUserMuted: _voice.setUserMuted,
+                );
+                final infoPanel = DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: const Color(0x99102620),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: Colors.white12),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(9),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        roomHeader,
+                        const Divider(height: 14),
+                        connectionStatus,
+                        const Divider(height: 14),
+                        voiceControls,
+                      ],
+                    ),
+                  ),
                 );
                 return Align(
                   alignment: viewport.isCompactLandscape
@@ -295,57 +315,18 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                       size: viewport.canvasSize,
                       child: Stack(
                         children: [
+                          // 手机：信息面板占左栏。大屏：并入右栏顶部、下注区上方。
+                          // 玩家框现在会伸出桌沿，5～7 人时左右上角的座位会压到
+                          // 原先放在画布四角的房间信息与语音按钮；两栏是座位永远
+                          // 不会进入的区域，把这些控件收进去就不存在遮挡问题。
                           if (viewport.isCompactLandscape)
                             Positioned(
                               left: 8,
                               top: 8,
                               width:
                                   TableViewportLayout.compactLeftRailWidth - 16,
-                              child: DecoratedBox(
-                                decoration: BoxDecoration(
-                                  color: const Color(0x99102620),
-                                  borderRadius: BorderRadius.circular(14),
-                                  border: Border.all(color: Colors.white12),
-                                ),
-                                child: Padding(
-                                  padding: const EdgeInsets.all(9),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.stretch,
-                                    children: [
-                                      roomHeader,
-                                      const Divider(height: 14),
-                                      connectionStatus,
-                                      const Divider(height: 14),
-                                      voiceControls,
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            )
-                          else ...[
-                            // 顶部正中留给上家玩家框：座位现在会伸到桌沿之外，
-                            // 原先居中的连接状态条会与之重叠，故并入左上一列。
-                            // 两者放进同一个 Column，避免用固定 top 猜测标题高度。
-                            Positioned(
-                              left: 24,
-                              top: 18,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  roomHeader,
-                                  const SizedBox(height: 10),
-                                  connectionStatus,
-                                ],
-                              ),
+                              child: infoPanel,
                             ),
-                            Positioned(
-                              right: 24,
-                              top: 16,
-                              child: voiceControls,
-                            ),
-                          ],
                           Positioned.fromRect(
                             rect: viewport.tableRect,
                             child: TableCanvas(
@@ -369,8 +350,8 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                           if (showSideChat)
                             Positioned(
                               left: 18,
-                              // 让开左上角的房间信息与连接状态
-                              top: 150,
+                              // 左上角不再放任何控件，聊天面板可以贴顶
+                              top: 24,
                               bottom: 24,
                               width: 230,
                               child: TableChatPanel(
@@ -384,7 +365,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                           // 两种布局族同构：右栏竖排下注区，贴底便于够到。
                           Positioned(
                             right: viewport.isCompactLandscape ? 8 : 16,
-                            top: viewport.isCompactLandscape ? 8 : 86,
+                            top: viewport.isCompactLandscape ? 8 : 16,
                             bottom: viewport.isCompactLandscape ? 8 : 18,
                             width:
                                 (viewport.isCompactLandscape
@@ -395,6 +376,10 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
+                                if (!viewport.isCompactLandscape) ...[
+                                  infoPanel,
+                                  const SizedBox(height: 8),
+                                ],
                                 if (viewport.isCompactLandscape ||
                                     !showSideChat)
                                   chatEntryButton,
