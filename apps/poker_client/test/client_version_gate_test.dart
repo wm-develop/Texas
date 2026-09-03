@@ -33,14 +33,16 @@ void main() {
 
   group('版本要求查询', () {
     test('读取最低版本', () async {
+      // 相对当前版本取值：写死数字会在版本升过它之后悄悄失效
+      final higher = appVersionCode + 1;
       final client = _client(
-        (request) async => http.Response(jsonEncode({'minimum': 3000}), 200),
+        (request) async => http.Response(jsonEncode({'minimum': higher}), 200),
       );
 
       final requirement = await client.clientVersionRequirement();
 
       expect(requirement, isNotNull);
-      expect(requirement!.minimum, 3000);
+      expect(requirement!.minimum, higher);
       expect(
         requirement.blocksCurrentBuild,
         isTrue,
@@ -114,7 +116,9 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: UpdateRequiredPage(
-            minimumVersionCode: 3000,
+            // 取一个永远不会成为真实版本的值：与当前版本相同的话，
+            // 「当前」与「需要」会显示成同一个字符串，断言就失去意义
+            minimumVersionCode: 999002001,
             onRetry: () async => retried++,
           ),
         ),
@@ -122,7 +126,11 @@ void main() {
 
       expect(find.text('需要更新客户端'), findsOneWidget);
       expect(find.text(appVersionName), findsOneWidget);
-      expect(find.text('0.3.0'), findsOneWidget, reason: '3000 应解码成 0.3.0');
+      expect(
+        find.text('999.2.1'),
+        findsOneWidget,
+        reason: '999002001 应解码成 999.2.1',
+      );
       // 阻断就是阻断：不提供跳过
       expect(find.textContaining('继续'), findsNothing);
       expect(find.textContaining('跳过'), findsNothing);

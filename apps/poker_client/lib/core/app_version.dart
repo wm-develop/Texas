@@ -12,8 +12,8 @@
 /// - `pubspec.yaml` 的 `version: <name>+<code>`
 /// - `ohos/AppScope/app.json5` 的 `versionName` 与 `versionCode`
 /// - 本文件
-const String appVersionName = '0.2.1';
-const int appVersionCode = 2001;
+const String appVersionName = '0.3.0';
+const int appVersionCode = 3000;
 
 /// 客户端上报自身版本的两种方式。浏览器的 WebSocket API 不允许设置自定义
 /// 请求头，因此 WS 走查询参数，普通 HTTP 走请求头；服务端两者都认。
@@ -40,4 +40,21 @@ int? parseVersionCode(String input) {
   final value = int.tryParse(trimmed);
   if (value == null || value < 0) return null;
   return value;
+}
+
+/// 把 `major.minor.patch` 编成版本号整数，与 [describeVersionCode] 互逆。
+///
+/// 格式非法（段数不对、有非数字、minor 或 patch 超过 999）时返回 null：
+/// minor 和 patch 各只有三位容量，超了会串到上一段去。major 没有上限。
+int? encodeVersionName(String name) {
+  final parts = name.trim().split('.');
+  if (parts.length != 3) return null;
+  final numbers = <int>[];
+  for (final part in parts) {
+    final value = int.tryParse(part);
+    if (value == null || value < 0) return null;
+    numbers.add(value);
+  }
+  if (numbers[1] > 999 || numbers[2] > 999) return null;
+  return numbers[0] * 1000000 + numbers[1] * 1000 + numbers[2];
 }

@@ -290,14 +290,19 @@ ADR 已完成：[ADR-002](decisions/ADR-002-MULTI-INSTANCE.md)。结论是**暂�
 
 ## 发布新客户端的版本号流程
 
-版本号写在三处，必须一起改，漏改任何一处 `flutter test` 会失败：
+版本号写在三处，用脚本一次改完（在 `apps/poker_client` 目录下运行）：
 
-1. `apps/poker_client/pubspec.yaml` 的 `version: <name>+<code>`
-2. `apps/poker_client/ohos/AppScope/app.json5` 的 `versionName` 与 `versionCode`
-3. `apps/poker_client/lib/core/app_version.dart` 的 `appVersionName` 与 `appVersionCode`
+```bash
+dart tool/set_version.dart 0.3.0
+```
 
-`code` 的编码为 `major*1000000 + minor*1000 + patch`（0.2.1 → 2001），四端统一；
-Android 的 `versionCode` 直接取 pubspec 里 `+` 后面那个数。
+脚本会同时更新 `pubspec.yaml`、`ohos/AppScope/app.json5` 与
+`lib/core/app_version.dart`，并拦住版本倒退——Android 与鸿蒙的 `versionCode`
+只能递增。任一处格式对不上时它会报错而不是静默跳过。
+
+`code` 的编码为 `major*1000000 + minor*1000 + patch`（0.2.1 → 2001，1.2.1 →
+1002001），四端统一；Android 的 `versionCode` 直接取 pubspec 里 `+` 后面那个数。
+`flutter test` 里有一致性测试兜底，三处不一致会直接失败。
 
 改完版本号、构建并把安装包发给朋友之后，**用管理员账号在客户端的「服务器管理」
 页点「最低客户端版本」填入同一个数**即可强制未更新的人升级。它存在数据库里，
