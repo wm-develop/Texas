@@ -12,13 +12,15 @@ import 'package:poker_client/features/table/audio/table_sound_effects.dart';
 class _Recorder {
   final viaPlugin = <TableSoundEffect>[];
   final viaVoiceSession = <(int, String, double)>[];
+  final viaNativeSoundPool = <(String, double)>[];
   final contexts = <AudioContext>[];
 
   TableSoundEffects effects({
     required TargetPlatform platform,
     required bool voiceActive,
     bool voiceOutputAvailable = true,
-    HarmonyVoiceSoundStrategy strategy = HarmonyVoiceSoundStrategy.mixWithVoice,
+    HarmonyVoiceSoundStrategy strategy =
+        HarmonyVoiceSoundStrategy.nativeSoundPool,
     Future<String?> Function(TableSoundEffect effect)? clipFilePath,
   }) => TableSoundEffects(
     platform: platform,
@@ -26,6 +28,8 @@ class _Recorder {
     harmonyVoiceStrategy: strategy,
     configureAudio: (context) async => contexts.add(context),
     playClip: (effect, _) async => viaPlugin.add(effect),
+    playNative: (filePath, volume) async =>
+        viaNativeSoundPool.add((filePath, volume)),
     clipFilePath:
         clipFilePath ??
         (voiceOutputAvailable
@@ -40,10 +44,10 @@ class _Recorder {
 
 void main() {
   group('鸿蒙语音进行中的提示音', () {
-    test('默认策略：语音中仍走普通插件，但先把并发模式改成混音', () async {
-      // 提示音一响远端语音就消失的原因是插件以 CONCURRENCY_DEFAULT 激活
-      // 音频会话——该模式独占输出通道并压制应用内其他音频流。改成混音后
-      // 两者可以并存，而且提示音仍是本地音效：音量正常、没有延迟。
+    test('默认策略：语音中交给原生 SoundPool，完全不碰普通插件', () async {
+      // audioplayers 在鸿蒙上播放前会切换应用级音频会话，压制 TRTC 的通话流。
+      // 只把并发模式改成混音真机实测无效，致命的是会话切换本身。SoundPool
+      // 不经过 AudioSessionManager，且是系统给短音效的低时延通道。
       final recorder = _Recorder();
       final effects = recorder.effects(
         platform: TargetPlatform.ohos,
@@ -51,14 +55,29 @@ void main() {
       );
 
       await effects.play(TableSoundEffect.chips);
+      await effects.play(TableSoundEffect.allIn);
 
-      expect(recorder.viaPlugin, [TableSoundEffect.chips]);
+      expect(recorder.viaPlugin, isEmpty, reason: '语音中绝不能走普通音频插件');
       expect(recorder.viaVoiceSession, isEmpty);
-      expect(
-        recorder.contexts.single.ohos.audioFocus,
-        AudioContextConfigFocus.mixWithOthers,
-        reason: '出声之前必须先解除独占，否则会掐掉远端语音',
+      expect(recorder.contexts, isEmpty, reason: '不走插件就不必动它的音频上下文');
+      expect(recorder.viaNativeSoundPool, [
+        ('/tmp/chips.wav', 0.75),
+        ('/tmp/allIn.wav', 0.9),
+      ]);
+    });
+
+    test('原生通道拿不到文件时安静跳过，绝不回退到普通音频插件', () async {
+      final recorder = _Recorder();
+      final effects = recorder.effects(
+        platform: TargetPlatform.ohos,
+        voiceActive: true,
+        clipFilePath: (_) async => null,
       );
+
+      await effects.play(TableSoundEffect.chips);
+
+      expect(recorder.viaPlugin, isEmpty);
+      expect(recorder.viaNativeSoundPool, isEmpty);
     });
 
     test('改用 RTC 通道策略时走通话流，带正确的音效 ID 与音量', () async {
@@ -94,7 +113,25 @@ void main() {
 
       expect(recorder.viaPlugin, isEmpty);
       expect(recorder.viaVoiceSession, isEmpty);
+      expect(recorder.viaNativeSoundPool, isEmpty);
       expect(recorder.contexts, isEmpty);
+    });
+
+    test('混音策略仍可切换：走普通插件并先解除独占（真机实测不足以救活语音）', () async {
+      final recorder = _Recorder();
+      final effects = recorder.effects(
+        platform: TargetPlatform.ohos,
+        voiceActive: true,
+        strategy: HarmonyVoiceSoundStrategy.mixWithVoice,
+      );
+
+      await effects.play(TableSoundEffect.chips);
+
+      expect(recorder.viaPlugin, [TableSoundEffect.chips]);
+      expect(
+        recorder.contexts.single.ohos.audioFocus,
+        AudioContextConfigFocus.mixWithOthers,
+      );
     });
 
     test('鸿蒙未加入语音：照常走普通音频插件', () async {
@@ -108,6 +145,7 @@ void main() {
 
       expect(recorder.viaPlugin, [TableSoundEffect.chips]);
       expect(recorder.viaVoiceSession, isEmpty);
+      expect(recorder.viaNativeSoundPool, isEmpty);
     });
 
     test('其他平台即使在语音里也照常走普通音频插件', () async {
@@ -126,6 +164,7 @@ void main() {
 
         expect(recorder.viaPlugin, [TableSoundEffect.allIn], reason: '$platform');
         expect(recorder.viaVoiceSession, isEmpty, reason: '$platform');
+        expect(recorder.viaNativeSoundPool, isEmpty, reason: '$platform');
       }
     });
 

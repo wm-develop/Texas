@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:poker_client/core/platform/native_table_sound.dart';
 import 'package:poker_client/features/table/audio/table_action_sound_tracker.dart';
 
 /// 鸿蒙语音进行中提示音的出声方式。
@@ -11,11 +12,19 @@ import 'package:poker_client/features/table/audio/table_action_sound_tracker.dar
 /// 这块只能在鸿蒙真机上验证，三种方式各有取舍，因此保留为可切换的策略，
 /// 而不是把结论写死在代码里。
 enum HarmonyVoiceSoundStrategy {
+  /// 交给鸿蒙原生 SoundPool 播放（当前默认）。
+  ///
+  /// SoundPool 是系统为短音效提供的低时延通道，完全不经过 AudioSessionManager，
+  /// 因此不会发生压制通话流的会话切换；usage 取 STREAM_USAGE_MUSIC 时按官方
+  /// 说明是混音模式，不打断其他音频播放。提示音仍是本地音效：音量正常、
+  /// 没有延迟。原生通道不可用时安静跳过，等同于 [silent]。
+  nativeSoundPool,
+
   /// 仍走普通音频插件，靠 CONCURRENCY_MIX_WITH_OTHERS 与通话流混音。
   ///
-  /// 提示音是本地音效：音量正常、没有延迟。残留风险是插件仍会调用
-  /// setAudioSessionScene(MEDIA)，音量条可能仍跳成喇叭；只要语音不断，
-  /// 这是可以接受的瑕疵。
+  /// **真机实测无效**：提示音一响远端语音照样消失。说明致命的不是并发模式，
+  /// 而是插件在播放前调用的 setAudioSessionScene(MEDIA) + activateAudioSession
+  /// 这套应用级音频会话切换本身。保留仅作记录，不要再设为默认。
   mixWithVoice,
 
   /// 交给 TRTC 音频引擎播放（走通话流）。
@@ -35,12 +44,14 @@ class TableSoundEffects {
     TargetPlatform? platform,
     Future<void> Function(AudioContext context)? configureAudio,
     HarmonyVoiceSoundStrategy harmonyVoiceStrategy =
-        HarmonyVoiceSoundStrategy.mixWithVoice,
+        HarmonyVoiceSoundStrategy.nativeSoundPool,
     Future<void> Function(TableSoundEffect effect, double volume)? playClip,
     Future<void> Function(int id, String filePath, double volume)?
     playInVoiceSession,
+    Future<void> Function(String filePath, double volume)? playNative,
     Future<String?> Function(TableSoundEffect effect)? clipFilePath,
   }) : _injectedPlayer = player,
+       _playNative = playNative ?? _defaultPlayNative,
        _playInVoiceSession = playInVoiceSession,
        _clipFilePath = clipFilePath,
        _voiceSessionActive = voiceSessionActive ?? _neverActive,
@@ -55,6 +66,9 @@ class TableSoundEffects {
 
   static bool _neverActive() => false;
 
+  static Future<void> _defaultPlayNative(String filePath, double volume) =>
+      NativeTableSound.play(filePath: filePath, volume: volume);
+
   /// 提示音的原始 WAV 字节，供落盘给 RTC 引擎播放。
   static Uint8List clipBytes(TableSoundEffect effect) => _clips[effect]!;
 
@@ -68,6 +82,9 @@ class TableSoundEffects {
   final HarmonyVoiceSoundStrategy _harmonyVoiceStrategy;
   final Future<void> Function(TableSoundEffect effect, double volume)?
   _injectedPlayClip;
+
+  /// 鸿蒙原生 SoundPool 通道。
+  final Future<void> Function(String filePath, double volume) _playNative;
 
   /// 语音会话内部的出声通道（HarmonyOS 用 TRTC 音频引擎播放）。
   final Future<void> Function(int id, String filePath, double volume)?
@@ -137,6 +154,9 @@ class TableSoundEffects {
       switch (_harmonyVoiceStrategy) {
         case HarmonyVoiceSoundStrategy.silent:
           return;
+        case HarmonyVoiceSoundStrategy.nativeSoundPool:
+          await _playThroughNativeSoundPool(effect, volume);
+          return;
         case HarmonyVoiceSoundStrategy.throughVoiceEngine:
           await _playThroughVoiceSession(effect, volume);
           return;
@@ -165,6 +185,24 @@ class TableSoundEffects {
             ? SystemSoundType.alert
             : SystemSoundType.click,
       );
+    }
+  }
+
+  /// 走鸿蒙原生 SoundPool 出声。SoundPool 按文件路径播放，而提示音是运行时
+  /// 算出来的字节，因此先落盘。任何一步不可用就安静跳过这一声，绝不回退到
+  /// 普通音频插件——那正是会掐掉远端语音的路径。
+  Future<void> _playThroughNativeSoundPool(
+    TableSoundEffect effect,
+    double volume,
+  ) async {
+    final resolvePath = _clipFilePath;
+    if (resolvePath == null) return;
+    try {
+      final filePath = await resolvePath(effect);
+      if (filePath == null || _disposed) return;
+      await _playNative(filePath, volume);
+    } on Object {
+      // 提示音是附属功能，失败不能影响牌局或通话。
     }
   }
 

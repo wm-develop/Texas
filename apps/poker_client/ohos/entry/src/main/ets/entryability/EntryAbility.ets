@@ -7,8 +7,10 @@ import MethodChannel, {
 import MethodCall from '@ohos/flutter_ohos/src/main/ets/plugin/common/MethodCall';
 import window from '@ohos.window';
 import display from '@ohos.display';
+import { TableSoundPool } from './TableSoundPool';
 
 const DISPLAY_CUTOUT_CHANNEL = 'com.texas.game.poker_client/display_cutout';
+const TABLE_SOUND_CHANNEL = 'com.texas.game.poker_client/table_sound';
 
 interface DisplayCutoutInsets {
   left: number;
@@ -19,6 +21,8 @@ interface DisplayCutoutInsets {
 
 export default class EntryAbility extends FlutterAbility {
   private displayCutoutChannel: MethodChannel | null = null;
+  private tableSoundChannel: MethodChannel | null = null;
+  private tableSoundPool: TableSoundPool = new TableSoundPool();
 
   configureFlutterEngine(flutterEngine: FlutterEngine) {
     super.configureFlutterEngine(flutterEngine);
@@ -40,6 +44,36 @@ export default class EntryAbility extends FlutterAbility {
           });
       }
     });
+    // 提示音必须绕开 audioplayers：它会切换应用级音频会话，压制 TRTC 的
+    // 通话流。SoundPool 是系统给短音效的低时延通道，不经过 AudioSession。
+    this.tableSoundChannel = new MethodChannel(
+      flutterEngine.getDartExecutor(),
+      TABLE_SOUND_CHANNEL
+    );
+    this.tableSoundChannel.setMethodCallHandler({
+      onMethodCall: (call: MethodCall, result: MethodResult): void => {
+        if (call.method !== 'play') {
+          result.notImplemented();
+          return;
+        }
+        const path = call.argument('path') as string;
+        const volume = call.argument('volume') as number;
+        if (path === null || path === undefined || path.length === 0) {
+          result.error('INVALID_PATH', 'path is required', null);
+          return;
+        }
+        this.tableSoundPool
+          .play(path, volume === null || volume === undefined ? 1 : volume)
+          .then((): void => result.success(null))
+          .catch((error: Error): void => {
+            result.error('SOUND_UNAVAILABLE', error.message, null);
+          });
+      }
+    });
+  }
+
+  onDestroy(): void {
+    this.tableSoundPool.release().catch((): void => {});
   }
 
   // 除了挖孔，还要让开手势导航条：平板横屏时它压在屏幕底部，落在那片区域的
