@@ -3,10 +3,13 @@ package transport
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 
 	"texas/services/game_server/internal/account"
 	"texas/services/game_server/internal/bankroll"
@@ -252,5 +255,44 @@ func TestRoomResultCountsChipsStillOnTheTable(t *testing.T) {
 	}
 	if updated.Net != 1_200 {
 		t.Fatalf("net should follow the chips on the table, got %#v", updated)
+	}
+}
+
+// 被踢出的玩家此前只收到通用的 StatusPolicyViolation，客户端得靠随后重连
+// 被拒推断，于是弹出「牌桌操作失败 permission_denied」。现在用专门的关闭码
+// 与原因说清楚发生了什么。
+func TestRemovedPlayerIsToldWhyTheConnectionClosed(t *testing.T) {
+	ctx := context.Background()
+	fixture := newOwnerFixture(t)
+	for _, user := range []string{fixture.owner.User.UserID, fixture.guest.User.UserID} {
+		if _, err := fixture.tables.Join(ctx, user, fixture.created.RoomID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	socketCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	guestSocket := dialTestSocket(t, socketCtx, fixture.server.URL)
+	defer guestSocket.CloseNow()
+	authenticateTestSocket(t, socketCtx, guestSocket, fixture.guest.AccessToken, "guest-device")
+	joinTestTable(t, socketCtx, guestSocket, fixture.created.RoomID)
+
+	response := fixture.post(t, "/v1/rooms/members/"+fixture.guest.User.UserID+"/remove",
+		fixture.owner.AccessToken, map[string]any{})
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("remove: status %d body %s", response.StatusCode, readBody(response))
+	}
+
+	// 关闭前可能还排着广播，先读空再看关闭码
+	var readErr error
+	for readErr == nil {
+		_, _, readErr = guestSocket.Read(socketCtx)
+	}
+	if status := websocket.CloseStatus(readErr); status != closeStatusRemovedFromRoom {
+		t.Fatalf("expected close status %d, got %d (%v)", closeStatusRemovedFromRoom, status, readErr)
+	}
+	var closeError websocket.CloseError
+	if !errors.As(readErr, &closeError) || closeError.Reason != RemovedByOwner {
+		t.Fatalf("close reason should say the owner removed them, got %v", readErr)
 	}
 }

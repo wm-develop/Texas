@@ -222,4 +222,42 @@ void main() {
     // 若旧连接继续自动重连，两个客户端会互相踢来踢去。
     expect(GameSocketClient.supersededCloseCode, 4001);
   });
+  group('被移出房间', () {
+    test('关闭码 4002 与关闭原因被识别为「已被移出」，不再当成失败的牌桌操作', () {
+      // 此前服务端用通用的 StatusPolicyViolation，客户端只能靠随后重连
+      // 被拒推断，于是弹出「牌桌操作失败 permission_denied」
+      expect(GameSocketClient.removedFromRoomCloseCode, 4002);
+      expect(
+        GameSocketClient.isRemovedFromRoom(GameSocketClient.removedByOwner),
+        isTrue,
+      );
+      expect(
+        GameSocketClient.isRemovedFromRoom(
+          GameSocketClient.removedByAdministrator,
+        ),
+        isTrue,
+      );
+    });
+
+    test('没收到关闭码时仍按重连被拒兜底', () {
+      expect(GameSocketClient.isRemovedFromRoom('permission_denied'), isTrue);
+      expect(GameSocketClient.isRemovedFromRoom('room_not_found'), isTrue);
+    });
+
+    test('普通错误不会被误判成已被移出', () {
+      for (final error in const [
+        null,
+        'stale_revision',
+        'connection_failed',
+        'superseded',
+        'action_timeout',
+      ]) {
+        expect(
+          GameSocketClient.isRemovedFromRoom(error),
+          isFalse,
+          reason: '$error',
+        );
+      }
+    });
+  });
 }

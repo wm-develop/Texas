@@ -431,7 +431,20 @@ class GameSocketClient extends ChangeNotifier {
   }
 
   void _handleDone() {
-    if (_channel?.closeCode == supersededCloseCode) {
+    final closeCode = _channel?.closeCode;
+    if (closeCode == removedFromRoomCloseCode) {
+      // 被移出房间：重连只会再被拒一次，客户端要说清楚发生了什么
+      _superseded = true;
+      _heartbeatTimer?.cancel();
+      _clearPendingAction();
+      final reason = _channel?.closeReason;
+      _errorMessage = reason == null || reason.isEmpty
+          ? removedByAdministrator
+          : reason;
+      _setStatus(GameSocketStatus.disconnected);
+      return;
+    }
+    if (closeCode == supersededCloseCode) {
       _superseded = true;
       _heartbeatTimer?.cancel();
       _clearPendingAction();
@@ -444,6 +457,19 @@ class GameSocketClient extends ChangeNotifier {
 
   /// 服务端用这个关闭码通知旧连接：同一账号已从别处连上同一牌桌。
   static const int supersededCloseCode = 4001;
+
+  /// 服务端用这个关闭码通知玩家：他已被移出房间；关闭原因说明是谁移出的。
+  static const int removedFromRoomCloseCode = 4002;
+  static const String removedByOwner = 'removed_by_owner';
+  static const String removedByAdministrator = 'removed_by_administrator';
+
+  /// 该错误是否表示玩家已经不在房间里。
+  static bool isRemovedFromRoom(String? error) =>
+      error == removedByOwner ||
+      error == removedByAdministrator ||
+      // 没收到关闭码时的兜底：重连后 table.join 会被拒
+      error == 'permission_denied' ||
+      error == 'room_not_found';
 
   void _clearPendingAction() {
     _actionWatchdog?.cancel();

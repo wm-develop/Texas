@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:poker_client/core/network/game_socket_client.dart';
 import 'package:poker_client/features/table/presentation/table_action_bar.dart';
+import 'package:poker_client/features/lobby/domain/friend_room.dart';
 import 'package:poker_client/features/table/presentation/table_bet_panel.dart';
+import 'package:poker_client/features/table/presentation/table_status_widgets.dart';
 
 /// 构造一份轮到自己行动的快照。
 /// `stack` 与 `streetBet` 决定全下额度；`maxRaiseTo` 模拟服务端向下取整的上界。
@@ -122,6 +124,23 @@ Future<GameSocketClient> _pumpPanel(
   );
   return client;
 }
+
+FriendRoom _room() => const FriendRoom(
+  roomId: 'room_1',
+  code: '123456',
+  ownerUserId: 'me',
+  preset: 'standard',
+  rules: RoomRules(
+    startingChips: 2000,
+    smallBlind: 10,
+    bigBlind: 20,
+    actionSeconds: 30,
+    maxBuyIn: 2000,
+  ),
+  maxPlayers: 10,
+  members: [],
+  revision: 1,
+);
 
 void main() {
   testWidgets('能过牌时是 弃牌 / 过牌 / 下注 三个按钮', (tester) async {
@@ -421,6 +440,42 @@ void main() {
         reason: '主操作应仍然贴在底部，便于够到',
       );
       client.dispose();
+    });
+  });
+  group('文字聊天入口', () {
+    testWidgets('聊天做成房间信息栏里的图标，把右栏竖向空间让给下注区', (tester) async {
+      // 平板横屏右栏高度紧张，整条「文字聊天」按钮占掉的那一行更值钱
+      var toggled = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 220,
+              child: TableRoomHeader(
+                room: _room(),
+                currentPlayers: 2,
+                compact: true,
+                onLeave: () async {},
+                onSettings: () {},
+                onShowResult: () {},
+                onToggleChat: () => toggled++,
+                unreadChatCount: 3,
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(tester.takeException(), isNull);
+      // 不再有占一整行的文字按钮
+      expect(find.text('文字聊天'), findsNothing);
+      final button = find.byKey(const ValueKey('chat-toggle-button'));
+      expect(button, findsOneWidget);
+      // 未读数仍然看得见
+      expect(find.text('3'), findsOneWidget);
+
+      await tester.tap(button);
+      expect(toggled, 1);
     });
   });
 }

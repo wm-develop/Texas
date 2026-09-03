@@ -21,7 +21,7 @@ func registerRoomOwnerRoutes(
 	tables *tablemanager.Manager,
 	chips *bankroll.Service,
 	guard *guards,
-	disconnectUsers func(roomID string, userIDs []string),
+	disconnectUsers func(roomID string, userIDs []string, reason string),
 ) {
 	// 本人在当前房间内的净胜负，供牌桌里的「战绩」窗口换算。
 	mux.HandleFunc("GET /v1/rooms/current/result", func(writer http.ResponseWriter, request *http.Request) {
@@ -113,7 +113,7 @@ func registerRoomOwnerRoutes(
 			return
 		}
 		if disconnectUsers != nil {
-			disconnectUsers(current.RoomID, []string{targetUserID})
+			disconnectUsers(current.RoomID, []string{targetUserID}, RemovedByOwner)
 		}
 		writeJSON(writer, http.StatusOK, map[string]any{"closed": closed})
 	})

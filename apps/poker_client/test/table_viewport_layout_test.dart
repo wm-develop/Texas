@@ -73,7 +73,23 @@ void main() {
       layout.canvasSize.aspectRatio,
       closeTo(const Size(2400, 1080).aspectRatio, 0.001),
     );
-    expect(layout.tableRect.width, TableViewportLayout.maxTableWidth);
+    // 聊天停靠后可用宽度先到顶：牌桌把它吃满，而不是被固定上限卡在 1040
+    const dockedChatRail = 264.0;
+    expect(
+      layout.tableRect.width,
+      closeTo(
+        layout.canvasSize.width -
+            dockedChatRail -
+            TableViewportLayout.betRailWidth,
+        0.5,
+      ),
+    );
+    expect(
+      layout.tableRect.width,
+      lessThanOrEqualTo(
+        layout.tableRect.height * TableViewportLayout.maxTableAspect + 0.5,
+      ),
+    );
   });
 
   test('enlarges content on a logical-size landscape phone', () {
@@ -103,7 +119,13 @@ void main() {
       chatVisible: false,
     );
 
-    expect(layout.tableRect.width, TableViewportLayout.maxTableWidth);
+    // 1600×720 时可用宽度小于比例上界，牌桌把它吃满
+    expect(
+      layout.tableRect.width,
+      lessThanOrEqualTo(
+        layout.tableRect.height * TableViewportLayout.maxTableAspect + 0.5,
+      ),
+    );
     // 右栏恒定被下注区占用，所以牌桌不再相对整幅画布居中，
     // 而是在「左边距 ~ 右栏内缘」之间居中；两侧留白应当相等。
     const leftMargin = 104.0;
@@ -313,7 +335,13 @@ void main() {
         const Size(2400, 900),
         chatVisible: false,
       );
-      expect(layout.tableRect.width, TableViewportLayout.maxTableWidth);
+      expect(
+        layout.tableRect.width,
+        closeTo(
+          layout.tableRect.height * TableViewportLayout.maxTableAspect,
+          0.5,
+        ),
+      );
 
       final side = layout.seatRect(1, 4);
       expect(

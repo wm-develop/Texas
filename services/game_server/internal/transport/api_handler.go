@@ -233,7 +233,7 @@ func registerAdminRoutes(
 	tables *tablemanager.Manager,
 	chatService *chat.Service,
 	presence *presenceTracker,
-	disconnectUsers func(roomID string, userIDs []string),
+	disconnectUsers func(roomID string, userIDs []string, reason string),
 ) {
 	mux.HandleFunc("GET /v1/admin/users", func(writer http.ResponseWriter, request *http.Request) {
 		actor, ok := authenticateRequest(writer, request, accounts)
@@ -496,7 +496,7 @@ func registerAdminRoutes(
 					userIDs = append(userIDs, member.UserID)
 				}
 			}
-			disconnectUsers(current.RoomID, userIDs)
+			disconnectUsers(current.RoomID, userIDs, RemovedByAdministrator)
 		}
 		if err := accounts.RecordManagedRoomRemoval(
 			request.Context(), actor, targetUserID, current.RoomID, current.Code,

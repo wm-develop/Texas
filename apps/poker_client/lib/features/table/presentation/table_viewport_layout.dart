@@ -22,7 +22,13 @@ class TableViewportLayout {
   static const double compactDesignHeight = 620;
   static const double minCanvasAspect = 1.45;
   static const double maxCanvasAspect = 2.35;
-  static const double maxTableWidth = 1040;
+  /// 大屏牌桌的最大宽高比。
+  ///
+  /// 此前用固定像素上限 1040，平板与宽窗口上可用宽度有 1300 以上，牌桌却
+  /// 被卡在 1040，左侧白白空出一大片。改成按比例：牌桌先把可用宽度吃满，
+  /// 只有在超宽画布上才被这个比例挡住，免得椭圆拉得太长、对家离得过远。
+  /// 1.95 接近真实九人桌的长宽比。
+  static const double maxTableAspect = 1.95;
   static const double compactMaxTableWidth = 1160;
   /// 大屏的下注区与手机同构：右侧竖排。左侧留给聊天，牌桌上下因此可以做满。
   /// 内容宽度与手机右栏一致（248-32 与 216-16 都是 200），两端手感相同。
@@ -222,7 +228,9 @@ class TableViewportLayout {
     );
     final tableWidth = math.min(
       availableTableWidth,
-      isCompactLandscape ? compactMaxTableWidth : maxTableWidth,
+      isCompactLandscape
+          ? compactMaxTableWidth
+          : tableHeight * maxTableAspect,
     );
     final unusedWidth = availableTableWidth - tableWidth;
     final tableRect = Rect.fromLTWH(

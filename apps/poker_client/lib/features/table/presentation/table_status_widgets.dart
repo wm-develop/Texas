@@ -15,6 +15,8 @@ class TableRoomHeader extends StatelessWidget {
     required this.onLeave,
     required this.onSettings,
     required this.onShowResult,
+    required this.onToggleChat,
+    this.unreadChatCount = 0,
     this.compact = false,
     super.key,
   });
@@ -26,6 +28,11 @@ class TableRoomHeader extends StatelessWidget {
 
   /// 打开本房间战绩窗口。
   final VoidCallback onShowResult;
+
+  /// 打开/关闭文字聊天。做成图标而不是整条按钮，是为了把右栏的竖向空间
+  /// 让给下注区——平板横屏时那点高度很紧张。
+  final VoidCallback onToggleChat;
+  final int unreadChatCount;
   final bool compact;
 
   @override
@@ -67,6 +74,21 @@ class TableRoomHeader extends StatelessWidget {
                 tooltip: '离开房间',
               ),
               IconButton(
+                key: const ValueKey('chat-toggle-button'),
+                onPressed: onToggleChat,
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints.tightFor(
+                  width: 34,
+                  height: 34,
+                ),
+                icon: Badge(
+                  isLabelVisible: unreadChatCount > 0,
+                  label: Text(unreadChatCount > 99 ? '99+' : '$unreadChatCount'),
+                  child: const Icon(Icons.chat_bubble_outline, size: 19),
+                ),
+                tooltip: '文字聊天',
+              ),
+              IconButton(
                 key: const ValueKey('room-result-button'),
                 onPressed: onShowResult,
                 visualDensity: VisualDensity.compact,
@@ -106,6 +128,16 @@ class TableRoomHeader extends StatelessWidget {
               onPressed: onLeave,
               icon: const Icon(Icons.exit_to_app, size: 20),
               tooltip: '离开房间',
+            ),
+            IconButton(
+              key: const ValueKey('chat-toggle-button'),
+              onPressed: onToggleChat,
+              icon: Badge(
+                isLabelVisible: unreadChatCount > 0,
+                label: Text(unreadChatCount > 99 ? '99+' : '$unreadChatCount'),
+                child: const Icon(Icons.chat_bubble_outline, size: 20),
+              ),
+              tooltip: '文字聊天',
             ),
             IconButton(
               key: const ValueKey('room-result-button'),

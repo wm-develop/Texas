@@ -58,6 +58,17 @@ type webSocketClient struct {
 // WebSocket 留给应用自定义的关闭码区间。
 const closeStatusSuperseded websocket.StatusCode = 4001
 
+// closeStatusRemovedFromRoom 通知玩家他已被移出房间。此前用的是通用的
+// StatusPolicyViolation，客户端只能靠随后重连时 table.join 被拒推断，
+// 于是弹出「牌桌操作失败 permission_denied」而不是说清楚发生了什么。
+const closeStatusRemovedFromRoom websocket.StatusCode = 4002
+
+// 移出房间的原因，作为关闭原因下发，供客户端显示对应文案。
+const (
+	RemovedByOwner         = "removed_by_owner"
+	RemovedByAdministrator = "removed_by_administrator"
+)
+
 type tableHub struct {
 	mu        sync.Mutex
 	publishMu sync.Mutex
@@ -327,7 +338,12 @@ func (client *webSocketClient) authenticate(ctx context.Context, message protoco
 	}))
 }
 
-func (server *webSocketServer) disconnectUsers(roomID string, userIDs []string) {
+// disconnectUsers 把被移出房间的玩家踢下线，并用专门的关闭码与原因说明
+// 发生了什么，客户端据此显示提示而不是把它当成一次失败的牌桌操作。
+func (server *webSocketServer) disconnectUsers(roomID string, userIDs []string, reason string) {
+	if reason == "" {
+		reason = RemovedByAdministrator
+	}
 	targets := make(map[string]struct{}, len(userIDs))
 	for _, userID := range userIDs {
 		targets[userID] = struct{}{}
@@ -336,7 +352,7 @@ func (server *webSocketServer) disconnectUsers(roomID string, userIDs []string) 
 		if _, exists := targets[client.user.UserID]; !exists {
 			continue
 		}
-		_ = client.connection.Close(websocket.StatusPolicyViolation, "removed_by_administrator")
+		_ = client.connection.Close(closeStatusRemovedFromRoom, reason)
 	}
 }
 

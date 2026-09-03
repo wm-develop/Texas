@@ -75,6 +75,8 @@ String potAwardLabel(PotAward award, List<TableSeatSnapshot> seats) {
 String gameErrorLabel(String code) => switch (code) {
   'connection_failed' => '牌桌网络暂时不可用，正在自动重新连接',
   'superseded' => '你的账号已在其他设备或标签页进入本牌桌，本连接已停用',
+  'removed_by_owner' => '房主已将你请出房间，牌桌上的筹码已退回你的钱包',
+  'removed_by_administrator' => '管理员已将你移出房间，牌桌上的筹码已退回你的钱包',
   'action_timeout' => '操作长时间未得到确认，已重新同步牌桌，请再试一次',
   'server_draining' => '服务器即将更新，本手结束后暂停开新局，请稍候',
   'sequence_gap' => '检测到网络消息缺口，正在恢复牌桌状态',

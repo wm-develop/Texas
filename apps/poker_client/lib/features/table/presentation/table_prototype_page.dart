@@ -48,7 +48,8 @@ class TablePrototypePage extends StatefulWidget {
   final FriendRoom room;
   final AppSettingsController settings;
   final Future<void> Function() onLeave;
-  final Future<void> Function() onRemoved;
+  /// 玩家已不在房间里，参数为原因（`removed_by_owner` 等），可能为空。
+  final Future<void> Function(String reason) onRemoved;
   final Future<String> Function({bool forceRefresh}) accessTokenProvider;
   final Future<BankrollSnapshot> Function() loadBankroll;
 
@@ -275,27 +276,14 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                         : null,
                   ),
                   onShowResult: _openRoomResult,
+                  onToggleChat: viewport.supportsSideChat
+                      ? _toggleChat
+                      : _showCompactChat,
+                  unreadChatCount: _unreadChatCount,
                 );
                 final connectionStatus = TableConnectionStatusBar(
                   client: _gameSocket,
                   compact: true,
-                );
-                final chatEntryButton = FilledButton.tonalIcon(
-                  onPressed: viewport.supportsSideChat
-                      ? _toggleChat
-                      : _showCompactChat,
-                  icon: Badge(
-                    isLabelVisible: _unreadChatCount > 0,
-                    label: Text(
-                      _unreadChatCount > 99 ? '99+' : '$_unreadChatCount',
-                    ),
-                    child: const Icon(Icons.chat_bubble_outline),
-                  ),
-                  label: Text(
-                    _unreadChatCount > 0
-                        ? '文字聊天 · $_unreadChatCount'
-                        : '文字聊天',
-                  ),
                 );
                 final voiceControls = TableVoiceControls(
                   voiceJoined: _voice.joined,
@@ -408,9 +396,6 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                                   infoPanel,
                                   const SizedBox(height: 8),
                                 ],
-                                if (viewport.isCompactLandscape ||
-                                    !showSideChat)
-                                  chatEntryButton,
                                 // 平板横屏时右栏可用高度会不够，此前多出来的
                                 // 部分被直接裁掉，最下面的按钮看不见也点不到。
                                 // 改成贴底可滚动：空间够时和原来一样贴在底部，
@@ -544,11 +529,12 @@ class _TablePrototypePageState extends State<TablePrototypePage>
       });
     }
     final error = _gameSocket.errorMessage;
-    if (!_removedFromRoomHandled &&
-        (error == 'permission_denied' || error == 'room_not_found')) {
+    if (!_removedFromRoomHandled && GameSocketClient.isRemovedFromRoom(error)) {
       _removedFromRoomHandled = true;
+      // 不要再把它当成一次失败的牌桌操作弹错误提示；离开原因交给大厅说明
+      _lastShownGameError = error;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) unawaited(widget.onRemoved());
+        if (mounted) unawaited(widget.onRemoved(error ?? ''));
       });
     }
     if (_lastGameSocketStatus != _gameSocket.status) {

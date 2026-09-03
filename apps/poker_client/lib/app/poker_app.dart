@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
+import 'package:poker_client/core/network/game_socket_client.dart';
 import 'package:poker_client/core/platform/system_ui_policy.dart';
 import 'package:poker_client/core/settings/app_settings.dart';
 import 'package:poker_client/features/auth/presentation/auth_page.dart';
@@ -329,9 +330,19 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
     return updated;
   }
 
-  Future<void> _removedFromRoom() async {
+  /// 玩家已不在房间里：回到大厅并说明原因。
+  ///
+  /// [reason] 来自服务端的关闭原因（`removed_by_owner` 等）；拿不到时不弹窗，
+  /// 因为那种情况多半是自己退的房或房间已关闭，突兀的提示反而误导。
+  Future<void> _removedFromRoom(String reason) async {
     if (!mounted || _room == null) return;
     setState(() => _room = null);
+    final message = _removalMessage(reason);
+    if (message != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_showRemovalNotice(message));
+      });
+    }
     try {
       final chips = await _authorized(_api.bankroll);
       if (mounted) setState(() => _bankroll = chips);
@@ -339,6 +350,27 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
       // The lobby remains usable and refreshes the wallet on the next action.
     }
   }
+
+  static String? _removalMessage(String reason) => switch (reason) {
+    GameSocketClient.removedByOwner => '房主已将你请出房间。牌桌上的筹码已退回你的钱包。',
+    GameSocketClient.removedByAdministrator =>
+      '管理员已将你移出房间。牌桌上的筹码已退回你的钱包。',
+    _ => null,
+  };
+
+  Future<void> _showRemovalNotice(String message) => showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('已离开房间'),
+      content: Text(message),
+      actions: [
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('知道了'),
+        ),
+      ],
+    ),
+  );
 
   void _startPresenceHeartbeat() {
     _presenceTimer?.cancel();
