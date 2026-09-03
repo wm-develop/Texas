@@ -305,22 +305,32 @@ type roomQueryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
+// roomSelectColumns 与 roomScanTargets 必须一一对应。两者放在一起并由
+// TestRoomSelectColumnsMatchScanTargets 校验列数，因为这种错配只会在真实
+// 数据库上暴露（"expected N destination arguments in Scan"），而单元测试
+// 走的是内存仓储，集成测试又需要 TEST_DATABASE_URL 才会运行。
+const roomSelectColumns = `r.room_id, trim(r.room_code), r.owner_user_id, r.preset,
+		 r.password_hash, r.max_players, r.small_blind, r.big_blind,
+		 r.max_buy_in, r.action_seconds, r.join_locked, r.revision, r.created_at`
+
+func roomScanTargets(value *Room, revision *int64) []any {
+	return []any{
+		&value.RoomID, &value.Code, &value.OwnerUserID, &value.Preset,
+		&value.PasswordHash, &value.MaxPlayers, &value.Rules.SmallBlind,
+		&value.Rules.BigBlind, &value.Rules.MaxBuyIn, &value.Rules.ActionSeconds,
+		&value.JoinLocked, revision, &value.CreatedAt,
+	}
+}
+
 func loadRoom(ctx context.Context, queryer roomQueryer, predicate string, argument string) (Room, error) {
 	var value Room
 	var revision int64
 	err := queryer.QueryRowContext(
 		ctx,
-		`SELECT r.room_id, trim(r.room_code), r.owner_user_id, r.preset,
-		 r.password_hash, r.max_players, r.small_blind, r.big_blind,
-		 r.max_buy_in, r.action_seconds, r.revision, r.created_at
+		`SELECT `+roomSelectColumns+`
 		 FROM rooms r WHERE r.status <> 'closed' AND `+predicate,
 		argument,
-	).Scan(
-		&value.RoomID, &value.Code, &value.OwnerUserID, &value.Preset,
-		&value.PasswordHash, &value.MaxPlayers, &value.Rules.SmallBlind,
-		&value.Rules.BigBlind, &value.Rules.MaxBuyIn, &value.Rules.ActionSeconds,
-		&value.JoinLocked, &revision, &value.CreatedAt,
-	)
+	).Scan(roomScanTargets(&value, &revision)...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Room{}, ErrNotFound
 	}
