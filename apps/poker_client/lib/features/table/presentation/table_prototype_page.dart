@@ -276,14 +276,36 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                         : null,
                   ),
                   onShowResult: _openRoomResult,
-                  onToggleChat: viewport.supportsSideChat
-                      ? _toggleChat
-                      : _showCompactChat,
+                  // 手机端的聊天入口是右栏里那个独立的大按钮，不放进信息栏；
+                  // 大屏端相反，做成信息栏右上角的大 logo。
+                  onToggleChat: viewport.isCompactLandscape
+                      ? null
+                      : (viewport.supportsSideChat
+                            ? _toggleChat
+                            : _showCompactChat),
                   unreadChatCount: _unreadChatCount,
                 );
                 final connectionStatus = TableConnectionStatusBar(
                   client: _gameSocket,
                   compact: true,
+                );
+                // 手机端保持原样：聊天是右栏里一个独立的大按钮。
+                final chatEntryButton = FilledButton.tonalIcon(
+                  onPressed: viewport.supportsSideChat
+                      ? _toggleChat
+                      : _showCompactChat,
+                  icon: Badge(
+                    isLabelVisible: _unreadChatCount > 0,
+                    label: Text(
+                      _unreadChatCount > 99 ? '99+' : '$_unreadChatCount',
+                    ),
+                    child: const Icon(Icons.chat_bubble_outline),
+                  ),
+                  label: Text(
+                    _unreadChatCount > 0
+                        ? '文字聊天 · $_unreadChatCount'
+                        : '文字聊天',
+                  ),
                 );
                 final voiceControls = TableVoiceControls(
                   voiceJoined: _voice.joined,
@@ -395,7 +417,8 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                                 if (!viewport.isCompactLandscape) ...[
                                   infoPanel,
                                   const SizedBox(height: 8),
-                                ],
+                                ] else
+                                  chatEntryButton,
                                 // 平板横屏时右栏可用高度会不够，此前多出来的
                                 // 部分被直接裁掉，最下面的按钮看不见也点不到。
                                 // 改成贴底可滚动：空间够时和原来一样贴在底部，

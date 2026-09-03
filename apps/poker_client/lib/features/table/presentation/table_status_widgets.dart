@@ -29,16 +29,19 @@ class TableRoomHeader extends StatelessWidget {
   /// 打开本房间战绩窗口。
   final VoidCallback onShowResult;
 
-  /// 打开/关闭文字聊天。做成图标而不是整条按钮，是为了把右栏的竖向空间
-  /// 让给下注区——平板横屏时那点高度很紧张。
-  final VoidCallback onToggleChat;
+  /// 打开/关闭文字聊天。为 null 时不在信息栏里显示入口——手机端的聊天入口
+  /// 是右栏里那个独立的大按钮，不放进这里。
+  ///
+  /// 大屏端则相反：聊天做成信息栏右上角一个显眼的大图标，不与离开/战绩/
+  /// 设置那排小按钮并列，这样既好点，又把右栏的竖向空间让给下注区。
+  final VoidCallback? onToggleChat;
   final int unreadChatCount;
   final bool compact;
 
   @override
   Widget build(BuildContext context) {
     if (compact) {
-      return Column(
+      final details = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
@@ -74,21 +77,6 @@ class TableRoomHeader extends StatelessWidget {
                 tooltip: '离开房间',
               ),
               IconButton(
-                key: const ValueKey('chat-toggle-button'),
-                onPressed: onToggleChat,
-                visualDensity: VisualDensity.compact,
-                constraints: const BoxConstraints.tightFor(
-                  width: 34,
-                  height: 34,
-                ),
-                icon: Badge(
-                  isLabelVisible: unreadChatCount > 0,
-                  label: Text(unreadChatCount > 99 ? '99+' : '$unreadChatCount'),
-                  child: const Icon(Icons.chat_bubble_outline, size: 19),
-                ),
-                tooltip: '文字聊天',
-              ),
-              IconButton(
                 key: const ValueKey('room-result-button'),
                 onPressed: onShowResult,
                 visualDensity: VisualDensity.compact,
@@ -113,8 +101,22 @@ class TableRoomHeader extends StatelessWidget {
           ),
         ],
       );
+      final chatEntry = onToggleChat;
+      if (chatEntry == null) return details;
+      // 聊天入口独占信息栏右上角：比那排小按钮大一圈，好点也好找。
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(child: details),
+          const SizedBox(width: 6),
+          _ChatEntryLogo(
+            onPressed: chatEntry,
+            unreadChatCount: unreadChatCount,
+          ),
+        ],
+      );
     }
-    return Column(
+    final wide = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
@@ -128,16 +130,6 @@ class TableRoomHeader extends StatelessWidget {
               onPressed: onLeave,
               icon: const Icon(Icons.exit_to_app, size: 20),
               tooltip: '离开房间',
-            ),
-            IconButton(
-              key: const ValueKey('chat-toggle-button'),
-              onPressed: onToggleChat,
-              icon: Badge(
-                isLabelVisible: unreadChatCount > 0,
-                label: Text(unreadChatCount > 99 ? '99+' : '$unreadChatCount'),
-                child: const Icon(Icons.chat_bubble_outline, size: 20),
-              ),
-              tooltip: '文字聊天',
             ),
             IconButton(
               key: const ValueKey('room-result-button'),
@@ -159,7 +151,61 @@ class TableRoomHeader extends StatelessWidget {
         ),
       ],
     );
+    final chatEntry = onToggleChat;
+    if (chatEntry == null) return wide;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(child: wide),
+        const SizedBox(width: 8),
+        _ChatEntryLogo(onPressed: chatEntry, unreadChatCount: unreadChatCount),
+      ],
+    );
   }
+}
+
+/// 信息栏右上角的聊天入口。
+///
+/// 比那排小按钮大一圈并单独成块：文字聊天是常用功能，混在离开/战绩/设置
+/// 里既不好找也容易误触；同时它不再占用右栏的一整行，那点竖向空间留给
+/// 下注区——平板横屏时尤其紧张。
+class _ChatEntryLogo extends StatelessWidget {
+  const _ChatEntryLogo({
+    required this.onPressed,
+    required this.unreadChatCount,
+  });
+
+  final VoidCallback onPressed;
+  final int unreadChatCount;
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+    message: '文字聊天',
+    child: Material(
+      color: const Color(0xFF3C4A2E),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: InkWell(
+        key: const ValueKey('chat-toggle-button'),
+        borderRadius: BorderRadius.circular(12),
+        onTap: onPressed,
+        child: SizedBox(
+          width: 46,
+          height: 46,
+          child: Center(
+            child: Badge(
+              isLabelVisible: unreadChatCount > 0,
+              label: Text(unreadChatCount > 99 ? '99+' : '$unreadChatCount'),
+              child: const Icon(
+                Icons.chat_bubble_outline,
+                size: 26,
+                color: Color(0xFFF6D986),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 class TableConnectionStatusBar extends StatelessWidget {

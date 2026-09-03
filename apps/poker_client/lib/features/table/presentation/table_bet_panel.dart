@@ -260,26 +260,17 @@ class _SizingControls extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final presets = [
-      for (final suggestion in suggestions)
+      // 全下不做成注码尺度按钮：它不是「几分之几底池」那一类的尺度，混在
+      // 里面容易误触。要全下就把滑块推到最右或直接输入额度，与三个大按钮
+      // 的设计一致（全下同样不单独占一个大按钮）。
+      for (final suggestion in suggestions.where(
+        (suggestion) => suggestion.action != 'all_in',
+      ))
         _PresetChip(
           key: ValueKey('bet-preset-${suggestion.label}-${suggestion.raiseTo}'),
-          label: suggestion.action == 'all_in'
-              ? '全下'
-              : suggestionLabel(suggestion.label),
-          selected:
-              amount ==
-              model.clampAmount(
-                suggestion.action == 'all_in'
-                    ? model.allInTo
-                    : suggestion.raiseTo,
-              ),
-          onPressed: enabled
-              ? () => onChanged(
-                  suggestion.action == 'all_in'
-                      ? model.allInTo
-                      : suggestion.raiseTo,
-                )
-              : null,
+          label: suggestionLabel(suggestion.label),
+          selected: amount == model.clampAmount(suggestion.raiseTo),
+          onPressed: enabled ? () => onChanged(suggestion.raiseTo) : null,
         ),
     ];
 

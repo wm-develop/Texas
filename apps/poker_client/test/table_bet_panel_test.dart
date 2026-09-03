@@ -443,39 +443,89 @@ void main() {
     });
   });
   group('文字聊天入口', () {
-    testWidgets('聊天做成房间信息栏里的图标，把右栏竖向空间让给下注区', (tester) async {
-      // 平板横屏右栏高度紧张，整条「文字聊天」按钮占掉的那一行更值钱
-      var toggled = 0;
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: SizedBox(
-              width: 220,
-              child: TableRoomHeader(
-                room: _room(),
-                currentPlayers: 2,
-                compact: true,
-                onLeave: () async {},
-                onSettings: () {},
-                onShowResult: () {},
-                onToggleChat: () => toggled++,
-                unreadChatCount: 3,
-              ),
+    Future<void> pumpHeader(
+      WidgetTester tester, {
+      required VoidCallback? onToggleChat,
+    }) => tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 240,
+            child: TableRoomHeader(
+              room: _room(),
+              currentPlayers: 2,
+              compact: true,
+              onLeave: () async {},
+              onSettings: () {},
+              onShowResult: () {},
+              onToggleChat: onToggleChat,
+              unreadChatCount: 3,
             ),
           ),
         ),
-      );
+      ),
+    );
+
+    testWidgets('大屏：聊天是信息栏右上角的大图标，明显大于那排小按钮', (tester) async {
+      // 混在离开/战绩/设置里既不好找也容易误触
+      var toggled = 0;
+      await pumpHeader(tester, onToggleChat: () => toggled++);
 
       expect(tester.takeException(), isNull);
-      // 不再有占一整行的文字按钮
-      expect(find.text('文字聊天'), findsNothing);
-      final button = find.byKey(const ValueKey('chat-toggle-button'));
-      expect(button, findsOneWidget);
-      // 未读数仍然看得见
-      expect(find.text('3'), findsOneWidget);
+      final chat = find.byKey(const ValueKey('chat-toggle-button'));
+      expect(chat, findsOneWidget);
+      final chatBox = tester.getRect(chat);
+      final smallButton = tester.getRect(
+        find.byKey(const ValueKey('room-result-button')),
+      );
+      expect(
+        chatBox.width,
+        greaterThan(smallButton.width),
+        reason: '聊天入口要比那排小按钮大一圈',
+      );
+      // 独占右上角：在小按钮那一行之上、且更靠右
+      expect(chatBox.left, greaterThan(smallButton.right));
+      expect(chatBox.top, lessThan(smallButton.top));
+      expect(find.text('3'), findsOneWidget, reason: '未读数仍要看得见');
 
-      await tester.tap(button);
+      await tester.tap(chat);
       expect(toggled, 1);
+    });
+
+    testWidgets('手机：信息栏里没有聊天入口，聊天仍是右栏的独立大按钮', (tester) async {
+      await pumpHeader(tester, onToggleChat: null);
+
+      expect(tester.takeException(), isNull);
+      expect(find.byKey(const ValueKey('chat-toggle-button')), findsNothing);
+      // 其余小按钮不受影响
+      expect(find.byKey(const ValueKey('room-result-button')), findsOneWidget);
+    });
+  });
+  group('注码尺度按钮', () {
+    testWidgets('不再把全下混进注码尺度按钮里', (tester) async {
+      // 全下不是「几分之几底池」那一类的尺度，混在里面容易误触；
+      // 要全下就把滑块推到最右或直接输入额度
+      await _pumpPanel(
+        tester,
+        _turnSnapshot(
+          canCheck: false,
+          toCall: 20,
+          suggestions: const [
+            {'label': 'half_pot', 'action': 'raise', 'raiseTo': 120},
+            {'label': 'pot', 'action': 'raise', 'raiseTo': 200},
+            {'label': 'all_in', 'action': 'all_in', 'raiseTo': 265},
+          ],
+        ),
+      );
+
+      expect(
+        find.byKey(const ValueKey('bet-preset-all_in-265')),
+        findsNothing,
+      );
+      // 其他尺度按钮照常
+      expect(find.byKey(const ValueKey('bet-preset-pot-200')), findsOneWidget);
+      // 全下仍可通过滑块或输入达成，三个大按钮也不会多出一个「全下」
+      expect(find.widgetWithText(FilledButton, '全下'), findsNothing);
     });
   });
 }
