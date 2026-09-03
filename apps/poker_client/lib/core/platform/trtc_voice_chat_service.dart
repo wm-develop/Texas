@@ -78,9 +78,9 @@ class TrtcVoiceChatService implements VoiceChatService {
         userId: userId,
         userSig: userSig,
         strRoomId: tableId,
-        role: TRTCRoleType.audience,
+        role: _usesCallScene ? TRTCRoleType.anchor : TRTCRoleType.audience,
       ),
-      TRTCAppScene.voiceChatRoom,
+      _usesCallScene ? TRTCAppScene.audioCall : TRTCAppScene.voiceChatRoom,
     );
 
     try {
@@ -124,15 +124,29 @@ class TrtcVoiceChatService implements VoiceChatService {
       if (!granted) {
         throw const MicrophonePermissionDeniedException();
       }
-      await _switchRole(TRTCRoleType.anchor);
+      if (!_usesCallScene) await _switchRole(TRTCRoleType.anchor);
       _cloud?.startLocalAudio(TRTCAudioQuality.defaultMode);
     } else {
       _cloud?.stopLocalAudio();
-      await _switchRole(TRTCRoleType.audience);
+      if (!_usesCallScene) await _switchRole(TRTCRoleType.audience);
     }
     _pinSpeakerAudioRoute();
     _microphoneEnabled = enabled;
   }
+
+  /// HarmonyOS 使用「音频通话」场景而不是「语音聊天室」场景，并且不切换角色。
+  ///
+  /// 依据腾讯云 TRTC 文档：默认音量类型为 Auto，「麦上用户（视频通话场景中的
+  /// 所有用户，低延时直播场景下的主播和连麦观众）使用通话音量；麦下用户
+  /// （低延时直播场景下的普通观众）使用媒体音量」。语音聊天室属于直播场景，
+  /// 观众→主播的角色切换会让系统音量类型在媒体音量与通话音量之间来回切换。
+  /// 真机上的表现正是：开麦后音量条先显示话筒（通话音量）并能听到远端，
+  /// 几秒后变为喇叭（媒体音量）且远端静音。
+  ///
+  /// Flutter SDK 13.4.3 没有暴露 setSystemVolumeType，无法直接固定音量类型；
+  /// 改用音频通话场景后所有人都是「麦上用户」，全程通话音量，不再有切换。
+  /// Android 与 Windows 保持已验证的语音聊天室方案不变。
+  bool get _usesCallScene => defaultTargetPlatform == TargetPlatform.ohos;
 
   /// HarmonyOS switches the playback route to the low-volume earpiece shortly
   /// after the local microphone starts (audience → anchor), which sounds like
