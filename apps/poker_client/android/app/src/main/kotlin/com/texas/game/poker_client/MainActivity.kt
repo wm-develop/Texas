@@ -3,6 +3,7 @@ package com.texas.game.poker_client
 import android.os.Build
 import android.os.Bundle
 import android.view.View
+import android.view.RoundedCorner
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import io.flutter.embedding.android.FlutterActivity
@@ -67,15 +68,38 @@ class MainActivity : FlutterActivity() {
             "top" to inset(cutout?.safeInsetTop, waterfall?.top, navigation?.top),
             "right" to inset(cutout?.safeInsetRight, waterfall?.right, navigation?.right),
             "bottom" to inset(cutout?.safeInsetBottom, waterfall?.bottom, navigation?.bottom),
+        ) + readCornerRadii(rootInsets, density)
+    }
+
+    // 屏幕圆角会把贴边的控件切掉一角。它不属于挖孔也不属于系统栏，两套
+    // inset 都不包含它，只能单独问系统要（API 31 起才有这个接口）。
+    private fun readCornerRadii(rootInsets: WindowInsets, density: Double): Map<String, Double> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            return zeroCornerRadii()
+        }
+        fun radius(position: Int): Double =
+            (rootInsets.getRoundedCorner(position)?.radius ?: 0) / density
+        return mapOf(
+            "cornerTopLeft" to radius(RoundedCorner.POSITION_TOP_LEFT),
+            "cornerTopRight" to radius(RoundedCorner.POSITION_TOP_RIGHT),
+            "cornerBottomLeft" to radius(RoundedCorner.POSITION_BOTTOM_LEFT),
+            "cornerBottomRight" to radius(RoundedCorner.POSITION_BOTTOM_RIGHT),
         )
     }
+
+    private fun zeroCornerRadii() = mapOf(
+        "cornerTopLeft" to 0.0,
+        "cornerTopRight" to 0.0,
+        "cornerBottomLeft" to 0.0,
+        "cornerBottomRight" to 0.0,
+    )
 
     private fun zeroCutoutInsets() = mapOf(
         "left" to 0.0,
         "top" to 0.0,
         "right" to 0.0,
         "bottom" to 0.0,
-    )
+    ) + zeroCornerRadii()
 
     @Suppress("DEPRECATION")
     private fun hideSystemBars() {

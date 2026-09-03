@@ -94,7 +94,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
   final Set<String> _observedInteractionIds = {};
   final List<TablePlayerInteraction> _activeInteractions = [];
   final Map<String, Timer> _interactionTimers = {};
-  EdgeInsets _nativeDisplayCutout = EdgeInsets.zero;
+  NativeScreenInsets _nativeScreenInsets = NativeScreenInsets.zero;
 
   @override
   void initState() {
@@ -186,8 +186,8 @@ class _TablePrototypePageState extends State<TablePrototypePage>
 
   Future<void> _refreshDisplayCutout() async {
     final next = await NativeDisplayCutout.read();
-    if (mounted && next != _nativeDisplayCutout) {
-      setState(() => _nativeDisplayCutout = next);
+    if (mounted && next != _nativeScreenInsets) {
+      setState(() => _nativeScreenInsets = next);
     }
   }
 
@@ -224,7 +224,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
     // 除了挖孔，还要让开手势导航条：平板横屏时它压在屏幕底部，落在那片
     // 区域的按钮即使画出来了也点不动，因为触摸归系统。
     final remainingCutout = NativeDisplayCutout.remainingSystemInsets(
-      nativeCutout: _nativeDisplayCutout,
+      nativeCutout: _nativeScreenInsets.cutout,
       mediaPadding: mediaPadding,
       viewPadding: MediaQuery.viewPaddingOf(context),
       systemGestureInsets: MediaQuery.systemGestureInsetsOf(context),
@@ -253,6 +253,18 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                   compactOverride: _isMobilePlatform
                       ? MediaQuery.sizeOf(context).shortestSide < 600
                       : null,
+                );
+                // 屏幕圆角会切掉贴着顶边的控件一角——安卓手机上右上角的
+                // 聊天按钮就被切过。圆角不在挖孔与系统栏的 inset 里，只能
+                // 单独让开；已经被安全区推开的那部分不重复计。
+                final consumedTop = mediaPadding.top + remainingCutout.top;
+                final topLeftCorner = NativeDisplayCutout.remainingCorner(
+                  _nativeScreenInsets.cornerTopLeft,
+                  consumedTop,
+                );
+                final topRightCorner = NativeDisplayCutout.remainingCorner(
+                  _nativeScreenInsets.cornerTopRight,
+                  consumedTop,
                 );
                 final showSideChat = _chatVisible && viewport.supportsSideChat;
                 final roomHeader = TableRoomHeader(
@@ -360,7 +372,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                           if (viewport.isCompactLandscape)
                             Positioned(
                               left: 8,
-                              top: 8,
+                              top: 8 + topLeftCorner,
                               width:
                                   TableViewportLayout.compactLeftRailWidth - 16,
                               child: infoPanel,
@@ -389,7 +401,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                             Positioned(
                               left: 18,
                               // 左上角不再放任何控件，聊天面板可以贴顶
-                              top: 24,
+                              top: 24 + topLeftCorner,
                               bottom: 24,
                               width: 230,
                               child: TableChatPanel(
@@ -403,7 +415,9 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                           // 两种布局族同构：右栏竖排下注区，贴底便于够到。
                           Positioned(
                             right: viewport.isCompactLandscape ? 8 : 16,
-                            top: viewport.isCompactLandscape ? 8 : 16,
+                            top:
+                                (viewport.isCompactLandscape ? 8 : 16) +
+                                topRightCorner,
                             bottom: viewport.isCompactLandscape ? 8 : 18,
                             width:
                                 (viewport.isCompactLandscape

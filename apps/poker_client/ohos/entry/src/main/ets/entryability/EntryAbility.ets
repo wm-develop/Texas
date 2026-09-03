@@ -72,6 +72,27 @@ export default class EntryAbility extends FlutterAbility {
     });
   }
 
+  // 鸿蒙的 FlutterAbility 不会自动全屏：平板上会一直顶着系统状态栏，
+  // 牌桌被压掉一条。这里显式做沉浸式布局并隐藏状态栏。
+  //
+  // 只隐藏状态栏，保留手势导航指示器：把它一起隐藏后，系统仍然占着屏幕
+  // 底部那条手势区（触摸归系统），但避让区接口会返回 0，界面就不会再让开，
+  // 落在那里的按钮又会变得点不动——那正是上一版刚修掉的问题。
+  onWindowStageCreate(windowStage: window.WindowStage): void {
+    super.onWindowStageCreate(windowStage);
+    windowStage
+      .getMainWindow()
+      .then((mainWindow: window.Window): void => {
+        mainWindow.setWindowLayoutFullScreen(true).catch((): void => {});
+        mainWindow
+          .setSpecificSystemBarEnabled('status', false)
+          .catch((): void => {});
+      })
+      .catch((): void => {
+        // 全屏是显示偏好，取不到窗口时不影响应用启动。
+      });
+  }
+
   onDestroy(): void {
     this.tableSoundPool.release().catch((): void => {});
   }

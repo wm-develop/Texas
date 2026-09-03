@@ -8,6 +8,46 @@ const _displayCutoutChannel = MethodChannel(
   'com.texas.game.poker_client/display_cutout',
 );
 
+/// 原生上报的屏幕几何：挖孔与系统栏的避让区，以及屏幕圆角半径。
+///
+/// 圆角不属于挖孔也不属于系统栏，两套 inset 都不包含它，但它会实实在在地
+/// 切掉贴边控件的一角——安卓手机上右上角的聊天按钮就被切过。因此单独上报。
+class NativeScreenInsets {
+  const NativeScreenInsets({
+    this.cutout = EdgeInsets.zero,
+    this.cornerTopLeft = 0,
+    this.cornerTopRight = 0,
+    this.cornerBottomLeft = 0,
+    this.cornerBottomRight = 0,
+  });
+
+  final EdgeInsets cutout;
+  final double cornerTopLeft;
+  final double cornerTopRight;
+  final double cornerBottomLeft;
+  final double cornerBottomRight;
+
+  static const NativeScreenInsets zero = NativeScreenInsets();
+
+  @override
+  bool operator ==(Object other) =>
+      other is NativeScreenInsets &&
+      other.cutout == cutout &&
+      other.cornerTopLeft == cornerTopLeft &&
+      other.cornerTopRight == cornerTopRight &&
+      other.cornerBottomLeft == cornerBottomLeft &&
+      other.cornerBottomRight == cornerBottomRight;
+
+  @override
+  int get hashCode => Object.hash(
+    cutout,
+    cornerTopLeft,
+    cornerTopRight,
+    cornerBottomLeft,
+    cornerBottomRight,
+  );
+}
+
 class NativeDisplayCutout {
   const NativeDisplayCutout._();
 
@@ -16,18 +56,28 @@ class NativeDisplayCutout {
       (defaultTargetPlatform == TargetPlatform.android ||
           defaultTargetPlatform == TargetPlatform.ohos);
 
-  static Future<EdgeInsets> read() async {
-    if (!_supported) return EdgeInsets.zero;
+  static Future<NativeScreenInsets> read() async {
+    if (!_supported) return NativeScreenInsets.zero;
     try {
       final value = await _displayCutoutChannel
           .invokeMapMethod<String, Object?>('getInsets');
-      return decode(value);
+      return decodeScreenInsets(value);
     } on MissingPluginException {
-      return EdgeInsets.zero;
+      return NativeScreenInsets.zero;
     } on PlatformException {
-      return EdgeInsets.zero;
+      return NativeScreenInsets.zero;
     }
   }
+
+  @visibleForTesting
+  static NativeScreenInsets decodeScreenInsets(Map<String, Object?>? value) =>
+      NativeScreenInsets(
+        cutout: decode(value),
+        cornerTopLeft: _number(value?['cornerTopLeft']),
+        cornerTopRight: _number(value?['cornerTopRight']),
+        cornerBottomLeft: _number(value?['cornerBottomLeft']),
+        cornerBottomRight: _number(value?['cornerBottomRight']),
+      );
 
   @visibleForTesting
   static EdgeInsets decode(Map<String, Object?>? value) => EdgeInsets.fromLTRB(
@@ -77,6 +127,13 @@ class NativeDisplayCutout {
       ),
     );
   }
+
+  /// 圆角还需要自己让开多少。
+  ///
+  /// 圆角半径是相对屏幕物理边缘的，而 SafeArea 与挖孔内边距已经把内容推离了
+  /// 边缘那么多，这部分不能重复计——否则贴边控件会被推得过分靠内。
+  static double remainingCorner(double radius, double consumed) =>
+      math.max(0, radius - consumed);
 
   static double _number(Object? value) => switch (value) {
     num number when number.isFinite => math.max(0, number.toDouble()),

@@ -99,4 +99,61 @@ void main() {
       );
     });
   });
+  group('屏幕圆角', () {
+    test('解析原生上报的四角半径', () {
+      // 圆角不属于挖孔也不属于系统栏，两套 inset 都不包含它
+      final insets = NativeDisplayCutout.decodeScreenInsets({
+        'left': 30.0,
+        'top': 0.0,
+        'right': 0.0,
+        'bottom': 24.0,
+        'cornerTopLeft': 48.0,
+        'cornerTopRight': 48.0,
+        'cornerBottomLeft': 40.0,
+        'cornerBottomRight': 40.0,
+      });
+
+      expect(insets.cutout, const EdgeInsets.fromLTRB(30, 0, 0, 24));
+      expect(insets.cornerTopRight, 48);
+      expect(insets.cornerBottomLeft, 40);
+    });
+
+    test('旧宿主不上报圆角时按 0 处理', () {
+      final insets = NativeDisplayCutout.decodeScreenInsets({
+        'left': 0.0,
+        'top': 0.0,
+        'right': 0.0,
+        'bottom': 0.0,
+      });
+      expect(insets.cornerTopLeft, 0);
+      expect(insets.cornerTopRight, 0);
+    });
+
+    test('已被安全区推开的部分不重复让开', () {
+      // 否则贴边控件会被推得过分靠内
+      expect(NativeDisplayCutout.remainingCorner(48, 0), 48);
+      expect(NativeDisplayCutout.remainingCorner(48, 20), 28);
+      expect(NativeDisplayCutout.remainingCorner(48, 48), 0);
+      expect(NativeDisplayCutout.remainingCorner(48, 60), 0);
+      expect(NativeDisplayCutout.remainingCorner(0, 0), 0);
+    });
+
+    test('相同的屏幕几何视为相等，避免无谓重建', () {
+      const first = NativeScreenInsets(
+        cutout: EdgeInsets.only(left: 30),
+        cornerTopRight: 48,
+      );
+      const same = NativeScreenInsets(
+        cutout: EdgeInsets.only(left: 30),
+        cornerTopRight: 48,
+      );
+      const different = NativeScreenInsets(
+        cutout: EdgeInsets.only(left: 30),
+        cornerTopRight: 12,
+      );
+      expect(first, same);
+      expect(first.hashCode, same.hashCode);
+      expect(first, isNot(different));
+    });
+  });
 }
