@@ -131,7 +131,7 @@ class TableSeatCard extends StatelessWidget {
                   // 座位整个换成「本人座位」的样式，观战者就分不清谁是谁了。
                   if (seat.holeCards.isNotEmpty)
                     Padding(
-                      padding: const EdgeInsets.only(bottom: 3),
+                      padding: const EdgeInsets.only(bottom: 1),
                       child: Row(
                         children: [
                           for (
@@ -312,17 +312,10 @@ class TableSeatCard extends StatelessWidget {
                         ),
                       ],
                     )
+                  // 轮到谁行动由玩家框的高亮边框表示，倒计时只在公共牌区显示
+                  // 一处；这里不再放任何文字。
                   else if (!seat.isEmpty && seat.isCurrentActor)
-                    Text(
-                      '剩余 ${remainingSeconds(actionRemaining)} 秒',
-                      style: TextStyle(
-                        color: remainingSeconds(actionRemaining) <= 5
-                            ? Colors.redAccent
-                            : const Color(0xFFFFA94D),
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    )
+                    const SizedBox.shrink()
                   else if (!seat.isEmpty && seat.lastAction.isNotEmpty)
                     Text(
                       actionLabel(seat.lastAction, seat.lastActionTo),
