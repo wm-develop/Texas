@@ -268,7 +268,8 @@ ADR 已完成：[ADR-002](decisions/ADR-002-MULTI-INSTANCE.md)。结论是**暂�
 - Flutter 倒计时需要 ticker；只根据快照 deadline 计算但不主动 `setState` 会表现为“点别的控件才刷新”。
 - 不要重新打开 Android R8/资源裁剪，除非已完成 Release 真机回归。
 - 不要把 HarmonyOS 原生系统数字键盘重新用于横屏金额输入，当前设备上曾出现数字不可达和输入闪退。
-- 不要用固定安全边距代替 Android/HarmonyOS 原生挖孔 API。
+- 不要用固定安全边距代替 Android/HarmonyOS 原生挖孔 API。屏幕圆角不在挖孔与系统栏的 inset 里，需要单独让开。
+- **改动 HTTP 语义时必须专门过一遍 Web。** 四端里只有 Web 有 CORS 这一层：新增自定义请求头会触发浏览器预检，服务端的 `Access-Control-Allow-Headers` 不声明它，真正的请求就会被浏览器拦下，而前端只看到一句笼统的连接失败——原生客户端不走 CORS，全都正常，问题极难定位。v0.3.0 加 `X-Client-Version` 时就踩了这个坑。同理，CORS 预检的 OPTIONS 请求不携带任何自定义头，任何按请求头判断的拦截都必须放行它。
 - 不要在生产执行 `migrate down`；应用镜像回滚与数据库回滚是两件事。
 - 不要使用 `postgres:latest`，固定 PostgreSQL 主版本。
 - 不要在文档、提交、日志或截图中泄漏真实域名、数据库 URL、TRTC SecretKey 或签名路径。
