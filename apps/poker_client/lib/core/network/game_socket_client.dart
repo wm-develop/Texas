@@ -180,6 +180,23 @@ class GameSocketClient extends ChangeNotifier {
     _send('table.ready.set', payload: {'ready': ready});
   }
 
+  /// 进入观战位。手间立即生效；牌局进行中只记录意向，本手结束后生效。
+  void enterSpectate() {
+    if (_recoveringSequenceGap) return;
+    _send('table.spectate.enter', payload: const {});
+  }
+
+  /// 观战者上桌。手间立即入座；牌局进行中只记录意向。座位满时服务端拒绝。
+  void takeSeat() {
+    if (_recoveringSequenceGap) return;
+    _send('table.seat.take', payload: const {});
+  }
+
+  /// 房主调整观战位设置，服务端立即生效并广播。
+  void setSpectatorSettings(SpectatorSettings settings) {
+    _send('table.spectator.settings.set', payload: settings.toJson());
+  }
+
   void showHoleCards() {
     if (_recoveringSequenceGap || !(_snapshot?.canShowHoleCards ?? false)) {
       return;
@@ -236,7 +253,21 @@ class GameSocketClient extends ChangeNotifier {
     );
   }
 
+  /// 本人是观战者且房主关闭了对应权限。服务端同样会拒绝；这里提前拦下
+  /// 是为了给出明确提示，而不是等一次往返。
+  bool _spectatorBlocked(bool Function(SpectatorSettings settings) allowed) {
+    final snapshot = _snapshot;
+    return snapshot != null &&
+        snapshot.spectating &&
+        !allowed(snapshot.spectatorSettings);
+  }
+
   void sendChat(String content, {String kind = 'text'}) {
+    if (_spectatorBlocked((settings) => settings.chatAllowed)) {
+      _errorMessage = 'spectator_chat_disabled';
+      notifyListeners();
+      return;
+    }
     final trimmed = content.trim();
     if (trimmed.isEmpty) return;
     _send(
@@ -251,6 +282,11 @@ class GameSocketClient extends ChangeNotifier {
 
   void interactWithPlayer(String targetUserId, String kind) {
     if (targetUserId.isEmpty || (kind != 'praise' && kind != 'taunt')) return;
+    if (_spectatorBlocked((settings) => settings.emoteAllowed)) {
+      _errorMessage = 'spectator_emote_disabled';
+      notifyListeners();
+      return;
+    }
     _send(
       'table.player.interact',
       payload: {'targetUserId': targetUserId, 'kind': kind},

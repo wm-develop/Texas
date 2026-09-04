@@ -528,4 +528,100 @@ void main() {
       expect(find.widgetWithText(FilledButton, '全下'), findsNothing);
     });
   });
+  group('弃牌确认', () {
+    testWidgets('能过牌时点弃牌先弹窗确认，取消则不提交', (tester) async {
+      // 能免费看下一张牌却弃牌，几乎总是误触
+      final client = await _pumpPanel(
+        tester,
+        _turnSnapshot(canCheck: true, canBet: true, canRaise: false),
+      );
+
+      await tester.tap(find.byKey(const ValueKey('bet-fold-action')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('fold-confirm-dialog')), findsOneWidget);
+      expect(client.actionPending, isFalse, reason: '弹窗期间不能已经提交');
+
+      await tester.tap(find.byKey(const ValueKey('fold-confirm-cancel')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('fold-confirm-dialog')), findsNothing);
+      expect(client.actionPending, isFalse, reason: '取消后什么都不该发出去');
+      client.dispose();
+    });
+
+    testWidgets('确认后才提交弃牌', (tester) async {
+      final client = await _pumpPanel(
+        tester,
+        _turnSnapshot(canCheck: true, canBet: true, canRaise: false),
+      );
+
+      await tester.tap(find.byKey(const ValueKey('bet-fold-action')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('fold-confirm-accept')));
+      await tester.pumpAndSettle();
+
+      expect(client.actionPending, isTrue);
+      client.dispose();
+    });
+
+    testWidgets('需要跟注时弃牌是正常决策，不弹窗直接提交', (tester) async {
+      final client = await _pumpPanel(
+        tester,
+        _turnSnapshot(canCheck: false, toCall: 20),
+      );
+
+      await tester.tap(find.byKey(const ValueKey('bet-fold-action')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('fold-confirm-dialog')), findsNothing);
+      expect(client.actionPending, isTrue);
+      client.dispose();
+    });
+
+    testWidgets('弹窗期间轮到了别人，确认后也不会把弃牌打到别人的回合上', (tester) async {
+      final client = await _pumpPanel(
+        tester,
+        _turnSnapshot(canCheck: true, canBet: true, canRaise: false),
+      );
+      await tester.tap(find.byKey(const ValueKey('bet-fold-action')));
+      await tester.pumpAndSettle();
+
+      // 超时：服务端推来新快照，行动者换成了别人
+      client.debugHandleMessage(
+        jsonEncode({
+          'version': 1,
+          'type': 'table.snapshot',
+          'tableId': 'room_1',
+          'sequence': 2,
+          'payload': {
+            ...jsonDecode(
+                  _turnSnapshot(canCheck: true, canBet: true, canRaise: false),
+                )['payload']
+                as Map<String, dynamic>,
+            'tableRevision': 4,
+            'currentAction': {
+              'userId': 'someone_else',
+              'seat': 2,
+              'options': {
+                'toCall': 0,
+                'canFold': true,
+                'canCheck': true,
+                'canCall': false,
+                'canBet': true,
+                'canRaise': false,
+                'canAllIn': true,
+                'minRaiseTo': 40,
+                'maxRaiseTo': 260,
+              },
+              'suggestions': <dynamic>[],
+            },
+          },
+        }),
+      );
+      await tester.tap(find.byKey(const ValueKey('fold-confirm-accept')));
+      await tester.pumpAndSettle();
+
+      expect(client.actionPending, isFalse);
+      client.dispose();
+    });
+  });
 }

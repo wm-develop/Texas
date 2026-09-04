@@ -123,6 +123,8 @@ void main() {
             joinLocked: joinLocked,
             onSetJoinLocked: onSetJoinLocked ?? (locked) async => locked,
             onRemoveMember: onRemoveMember ?? (_) async {},
+            spectatorSettings: const SpectatorSettings(),
+            onUpdateSpectatorSettings: (_) {},
           ),
         ),
       ),
@@ -141,6 +143,8 @@ void main() {
       expect(find.text('好友'), findsOneWidget);
       expect(find.text('房主'), findsNothing);
 
+      // 弹窗加了观战位设置后变长，移出按钮可能在可视区之外
+      await tester.ensureVisible(find.text('移出'));
       await tester.tap(find.text('移出'));
       await tester.pumpAndSettle();
       expect(find.textContaining('退回他自己的钱包'), findsOneWidget);
@@ -174,7 +178,8 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('其他人可以用房间码加入'), findsOneWidget);
-      await tester.tap(find.byType(Switch));
+      // 第一个开关是房间入口；后面三个是观战位权限
+      await tester.tap(find.byType(Switch).first);
       await tester.pumpAndSettle();
       expect(requested, isTrue);
       expect(find.text('房间入口已关闭，房内玩家不受影响'), findsOneWidget);

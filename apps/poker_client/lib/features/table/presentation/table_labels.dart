@@ -115,6 +115,14 @@ String gameErrorLabel(String code) => switch (code) {
   'invalid_player_interaction' => '请选择同桌的其他玩家进行互动',
   'player_not_at_table' => '该玩家已经离开牌桌',
   'player_interaction_too_frequent' => '互动发送太快，请稍后再试',
+  'spectators_full' => '观战位已满（最多 10 人）',
+  'room_full' => '牌桌座位已满，暂时无法上桌',
+  'spectator_cannot_ready' => '观战者不参与牌局，先上桌再准备',
+  'spectator_cannot_move' => '观战者不能换座位',
+  'spectator_chat_disabled' => '房主已关闭观战者的文字聊天',
+  'spectator_emote_disabled' => '房主已关闭观战者的赞赏与嘲讽',
+  'spectator_voice_disabled' => '房主已关闭观战者的麦克风',
+  'invalid_spectator_settings' => '看牌费需在 0～100 个大盲之间',
   _ when code.startsWith('invalid_server_message') => '收到的牌桌数据无法解析',
   _ => '牌桌操作失败（$code）',
 };
@@ -142,3 +150,15 @@ String phaseLabel(String? phase) => switch (phase) {
   'SHOWDOWN' => '摊牌',
   _ => phase,
 };
+
+/// 结算区里看牌费的一行说明：谁付了多少、每名上桌玩家分到多少。
+String spectatorFeeLabel(SpectatorFees fees) {
+  if (fees.payers.isEmpty) return '';
+  final total = fees.payers.fold<int>(0, (sum, payer) => sum + payer.amount);
+  final payers = fees.payers.map((payer) => payer.displayName).join('、');
+  final perPlayer = fees.recipients.isEmpty
+      ? ''
+      : '，上桌玩家每人 +${fees.recipients.first.amount}'
+            '${fees.recipients.any((share) => share.amount != fees.recipients.first.amount) ? '（余数按庄位顺序分配）' : ''}';
+  return '观战看牌费 $total：$payers 各付 ${fees.feePerSpectator}$perPlayer';
+}

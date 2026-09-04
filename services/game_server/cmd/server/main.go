@@ -163,17 +163,17 @@ func main() {
 			TRTCAuthorizer: trtc.MembershipAuthorizer{
 				Sessions: accountService, Membership: roomService,
 			},
-			Accounts:                 accountService,
-			Bankroll:                 bankrollService,
-			Rooms:                    roomService,
-			Tables:                   tableManager,
-			Chat:                     chatService,
-			History:                  historyStore,
-			AllowedOrigins:           appConfig.AllowedOrigins,
-			TrustedProxies:           appConfig.TrustedProxies,
-			RateLimits:               appConfig.RateLimits,
-			Metrics:                  metricsRegistry,
-			MetricsToken:             appConfig.MetricsToken,
+			Accounts:       accountService,
+			Bankroll:       bankrollService,
+			Rooms:          roomService,
+			Tables:         tableManager,
+			Chat:           chatService,
+			History:        historyStore,
+			AllowedOrigins: appConfig.AllowedOrigins,
+			TrustedProxies: appConfig.TrustedProxies,
+			RateLimits:     appConfig.RateLimits,
+			Metrics:        metricsRegistry,
+			MetricsToken:   appConfig.MetricsToken,
 			Readiness: func(ctx context.Context) error {
 				if database == nil {
 					return nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,6 +14,7 @@ import (
 
 	"texas/services/game_server/internal/account"
 	"texas/services/game_server/internal/bankroll"
+	"texas/services/game_server/internal/chat"
 	"texas/services/game_server/internal/game/holdem"
 	"texas/services/game_server/internal/game/tablemanager"
 	"texas/services/game_server/internal/room"
@@ -70,8 +72,20 @@ func newOwnerFixture(t *testing.T) ownerFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 观战者的聊天权限测试需要真实的聊天服务：没有它 sendChat 会在权限校验
+	// 之前就以 table_not_joined 退出。
+	nextMessageID := 0
+	chatService, err := chat.NewService(chat.Policy{
+		MaximumRunes: 200, MaximumPerWindow: 5, RateWindow: time.Second, HistoryLimit: 50,
+	}, time.Now, func() string {
+		nextMessageID++
+		return fmt.Sprintf("owner_fixture_message_%d", nextMessageID)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	server := httptest.NewServer(NewHandler(testLogger(), Options{
-		Accounts: accounts, Rooms: rooms, Tables: tables, Bankroll: chips,
+		Accounts: accounts, Rooms: rooms, Tables: tables, Bankroll: chips, Chat: chatService,
 	}))
 	t.Cleanup(server.Close)
 	return ownerFixture{

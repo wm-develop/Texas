@@ -42,6 +42,11 @@ const (
 	TypeTablePlayerInteract        MessageType = "table.player.interact"
 	TypeTablePlayerInteractAccept  MessageType = "table.player.interact.accepted"
 	TypeTablePlayerInteraction     MessageType = "table.player.interaction"
+	TypeTableSpectateEnter         MessageType = "table.spectate.enter"
+	TypeTableSpectateEntered       MessageType = "table.spectate.entered"
+	TypeTableSeatTake              MessageType = "table.seat.take"
+	TypeTableSeatTaken             MessageType = "table.seat.taken"
+	TypeTableSpectatorSettingsSet  MessageType = "table.spectator.settings.set"
 )
 
 type SessionAuthenticatePayload struct {
@@ -150,4 +155,19 @@ type ChatMessagePayload struct {
 type ErrorPayload struct {
 	Code    string `json:"code"`
 	Message string `json:"message,omitempty"`
+}
+
+// SpectatorSettingsSetPayload 是房主调整观战位设置的请求体，字段与快照里的
+// spectatorSettings 一致。
+type SpectatorSettingsSetPayload struct {
+	FeeBigBlinds int  `json:"feeBigBlinds"`
+	VoiceAllowed bool `json:"voiceAllowed"`
+	ChatAllowed  bool `json:"chatAllowed"`
+	EmoteAllowed bool `json:"emoteAllowed"`
+}
+
+// SpectateResultPayload 回复切换请求：pending 为真表示牌局进行中，意向已记录，
+// 本手结束后生效。
+type SpectateResultPayload struct {
+	Pending bool `json:"pending"`
 }

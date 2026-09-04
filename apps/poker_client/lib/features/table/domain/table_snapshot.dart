@@ -129,7 +129,15 @@ class TableSeatSnapshot {
     required this.lastCommitted,
     required this.lastActionTo,
     required this.timeExtensions,
+    this.holeCards = const [],
+    this.pendingSpectate = false,
   });
+
+  /// 只有本手有效付费的观战者才会收到别人的手牌；普通玩家这里永远为空。
+  final List<String> holeCards;
+
+  /// 已申请本手结束后进入观战。
+  final bool pendingSpectate;
 
   final String userId;
   final String displayName;
@@ -166,7 +174,134 @@ class TableSeatSnapshot {
         lastCommitted: json['lastCommitted'] as int? ?? 0,
         lastActionTo: json['lastActionTo'] as int? ?? 0,
         timeExtensions: json['timeExtensions'] as int? ?? 0,
+        holeCards: (json['holeCards'] as List<dynamic>? ?? const [])
+            .cast<String>(),
+        pendingSpectate: json['pendingSpectate'] as bool? ?? false,
       );
+}
+
+/// 观战位上的一名成员。
+class SpectatorSnapshot {
+  const SpectatorSnapshot({
+    required this.userId,
+    required this.displayName,
+    required this.connected,
+    required this.stack,
+    required this.canSeeHoleCards,
+    required this.pendingSeat,
+  });
+
+  final String userId;
+  final String displayName;
+  final bool connected;
+  final int stack;
+
+  /// 本手已付费（或免费模式），能看到所有人的手牌。
+  final bool canSeeHoleCards;
+
+  /// 已申请本手结束后上桌。
+  final bool pendingSeat;
+
+  factory SpectatorSnapshot.fromJson(Map<String, dynamic> json) =>
+      SpectatorSnapshot(
+        userId: json['userId'] as String,
+        displayName: json['displayName'] as String? ?? '',
+        connected: json['connected'] as bool? ?? false,
+        stack: json['stack'] as int? ?? 0,
+        canSeeHoleCards: json['canSeeHoleCards'] as bool? ?? false,
+        pendingSeat: json['pendingSeat'] as bool? ?? false,
+      );
+}
+
+/// 房主对观战位的设置。
+class SpectatorSettings {
+  const SpectatorSettings({
+    this.feeBigBlinds = 10,
+    this.voiceAllowed = true,
+    this.chatAllowed = true,
+    this.emoteAllowed = true,
+  });
+
+  /// 看牌费，按大盲倍数；0 表示免费。
+  final int feeBigBlinds;
+  final bool voiceAllowed;
+  final bool chatAllowed;
+  final bool emoteAllowed;
+
+  static const int maxFeeBigBlinds = 100;
+
+  factory SpectatorSettings.fromJson(Map<String, dynamic>? json) =>
+      SpectatorSettings(
+        feeBigBlinds: json?['feeBigBlinds'] as int? ?? 10,
+        voiceAllowed: json?['voiceAllowed'] as bool? ?? true,
+        chatAllowed: json?['chatAllowed'] as bool? ?? true,
+        emoteAllowed: json?['emoteAllowed'] as bool? ?? true,
+      );
+
+  Map<String, Object?> toJson() => {
+    'feeBigBlinds': feeBigBlinds,
+    'voiceAllowed': voiceAllowed,
+    'chatAllowed': chatAllowed,
+    'emoteAllowed': emoteAllowed,
+  };
+
+  SpectatorSettings copyWith({
+    int? feeBigBlinds,
+    bool? voiceAllowed,
+    bool? chatAllowed,
+    bool? emoteAllowed,
+  }) => SpectatorSettings(
+    feeBigBlinds: feeBigBlinds ?? this.feeBigBlinds,
+    voiceAllowed: voiceAllowed ?? this.voiceAllowed,
+    chatAllowed: chatAllowed ?? this.chatAllowed,
+    emoteAllowed: emoteAllowed ?? this.emoteAllowed,
+  );
+}
+
+/// 一笔看牌费的收或付。
+class SpectatorFeeShare {
+  const SpectatorFeeShare({
+    required this.userId,
+    required this.displayName,
+    required this.amount,
+  });
+
+  final String userId;
+  final String displayName;
+  final int amount;
+
+  factory SpectatorFeeShare.fromJson(Map<String, dynamic> json) =>
+      SpectatorFeeShare(
+        userId: json['userId'] as String,
+        displayName: json['displayName'] as String? ?? '',
+        amount: json['amount'] as int? ?? 0,
+      );
+}
+
+/// 一手牌的看牌费明细。
+class SpectatorFees {
+  const SpectatorFees({
+    required this.handId,
+    required this.feePerSpectator,
+    required this.payers,
+    required this.recipients,
+  });
+
+  final String handId;
+  final int feePerSpectator;
+  final List<SpectatorFeeShare> payers;
+  final List<SpectatorFeeShare> recipients;
+
+  factory SpectatorFees.fromJson(Map<String, dynamic> json) => SpectatorFees(
+    handId: json['handId'] as String? ?? '',
+    feePerSpectator: json['feePerSpectator'] as int? ?? 0,
+    payers: (json['payers'] as List<dynamic>? ?? const [])
+        .map((value) => SpectatorFeeShare.fromJson(value as Map<String, dynamic>))
+        .toList(growable: false),
+    recipients: (json['recipients'] as List<dynamic>? ?? const [])
+        .map((value) => SpectatorFeeShare.fromJson(value as Map<String, dynamic>))
+        .toList(growable: false),
+  );
 }
 
 class RevealedHand {
@@ -336,6 +471,10 @@ class TableSnapshot {
     required this.autoReadyCancelled,
     this.draining = false,
     this.joinLocked = false,
+    this.spectators = const [],
+    this.spectatorSettings = const SpectatorSettings(),
+    this.spectatorFees,
+    this.spectating = false,
   });
 
   final String roomId;
@@ -370,6 +509,21 @@ class TableSnapshot {
 
   /// 房主已关闭房间入口。
   final bool joinLocked;
+
+  /// 观战位上的成员；[seats] 仍只含上桌玩家。
+  final List<SpectatorSnapshot> spectators;
+
+  /// 房主对观战位的设置。
+  final SpectatorSettings spectatorSettings;
+
+  /// 本手看牌费明细，只在该手（含结算展示期）下发。
+  final SpectatorFees? spectatorFees;
+
+  /// 本人在观战位。
+  final bool spectating;
+
+  /// 上桌人数（不含观战者）。
+  int get seatedCount => seats.length;
   bool get hasSettlement => settlement != null;
 
   factory TableSnapshot.fromJson(Map<String, dynamic> json) => TableSnapshot(
@@ -434,6 +588,18 @@ class TableSnapshot {
     autoReadyCancelled: json['autoReadyCancelled'] as bool? ?? false,
     draining: json['draining'] as bool? ?? false,
     joinLocked: json['joinLocked'] as bool? ?? false,
+    spectators: (json['spectators'] as List<dynamic>? ?? const [])
+        .map(
+          (value) => SpectatorSnapshot.fromJson(value as Map<String, dynamic>),
+        )
+        .toList(growable: false),
+    spectatorSettings: SpectatorSettings.fromJson(
+      json['spectatorSettings'] as Map<String, dynamic>?,
+    ),
+    spectatorFees: json['spectatorFees'] == null
+        ? null
+        : SpectatorFees.fromJson(json['spectatorFees'] as Map<String, dynamic>),
+    spectating: json['spectating'] as bool? ?? false,
   );
 }
 

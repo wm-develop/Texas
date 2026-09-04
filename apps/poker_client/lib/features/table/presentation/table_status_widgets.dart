@@ -17,6 +17,8 @@ class TableRoomHeader extends StatelessWidget {
     required this.onShowResult,
     required this.onToggleChat,
     this.unreadChatCount = 0,
+    this.spectatorCount = 0,
+    this.onShowRoster,
     this.compact = false,
     super.key,
   });
@@ -36,6 +38,14 @@ class TableRoomHeader extends StatelessWidget {
   /// 设置那排小按钮并列，这样既好点，又把右栏的竖向空间让给下注区。
   final VoidCallback? onToggleChat;
   final int unreadChatCount;
+
+  /// 观战位人数。观战者不显示在牌桌上，只在这里计数并从名单弹窗里查看。
+  final int spectatorCount;
+
+  /// 点击人数文字打开房间名单。
+  final VoidCallback? onShowRoster;
+
+  String get rosterText => '$currentPlayers/10（OB: $spectatorCount）';
   final bool compact;
 
   @override
@@ -48,13 +58,7 @@ class TableRoomHeader extends StatelessWidget {
             '好友牌桌',
             style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
           ),
-          Text(
-            '$currentPlayers/10 人',
-            style: const TextStyle(
-              color: Color(0xFFF6D986),
-              fontWeight: FontWeight.w700,
-            ),
-          ),
+          _RosterLabel(text: rosterText, onTap: onShowRoster, fontSize: 14),
           const SizedBox(height: 5),
           Text(
             '房间 ${room.code}',
@@ -121,10 +125,11 @@ class TableRoomHeader extends StatelessWidget {
       children: [
         Row(
           children: [
-            Text(
-              '好友牌桌 · $currentPlayers/10 人',
-              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
+            const Text(
+              '好友牌桌 · ',
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
             ),
+            _RosterLabel(text: rosterText, onTap: onShowRoster, fontSize: 22),
             const SizedBox(width: 8),
             IconButton(
               onPressed: onLeave,
@@ -444,4 +449,37 @@ class TableVoiceControls extends StatelessWidget {
       ],
     );
   }
+}
+
+/// 人数文字：金色、可点击，点开房间名单。
+class _RosterLabel extends StatelessWidget {
+  const _RosterLabel({
+    required this.text,
+    required this.onTap,
+    required this.fontSize,
+  });
+
+  final String text;
+  final VoidCallback? onTap;
+  final double fontSize;
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+    key: const ValueKey('roster-label'),
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(6),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: const Color(0xFFF6D986),
+          fontWeight: FontWeight.w700,
+          fontSize: fontSize,
+          decoration: onTap == null ? null : TextDecoration.underline,
+          decorationColor: const Color(0x80F6D986),
+        ),
+      ),
+    ),
+  );
 }

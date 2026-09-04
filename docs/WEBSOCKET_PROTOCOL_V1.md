@@ -50,7 +50,7 @@
 
 以下客户端消息被视为幂等请求，**必须携带非空 `requestId`**，否则返回 `request_id_required`：
 
-`table.leave`、`table.ready.set`、`table.action.submit`、`table.hole_cards.reveal`、`table.hole_cards.view.request`、`table.hole_cards.view.respond`、`table.seat.change.request`、`table.seat.swap.respond`、`table.runout.choose`、`table.time_extension.use`、`table.rebuy`、`table.voice.state.set`、`table.chat.send`、`table.player.interact`
+`table.leave`、`table.ready.set`、`table.action.submit`、`table.hole_cards.reveal`、`table.hole_cards.view.request`、`table.hole_cards.view.respond`、`table.seat.change.request`、`table.seat.swap.respond`、`table.runout.choose`、`table.time_extension.use`、`table.rebuy`、`table.voice.state.set`、`table.chat.send`、`table.player.interact`、`table.spectate.enter`、`table.seat.take`、`table.spectator.settings.set`
 
 服务端按账号串行处理这些请求，并缓存最近 256 条 `(userID, requestID)` 结果。重复 `requestId` 直接返回第一次的回执，不再次执行。
 
@@ -89,6 +89,9 @@
 | `table.time_extension.use` | 当前行动玩家主动使用一张 30 秒加时卡 | 空对象 |
 | `table.chat.send` | 发送文字、快捷语或表情 | `clientMessageId`, `kind`, `content` |
 | `table.player.interact` | 对同桌其他玩家发送赞赏或嘲讽 | `targetUserId`, `kind`（`praise` 或 `taunt`） |
+| `table.spectate.enter` | 进入观战位。手间立即生效；牌局进行中且本人参与本手时只记录意向，本手结算后生效 | 无 |
+| `table.seat.take` | 观战者上桌。手间立即入座；牌局进行中只记录意向。座位满时立即拒绝，不排队 | 无 |
+| `table.spectator.settings.set` | 房主调整观战位设置，立即生效并随快照广播 | `feeBigBlinds`（0～100）, `voiceAllowed`, `chatAllowed`, `emoteAllowed` |
 | `table.voice.state.set` | 同步当前用户语音加入和开麦状态 | `joined`, `microphoneEnabled` |
 | `system.ping` | 业务心跳 | 可为空 |
 
@@ -172,6 +175,9 @@
 | `table.voice.state.set` | `table.voice.state.set` | `{"joined": bool, "microphoneEnabled": bool}` | `system.error` |
 | `table.chat.send` | `table.chat.accepted` | 已接受的消息对象 | `table.chat.rejected` |
 | `table.player.interact` | `table.player.interact.accepted` | 与广播一致的互动载荷 | `system.error` |
+| `table.spectate.enter` | `table.spectate.entered` | `{"pending": bool}`，`pending` 为真表示等本手结束后生效 | `system.error` |
+| `table.seat.take` | `table.seat.taken` | `{"pending": bool}` | `system.error` |
+| `table.spectator.settings.set` | `table.spectator.settings.set` | 回显设置 | `system.error` |
 | `table.snapshot.request` | `table.replay.completed` 或 `table.snapshot` | 见 3.2 | `system.error` |
 
 注意几处容易误读的地方：
@@ -240,11 +246,14 @@
 | `settlement` | 结算结果，见 6.4 |
 | `maxBuyIn` | 房间单人最大带入 |
 | `joinLocked` | 房主是否已关闭房间入口；为 false 时省略 |
+| `spectators[]` | 观战位上的成员：`userId`、`displayName`、`connected`、`stack`、`canSeeHoleCards`（本手已付费或免费模式）、`pendingSeat`（已申请本手结束后上桌）。观战者**不出现在** `seats[]` 里 |
+| `spectatorSettings` | 房主对观战位的设置：`feeBigBlinds`、`voiceAllowed`、`chatAllowed`、`emoteAllowed` |
+| `spectatorFees` | 本手看牌费明细：`handId`、`feePerSpectator`、`payers[]`、`recipients[]`（各含 `userId`、`displayName`、`amount`）。只在该手（含结算展示期）下发 |
 | `draining` | 为 `true` 表示服务端正在优雅停机：本手打完后不再开新局，`table.ready.set {"ready": true}` 返回 `server_draining`，自动准备倒计时也不会安排；重启完成后该字段消失（见 6.8） |
 
 ### 6.2 `seats[]`
 
-`userId`、`displayName`、`seat`、`stack`、`ready`、`connected`、`participating`、`folded`、`allIn`、`streetBet`（本轮投入）、`totalBet`（本手累计投入）、`position`、`lastAction`、`lastCommitted`、`lastActionTo`、`timeExtensions`（剩余加时卡）。
+`userId`、`displayName`、`seat`、`stack`、`ready`、`connected`、`participating`、`folded`、`allIn`、`streetBet`（本轮投入）、`totalBet`（本手累计投入）、`position`、`lastAction`、`lastCommitted`、`lastActionTo`、`timeExtensions`（剩余加时卡）、`pendingSpectate`（已申请本手结束后进入观战，为 false 时省略）、`holeCards`（**只对本手有效付费的观战者填充**，其他接收者一律省略）。
 
 牌局进行中加入房间的新成员会以“待入座”条目出现在 `seats[]` 中：`participating` 为 `false`，没有位置、投入和底牌；本手结算后转为正式座位，从下一手开始参与。
 
@@ -294,6 +303,8 @@
 | `holeCards` | 仅本人 |
 | `canShowHoleCards` | 仅本人，表示当前是否可主动亮牌 |
 | `autoReadyCancelled` | 仅本人 |
+| `spectating` | 仅本人，表示接收者在观战位 |
+| `seats[].holeCards` | 仅本手有效付费（或免费模式）的观战者；上桌玩家与欠费观战者永远收不到别人的手牌 |
 | `privateReveals[]` | 仅获准的申请者，`category` 固定为 `private_view` |
 | `holeCardViewRequests[]` | 仅被申请的目标玩家 |
 | `seatSwapRequests[]` | 仅被申请的目标玩家 |
@@ -349,6 +360,10 @@
 | `invalid_room_password` | 房间密码错误 |
 | `seat_occupied` | 目标座位已被占用 |
 | `invalid_seat` | 座位号不合法 |
+| `spectators_full` | 观战位已满（最多 10 人） |
+| `spectator_cannot_ready` | 观战者不能准备（取消准备会被静默接受） |
+| `spectator_cannot_move` | 观战者不能换座位 |
+| `invalid_spectator_settings` | 观战位设置越界（看牌费需在 0～100 个大盲之间） |
 
 ### 7.3 牌局规则
 
@@ -401,6 +416,9 @@
 | `invalid_player_interaction` | 互动请求参数不合法（含对自己发送） |
 | `player_not_at_table` | 互动目标不在同一牌桌 |
 | `player_interaction_too_frequent` | 互动间隔小于 1.5 秒 |
+| `spectator_chat_disabled` | 房主已关闭观战者的文字聊天 |
+| `spectator_emote_disabled` | 房主已关闭观战者的赞赏与嘲讽 |
+| `spectator_voice_disabled` | 房主已关闭观战者的麦克风。TRTC 的推流在客户端，服务端只能拒绝状态广播，客户端须配合关麦 |
 
 ### 7.7 已废弃的文档错误码
 

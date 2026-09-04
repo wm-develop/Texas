@@ -23,6 +23,7 @@ import 'package:poker_client/features/table/presentation/table_action_bar.dart';
 import 'package:poker_client/features/table/presentation/table_automation_coordinator.dart';
 import 'package:poker_client/features/table/presentation/room_management_dialog.dart';
 import 'package:poker_client/features/table/presentation/room_result_dialog.dart';
+import 'package:poker_client/features/table/presentation/table_roster_dialog.dart';
 import 'package:poker_client/features/table/presentation/table_canvas.dart';
 import 'package:poker_client/features/table/presentation/table_deal_controller.dart';
 import 'package:poker_client/features/table/presentation/table_voice_controller.dart';
@@ -272,6 +273,8 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                   currentPlayers:
                       _gameSocket.snapshot?.seats.length ??
                       widget.room.members.length,
+                  spectatorCount: _gameSocket.snapshot?.spectators.length ?? 0,
+                  onShowRoster: _openRoster,
                   compact: true,
                   onLeave: _leaveTable,
                   onSettings: () => showAppSettingsDialog(
@@ -332,7 +335,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                   displayName: widget.session.user.displayName,
                   compact: true,
                   onJoinChanged: _voice.setJoined,
-                  onMicrophoneChanged: _voice.setMicrophoneEnabled,
+                  onMicrophoneChanged: _setMicrophoneEnabled,
                   onUserMuted: _voice.setUserMuted,
                 );
                 final infoPanel = DecoratedBox(
@@ -477,6 +480,48 @@ class _TablePrototypePageState extends State<TablePrototypePage>
     ),
   );
 
+  /// 房间名单：上桌玩家与观战者。
+  Future<void> _openRoster() async {
+    final snapshot = _gameSocket.snapshot;
+    if (snapshot == null) return;
+    await TableRosterDialog.show(
+      context,
+      snapshot: snapshot,
+      currentUserId: widget.session.user.userId,
+    );
+  }
+
+  /// 本人是观战者且房主关闭了对应权限。
+  bool _spectatorRestricted(bool Function(SpectatorSettings settings) allowed) {
+    final snapshot = _gameSocket.snapshot;
+    return snapshot != null &&
+        snapshot.spectating &&
+        !allowed(snapshot.spectatorSettings);
+  }
+
+  void _showSpectatorRestriction(String code) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(gameErrorLabel(code))));
+  }
+
+  Future<void> _setMicrophoneEnabled(bool enabled) async {
+    if (enabled && _spectatorRestricted((settings) => settings.voiceAllowed)) {
+      _showSpectatorRestriction('spectator_voice_disabled');
+      return;
+    }
+    await _voice.setMicrophoneEnabled(enabled);
+  }
+
+  /// 房主在观战者开着麦时关闭权限：TRTC 的推流在客户端，服务端只能拒绝
+  /// 状态广播，真正关麦要靠这里配合。
+  void _enforceSpectatorVoiceRule() {
+    if (_voice.microphoneEnabled &&
+        _spectatorRestricted((settings) => settings.voiceAllowed)) {
+      unawaited(_voice.setMicrophoneEnabled(false));
+    }
+  }
+
   /// 房主的房间管理。
   Future<void> _openRoomManagement() => showDialog<void>(
     context: context,
@@ -492,6 +537,9 @@ class _TablePrototypePageState extends State<TablePrototypePage>
         final token = await widget.accessTokenProvider();
         await _api.removeRoomMember(accessToken: token, userId: userId);
       },
+      spectatorSettings:
+          _gameSocket.snapshot?.spectatorSettings ?? const SpectatorSettings(),
+      onUpdateSpectatorSettings: _gameSocket.setSpectatorSettings,
     ),
   );
 
@@ -584,6 +632,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
       }
     }
     _playTableSounds();
+    _enforceSpectatorVoiceRule();
     _offerAutomaticRebuy();
     _offerPendingTableRequest();
     if (error == null) _lastShownGameError = null;
@@ -718,6 +767,10 @@ class _TablePrototypePageState extends State<TablePrototypePage>
 
   Future<void> _handleAvatarTap(TableSeat seat) async {
     if (seat.isEmpty || seat.isCurrentUser || seat.userId.isEmpty) return;
+    if (_spectatorRestricted((settings) => settings.emoteAllowed)) {
+      _showSpectatorRestriction('spectator_emote_disabled');
+      return;
+    }
     final kind = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
@@ -884,9 +937,11 @@ class _TablePrototypePageState extends State<TablePrototypePage>
             lastActionTo: value.lastActionTo,
             isCurrentActor: snapshot?.currentAction?.userId == value.userId,
             revealedCards: revealed?.holeCards ?? const [],
+            // 自己的牌来自快照顶层；别人的牌只有服务端判定为有效付费观战者
+            // 时才会填进座位里，普通玩家永远拿不到。
             holeCards: value.userId == widget.session.user.userId
                 ? snapshot?.holeCards ?? const []
-                : const [],
+                : value.holeCards,
             handCategory: revealed?.category ?? '',
             timeExtensions: value.timeExtensions,
             isParticipating: value.participating,

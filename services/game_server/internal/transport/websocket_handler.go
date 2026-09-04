@@ -263,11 +263,17 @@ func (client *webSocketClient) route(ctx context.Context, message protocol.Envel
 	case protocol.TypeTableRebuy:
 		return client.rebuy(ctx, message)
 	case protocol.TypeTableVoiceStateSet:
-		return client.setVoiceState(message)
+		return client.setVoiceState(ctx, message)
 	case protocol.TypeTableChatSend:
 		return client.sendChat(ctx, message)
 	case protocol.TypeTablePlayerInteract:
 		return client.sendPlayerInteraction(ctx, message)
+	case protocol.TypeTableSpectateEnter:
+		return client.enterSpectate(ctx, message)
+	case protocol.TypeTableSeatTake:
+		return client.takeSeat(ctx, message)
+	case protocol.TypeTableSpectatorSettingsSet:
+		return client.setSpectatorSettings(ctx, message)
 	default:
 		return client.sendError(message, protocol.TypeSystemError, "unsupported_message_type")
 	}
@@ -403,13 +409,21 @@ func (client *webSocketClient) join(ctx context.Context, message protocol.Envelo
 	return client.server.hub.broadcastSnapshots(ctx, client.server.tables, roomID, &snapshot)
 }
 
-func (client *webSocketClient) setVoiceState(message protocol.Envelope) error {
+func (client *webSocketClient) setVoiceState(ctx context.Context, message protocol.Envelope) error {
 	if client.roomID == "" {
 		return client.sendError(message, protocol.TypeSystemError, "table_not_joined")
 	}
 	var payload protocol.VoiceStateSetPayload
 	if !decodePayload(message.Payload, &payload) {
 		return client.sendError(message, protocol.TypeSystemError, "invalid_request")
+	}
+	// 观战者开麦受房主设置约束。TRTC 的实际推流在客户端，服务端只能拒绝
+	// 状态广播并由客户端配合关掉麦克风；这一点在文档里如实说明。
+	if payload.Joined && payload.MicrophoneEnabled && client.server.rooms != nil {
+		roomValue, err := client.server.rooms.GetForMember(ctx, client.user.UserID, client.roomID)
+		if err == nil && isSpectator(roomValue, client.user.UserID) && !roomValue.Spectator.VoiceAllowed {
+			return client.sendError(message, protocol.TypeSystemError, "spectator_voice_disabled")
+		}
 	}
 	wasJoined := client.server.hub.setVoiceState(client.roomID, protocol.VoiceMemberState{
 		UserID: client.user.UserID, DisplayName: client.user.DisplayName,
@@ -597,8 +611,14 @@ func (client *webSocketClient) sendChat(ctx context.Context, message protocol.En
 	if !decodePayload(message.Payload, &payload) {
 		return client.sendError(message, protocol.TypeTableChatRejected, "invalid_request")
 	}
-	if _, err := client.server.rooms.GetForMember(ctx, client.user.UserID, client.roomID); err != nil {
+	roomValue, err := client.server.rooms.GetForMember(ctx, client.user.UserID, client.roomID)
+	if err != nil {
 		return client.sendError(message, protocol.TypeTableChatRejected, errorCode(err))
+	}
+	// 观战者能看到所有人的手牌，房主可以不让他们发言。服务端必须校验，
+	// 客户端隐藏入口只是体验。
+	if isSpectator(roomValue, client.user.UserID) && !roomValue.Spectator.ChatAllowed {
+		return client.sendError(message, protocol.TypeTableChatRejected, "spectator_chat_disabled")
 	}
 	accepted, err := client.server.chat.Send(chat.Sender{
 		UserID: client.user.UserID, DisplayName: client.user.DisplayName,
@@ -629,9 +649,12 @@ func (client *webSocketClient) sendPlayerInteraction(ctx context.Context, messag
 	if err != nil {
 		return client.sendError(message, protocol.TypeSystemError, errorCode(err))
 	}
+	if isSpectator(roomValue, client.user.UserID) && !roomValue.Spectator.EmoteAllowed {
+		return client.sendError(message, protocol.TypeSystemError, "spectator_emote_disabled")
+	}
 	var targetName string
 	for _, member := range roomValue.Members {
-		if member.UserID == payload.TargetUserID {
+		if member.UserID == payload.TargetUserID && !member.Spectating {
 			targetName = member.DisplayName
 			break
 		}
@@ -1065,4 +1088,69 @@ func isIdempotentRequest(messageType protocol.MessageType) bool {
 	default:
 		return false
 	}
+}
+
+// isSpectator 报告该用户是否在观战位。
+func isSpectator(roomValue room.Room, userID string) bool {
+	for _, member := range roomValue.Members {
+		if member.UserID == userID {
+			return member.Spectating
+		}
+	}
+	return false
+}
+
+func (client *webSocketClient) enterSpectate(ctx context.Context, message protocol.Envelope) error {
+	if client.roomID == "" || client.server.tables == nil {
+		return client.sendError(message, protocol.TypeSystemError, "table_not_joined")
+	}
+	snapshot, err := client.server.tables.EnterSpectate(ctx, client.user.UserID, client.roomID)
+	if err != nil {
+		return client.sendError(message, protocol.TypeSystemError, errorCode(err))
+	}
+	if err := client.respond(message, protocol.TypeTableSpectateEntered, protocol.SpectateResultPayload{
+		Pending: !snapshot.Spectating,
+	}); err != nil {
+		return err
+	}
+	return client.server.hub.broadcastSnapshots(ctx, client.server.tables, client.roomID, &snapshot)
+}
+
+func (client *webSocketClient) takeSeat(ctx context.Context, message protocol.Envelope) error {
+	if client.roomID == "" || client.server.tables == nil {
+		return client.sendError(message, protocol.TypeSystemError, "table_not_joined")
+	}
+	snapshot, err := client.server.tables.TakeSeat(ctx, client.user.UserID, client.roomID)
+	if err != nil {
+		return client.sendError(message, protocol.TypeSystemError, errorCode(err))
+	}
+	if err := client.respond(message, protocol.TypeTableSeatTaken, protocol.SpectateResultPayload{
+		Pending: snapshot.Spectating,
+	}); err != nil {
+		return err
+	}
+	return client.server.hub.broadcastSnapshots(ctx, client.server.tables, client.roomID, &snapshot)
+}
+
+func (client *webSocketClient) setSpectatorSettings(ctx context.Context, message protocol.Envelope) error {
+	if client.roomID == "" || client.server.tables == nil {
+		return client.sendError(message, protocol.TypeSystemError, "table_not_joined")
+	}
+	var payload protocol.SpectatorSettingsSetPayload
+	if !decodePayload(message.Payload, &payload) {
+		return client.sendError(message, protocol.TypeSystemError, "invalid_request")
+	}
+	snapshot, err := client.server.tables.UpdateSpectatorSettings(
+		ctx, client.user.UserID, client.roomID, room.SpectatorSettings{
+			FeeBigBlinds: payload.FeeBigBlinds, VoiceAllowed: payload.VoiceAllowed,
+			ChatAllowed: payload.ChatAllowed, EmoteAllowed: payload.EmoteAllowed,
+		},
+	)
+	if err != nil {
+		return client.sendError(message, protocol.TypeSystemError, errorCode(err))
+	}
+	if err := client.respond(message, protocol.TypeTableSpectatorSettingsSet, payload); err != nil {
+		return err
+	}
+	return client.server.hub.broadcastSnapshots(ctx, client.server.tables, client.roomID, &snapshot)
 }

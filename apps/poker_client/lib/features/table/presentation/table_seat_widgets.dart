@@ -118,7 +118,9 @@ class TableSeatCard extends StatelessWidget {
                     seat: seat,
                     winnerAmount: winnerAmount,
                   )
-                else if (seat.isCurrentUser)
+                // 本人的座位，或观战者付费后拿到手牌的座位：都按正面展示。
+                // 普通玩家的快照里别人的座位没有 holeCards，不会进这个分支。
+                else if (seat.isCurrentUser || seat.holeCards.isNotEmpty)
                   TableCurrentSeatSummary(
                     seat: seat,
                     showReadyStatus: showReadyStatus,
@@ -328,7 +330,10 @@ class TableCurrentSeatSummary extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final canExtend =
-        seat.isCurrentActor && seat.timeExtensions > 0 && !showReadyStatus;
+        seat.isCurrentUser &&
+        seat.isCurrentActor &&
+        seat.timeExtensions > 0 &&
+        !showReadyStatus;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -340,7 +345,7 @@ class TableCurrentSeatSummary extends StatelessWidget {
               // 不常驻在玩家框里——那里还要承载筹码、位置等信息。
               for (var index = 0; index < deal.dealtCards; index++) ...[
                 if (index > 0) const SizedBox(width: 3),
-                if (seat.isCurrentUser && index < seat.holeCards.length)
+                if (index < seat.holeCards.length)
                   TableMiniFlipCard(
                     progress: deal.flipProgress,
                     label:
@@ -511,6 +516,20 @@ class TablePlayerInteractionBurst extends StatelessWidget {
 
   final TablePlayerInteraction interaction;
 
+  /// 气泡起点相对玩家框中心的纵向偏移：从框的底部边缘附近出发。
+  static const double startOffsetY = 40;
+
+  /// 整段上飘的距离。起点 +40、终点 −30，全程落在 116 高的玩家框竖向范围内
+  /// （±58），因此顶排座位的气泡也不会飘出画布被裁掉——此前从框中心上方
+  /// 48 像素起飘再向上 48，顶排一出来就在画布外面。
+  static const double travelY = 70;
+
+  /// 气泡在 [progress]（0～1）时刻的位移。抽成纯函数以便测试轨迹本身。
+  static Offset offsetFor(double progress, {required bool praise}) {
+    final shake = praise ? 0.0 : math.sin(progress * math.pi * 10) * 8;
+    return Offset(shake, startOffsetY - progress * travelY);
+  }
+
   @override
   Widget build(BuildContext context) {
     final praise = interaction.kind == 'praise';
@@ -521,11 +540,10 @@ class TablePlayerInteractionBurst extends StatelessWidget {
       curve: Curves.easeOut,
       builder: (context, progress, child) {
         final opacity = math.sin(math.pi * progress).clamp(0.0, 1.0);
-        final shake = praise ? 0.0 : math.sin(progress * math.pi * 10) * 8;
         return Opacity(
           opacity: opacity,
           child: Transform.translate(
-            offset: Offset(shake, -48 - progress * 48),
+            offset: offsetFor(progress, praise: praise),
             child: Transform.scale(
               scale: 0.72 + math.min(progress * 1.4, 0.38),
               child: child,

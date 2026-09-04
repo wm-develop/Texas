@@ -6,8 +6,8 @@
     // versionName 与 pubspec.yaml 的版本号保持一致。
     // versionCode 按 major*1000000 + minor*1000 + patch 编码，
     // 与 versionName 一一对应（0.2.1 -> 2001），且随版本单调递增。
-    "versionCode": 3000,
-    "versionName": "0.3.0",
+    "versionCode": 4000,
+    "versionName": "0.4.0",
     "icon": "$media:app_icon",
     "label": "$string:app_name"
   }

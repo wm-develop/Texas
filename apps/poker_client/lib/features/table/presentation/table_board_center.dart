@@ -253,6 +253,13 @@ class TableBoardCenterState extends State<TableBoardCenter> {
                         fontWeight: FontWeight.w700,
                       ),
                     ),
+                  // 看牌费让玩家筹码凭空多了一截，不写清楚会让人以为算错了
+                  if (snapshot.spectatorFees != null &&
+                      spectatorFeeLabel(snapshot.spectatorFees!).isNotEmpty)
+                    Text(
+                      spectatorFeeLabel(snapshot.spectatorFees!),
+                      style: const TextStyle(color: Colors.white70, fontSize: 11),
+                    ),
                   const SizedBox(height: 5),
                   Text(
                     phaseLabel(snapshot.phase),

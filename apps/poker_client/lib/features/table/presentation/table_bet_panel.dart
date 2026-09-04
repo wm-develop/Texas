@@ -146,6 +146,40 @@ class _TableBetPanelState extends State<TableBetPanel> {
     if (entered != null && mounted) _setAmount(entered);
   }
 
+  /// 能过牌时弃牌几乎总是误触——白白放弃一手本可以免费看下去的牌。此时
+  /// 先弹窗确认；不能过牌（要跟注）时弃牌是正常决策，直接提交。
+  Future<void> _fold(BuildContext context, {required bool confirm}) async {
+    if (!confirm) {
+      widget.client.submitAction('fold');
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        key: const ValueKey('fold-confirm-dialog'),
+        title: const Text('确定要弃牌吗？'),
+        content: const Text('现在可以直接过牌，不用投入任何筹码就能看到下一张牌。'),
+        actions: [
+          TextButton(
+            key: const ValueKey('fold-confirm-cancel'),
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('先不弃'),
+          ),
+          FilledButton(
+            key: const ValueKey('fold-confirm-accept'),
+            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('弃牌'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    // 对话框开着的时候可能已经超时轮到别人，别把弃牌打到别人的回合上
+    if (widget.client.snapshot?.currentAction?.userId != widget.userId) return;
+    widget.client.submitAction('fold');
+  }
+
   @override
   Widget build(BuildContext context) {
     _syncSignature();
@@ -162,7 +196,7 @@ class _TableBetPanelState extends State<TableBetPanel> {
       height: buttonHeight,
       tone: _ButtonTone.danger,
       onPressed: options.canFold && !busy
-          ? () => widget.client.submitAction('fold')
+          ? () => _fold(context, confirm: options.canCheck)
           : null,
     );
     final passive = options.canCheck || options.canCall

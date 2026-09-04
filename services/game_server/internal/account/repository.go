@@ -46,15 +46,15 @@ type Repository interface {
 }
 
 type MemoryRepository struct {
-	mu                  sync.RWMutex
-	usersByID           map[string]User
-	userIDByUsername    map[string]string
-	sessionsByID        map[string]Session
-	sessionIDByAccess   map[string]string
-	sessionIDByRefresh  map[string]string
-	registrationEnabled bool
+	mu                   sync.RWMutex
+	usersByID            map[string]User
+	userIDByUsername     map[string]string
+	sessionsByID         map[string]Session
+	sessionIDByAccess    map[string]string
+	sessionIDByRefresh   map[string]string
+	registrationEnabled  bool
 	minimumClientVersion int
-	auditEvents         []AuditEvent
+	auditEvents          []AuditEvent
 }
 
 func NewMemoryRepository() *MemoryRepository {

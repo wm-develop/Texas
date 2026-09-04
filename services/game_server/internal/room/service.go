@@ -111,6 +111,7 @@ func (service *Service) CreateConfigured(ctx context.Context, owner Participant,
 			RoomID: roomID, Code: code, OwnerUserID: owner.UserID, Preset: options.Preset,
 			Rules: rules, MaxPlayers: options.MaxPlayers, Revision: 1, CreatedAt: now,
 			PasswordHash: passwordHash,
+			Spectator:    DefaultSpectatorSettings(),
 			Members:      []Member{{UserID: owner.UserID, DisplayName: owner.DisplayName, Seat: 1, Stack: options.BuyIn, JoinedAt: now}},
 		}
 		if atomic, ok := service.repository.(BuyInRepository); ok {
@@ -166,7 +167,7 @@ func (service *Service) JoinWithBuyIn(ctx context.Context, participant Participa
 	if value.PasswordHash != "" && !service.passwords.Verify("room:"+options.Password, value.PasswordHash) {
 		return Room{}, Error{Code: "invalid_room_password"}
 	}
-	if len(value.Members) >= value.MaxPlayers {
+	if seatedCount(value.Members) >= value.MaxPlayers {
 		return Room{}, Error{Code: "room_full"}
 	}
 	if options.BuyIn <= 0 || options.BuyIn > value.Rules.MaxBuyIn {
@@ -335,6 +336,7 @@ func (service *Service) Create(
 			Revision:     1,
 			CreatedAt:    now,
 			PasswordHash: passwordHash,
+			Spectator:    DefaultSpectatorSettings(),
 			Members: []Member{{
 				UserID: owner.UserID, DisplayName: owner.DisplayName, Seat: 1, Stack: rules.StartingChips, JoinedAt: now,
 			}},
@@ -373,7 +375,7 @@ func (service *Service) Join(
 	if value.PasswordHash != "" && !service.passwords.Verify("room:"+password, value.PasswordHash) {
 		return Room{}, Error{Code: "invalid_room_password"}
 	}
-	if len(value.Members) >= value.MaxPlayers {
+	if seatedCount(value.Members) >= value.MaxPlayers {
 		return Room{}, Error{Code: "room_full"}
 	}
 	seat := firstAvailableSeat(value.Members, value.MaxPlayers)
@@ -403,7 +405,7 @@ func (service *Service) Preview(ctx context.Context, code string) (Preview, erro
 	}
 	return Preview{
 		Code: value.Code, Rules: value.Rules, MaxPlayers: value.MaxPlayers,
-		CurrentPlayers: len(value.Members), PasswordRequired: value.PasswordHash != "",
+		CurrentPlayers: seatedCount(value.Members), PasswordRequired: value.PasswordHash != "",
 	}, nil
 }
 
@@ -429,6 +431,12 @@ func (service *Service) SetReady(ctx context.Context, userID string, ready bool)
 	}
 	for index := range value.Members {
 		if value.Members[index].UserID == userID {
+			if value.Members[index].Spectating {
+				if ready {
+					return Room{}, Error{Code: "spectator_cannot_ready"}
+				}
+				return publicRoom(value), nil
+			}
 			if ready && value.Members[index].Stack <= 0 {
 				return Room{}, Error{Code: "rebuy_required"}
 			}
@@ -454,6 +462,11 @@ func (service *Service) MoveSeat(ctx context.Context, userID string, targetSeat 
 	}
 	if targetSeat <= 0 || targetSeat > value.MaxPlayers {
 		return Room{}, Error{Code: "invalid_seat"}
+	}
+	for _, member := range value.Members {
+		if member.UserID == userID && member.Spectating {
+			return Room{}, Error{Code: "spectator_cannot_move"}
+		}
 	}
 	memberIndex := -1
 	for index := range value.Members {
@@ -675,4 +688,107 @@ func (service *Service) RemoveMember(ctx context.Context, ownerUserID, targetUse
 		}
 	}
 	return Error{Code: "member_not_found"}
+}
+
+// EnterSpectate 把一名上桌成员移到观战位：释放座位、清除准备态、保留筹码。
+//
+// 只做房间成员关系的变更；「牌局进行中能否离桌」由 tablemanager 判断，
+// 与玩家自己离桌走同一条路径。
+func (service *Service) EnterSpectate(ctx context.Context, userID string) (Room, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	value, err := service.repository.ByUser(ctx, userID)
+	if err != nil {
+		return Room{}, Error{Code: "room_not_found"}
+	}
+	for index := range value.Members {
+		if value.Members[index].UserID != userID {
+			continue
+		}
+		if value.Members[index].Spectating {
+			return publicRoom(value), nil
+		}
+		if len(value.SpectatorMembers()) >= MaximumSpectators {
+			return Room{}, Error{Code: "spectators_full"}
+		}
+		value.Members[index].Spectating = true
+		value.Members[index].Seat = 0
+		value.Members[index].Ready = false
+		sortMembers(value.Members)
+		value.Revision++
+		if err := service.repository.Save(ctx, value); err != nil {
+			return Room{}, err
+		}
+		return publicRoom(value), nil
+	}
+	return Room{}, Error{Code: "permission_denied"}
+}
+
+// TakeSeat 让观战者上桌，坐到第一个空位。满员时拒绝。
+func (service *Service) TakeSeat(ctx context.Context, userID string) (Room, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	value, err := service.repository.ByUser(ctx, userID)
+	if err != nil {
+		return Room{}, Error{Code: "room_not_found"}
+	}
+	for index := range value.Members {
+		if value.Members[index].UserID != userID {
+			continue
+		}
+		if !value.Members[index].Spectating {
+			return publicRoom(value), nil
+		}
+		if seatedCount(value.Members) >= value.MaxPlayers {
+			return Room{}, Error{Code: "room_full"}
+		}
+		seat := firstAvailableSeat(value.Members, value.MaxPlayers)
+		if seat == 0 {
+			return Room{}, Error{Code: "room_full"}
+		}
+		value.Members[index].Spectating = false
+		value.Members[index].Seat = seat
+		value.Members[index].Ready = false
+		sortMembers(value.Members)
+		value.Revision++
+		if err := service.repository.Save(ctx, value); err != nil {
+			return Room{}, err
+		}
+		return publicRoom(value), nil
+	}
+	return Room{}, Error{Code: "permission_denied"}
+}
+
+// UpdateSpectatorSettings 由房主调整观战位的看牌费与权限，立即生效。
+func (service *Service) UpdateSpectatorSettings(
+	ctx context.Context,
+	ownerUserID string,
+	settings SpectatorSettings,
+) (Room, error) {
+	if !settings.Valid() {
+		return Room{}, Error{Code: "invalid_spectator_settings"}
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	value, err := service.repository.ByUser(ctx, ownerUserID)
+	if err != nil {
+		return Room{}, Error{Code: "room_not_found"}
+	}
+	if value.OwnerUserID != ownerUserID {
+		return Room{}, Error{Code: "owner_required"}
+	}
+	if value.Spectator == settings {
+		return publicRoom(value), nil
+	}
+	value.Spectator = settings
+	value.Revision++
+	if err := service.repository.Save(ctx, value); err != nil {
+		return Room{}, err
+	}
+	return publicRoom(value), nil
+}
+
+// sortMembers 按座位排序；观战者（Seat 0）排在最前，与数据库读取顺序一致。
+func sortMembers(members []Member) {
+	sort.Slice(members, func(left, right int) bool { return members[left].Seat < members[right].Seat })
 }

@@ -284,6 +284,28 @@ func (table *Table) AddChips(playerID string, amount int64) error {
 	return nil
 }
 
+// CreditChips 在手间给玩家记入牌桌内部转入的筹码（当前用于观战看牌费）。
+//
+// 与 AddChips 的区别：不清除准备态。看牌费在全员准备完成、发牌之前收取，
+// 若像补码那样把玩家打回未准备，这一手就开不起来。也正因为发生在
+// StartHand 之前，转入的筹码会进入 handStartStacks 基线，结算时的守恒校验
+// （Σ(结束筹码 − 起始筹码) == 0）仍然成立；若在发牌后再加就会破坏这条校验。
+func (table *Table) CreditChips(playerID string, amount int64) error {
+	if table.phase != PhaseWaiting && table.phase != PhaseWaitingNextHand {
+		return RuleError{Code: "hand_in_progress"}
+	}
+	player := table.playerByID(playerID)
+	if player == nil {
+		return RuleError{Code: "not_seated"}
+	}
+	if amount <= 0 || player.Stack > maximumTableChips-amount {
+		return RuleError{Code: "invalid_chip_amount"}
+	}
+	player.Stack += amount
+	table.revision++
+	return nil
+}
+
 const maximumTableChips int64 = 9_000_000_000_000_000
 
 func (table *Table) StartHand(random IntnSource) error {

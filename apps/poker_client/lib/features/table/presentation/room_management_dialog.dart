@@ -13,6 +13,8 @@ class RoomManagementDialog extends StatefulWidget {
     required this.joinLocked,
     required this.onSetJoinLocked,
     required this.onRemoveMember,
+    required this.spectatorSettings,
+    required this.onUpdateSpectatorSettings,
     super.key,
   });
 
@@ -22,13 +24,47 @@ class RoomManagementDialog extends StatefulWidget {
   final Future<bool> Function(bool locked) onSetJoinLocked;
   final Future<void> Function(String userId) onRemoveMember;
 
+  /// 观战位当前设置；改动通过 [onUpdateSpectatorSettings] 发给服务端，
+  /// 服务端立即生效并随快照广播。
+  final SpectatorSettings spectatorSettings;
+  final void Function(SpectatorSettings settings) onUpdateSpectatorSettings;
+
   @override
   State<RoomManagementDialog> createState() => _RoomManagementDialogState();
 }
 
 class _RoomManagementDialogState extends State<RoomManagementDialog> {
   late bool _locked = widget.joinLocked;
+  late SpectatorSettings _spectator = widget.spectatorSettings;
+  late final TextEditingController _fee = TextEditingController(
+    text: '${widget.spectatorSettings.feeBigBlinds}',
+  );
+  String? _feeError;
   bool _busy = false;
+
+  @override
+  void dispose() {
+    _fee.dispose();
+    super.dispose();
+  }
+
+  void _updateSpectator(SpectatorSettings next) {
+    setState(() => _spectator = next);
+    widget.onUpdateSpectatorSettings(next);
+  }
+
+  /// 看牌费只在提交时生效，避免每敲一个数字就发一次请求。
+  void _saveFee() {
+    final value = int.tryParse(_fee.text.trim());
+    if (value == null || value < 0 || value > SpectatorSettings.maxFeeBigBlinds) {
+      setState(() => _feeError = '需在 0～${SpectatorSettings.maxFeeBigBlinds} 之间');
+      return;
+    }
+    setState(() => _feeError = null);
+    if (value != _spectator.feeBigBlinds) {
+      _updateSpectator(_spectator.copyWith(feeBigBlinds: value));
+    }
+  }
   String? _error;
   final Set<String> _removed = {};
 
@@ -99,6 +135,72 @@ class _RoomManagementDialogState extends State<RoomManagementDialog> {
                         final locked = await widget.onSetJoinLocked(!allow);
                         if (mounted) setState(() => _locked = locked);
                       }),
+              ),
+              const Divider(height: 20),
+              const Text('观战位', style: TextStyle(fontWeight: FontWeight.w700)),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      '看牌费（大盲倍数，0 为免费）',
+                      style: TextStyle(fontSize: 13),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 84,
+                    child: TextField(
+                      key: const ValueKey('spectator-fee-field'),
+                      controller: _fee,
+                      keyboardType: TextInputType.number,
+                      textAlign: TextAlign.center,
+                      enabled: !_busy,
+                      onSubmitted: (_) => _saveFee(),
+                      onTapOutside: (_) => _saveFee(),
+                      decoration: InputDecoration(
+                        isDense: true,
+                        border: const OutlineInputBorder(),
+                        suffixText: 'BB',
+                        errorText: _feeError,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              // 观战者能看到所有人的手牌，念底牌给同伴听是真实风险；这三个开关
+              // 让房主决定放开到什么程度。服务端同样校验，这里只是入口。
+              SwitchListTile(
+                key: const ValueKey('spectator-voice-switch'),
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                title: const Text('允许观战者开麦'),
+                value: _spectator.voiceAllowed,
+                onChanged: _busy
+                    ? null
+                    : (value) =>
+                          _updateSpectator(_spectator.copyWith(voiceAllowed: value)),
+              ),
+              SwitchListTile(
+                key: const ValueKey('spectator-chat-switch'),
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                title: const Text('允许观战者发文字'),
+                value: _spectator.chatAllowed,
+                onChanged: _busy
+                    ? null
+                    : (value) =>
+                          _updateSpectator(_spectator.copyWith(chatAllowed: value)),
+              ),
+              SwitchListTile(
+                key: const ValueKey('spectator-emote-switch'),
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                title: const Text('允许观战者发赞赏/嘲讽'),
+                value: _spectator.emoteAllowed,
+                onChanged: _busy
+                    ? null
+                    : (value) =>
+                          _updateSpectator(_spectator.copyWith(emoteAllowed: value)),
               ),
               const Divider(height: 20),
               Row(

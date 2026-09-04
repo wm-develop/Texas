@@ -47,7 +47,16 @@ class TableActionBar extends StatelessWidget {
     final runoutChoice = snapshot?.runoutChoice;
 
     final Widget content;
-    if (waiting) {
+    if (snapshot?.spectating ?? false) {
+      // 观战者没有准备态，也不会轮到行动；面板只放「上桌」与「补码」。
+      content = _SpectatorActions(
+        client: client,
+        userId: userId,
+        snapshot: snapshot!,
+        onRebuy: onRebuy,
+        vertical: vertical,
+      );
+    } else if (waiting) {
       content = _WaitingActions(
         client: client,
         snapshot: snapshot,
@@ -170,6 +179,19 @@ class _WaitingActions extends StatelessWidget {
         icon: const Icon(Icons.add_circle_outline),
         label: const Text('补码'),
       ),
+      // 进入观战：不占座位、不参与牌局，付看牌费后能看到所有人的手牌。
+      // 观战位最多 10 人。
+      OutlinedButton.icon(
+        key: const ValueKey('enter-spectate-button'),
+        onPressed:
+            client.status == GameSocketStatus.joined &&
+                ownSeat != null &&
+                (snapshot?.spectators.length ?? 0) < 10
+            ? client.enterSpectate
+            : null,
+        icon: const Icon(Icons.visibility_outlined, size: 17),
+        label: const Text('进入观战'),
+      ),
       if (snapshot?.canShowHoleCards ?? false)
         FilledButton.tonalIcon(
           onPressed: client.showHoleCards,
@@ -261,4 +283,81 @@ Widget _stack(List<Widget> children, bool vertical) {
       ],
     ],
   );
+}
+
+/// 观战者的操作面板：上桌、补码，以及本手能否看牌的状态。
+///
+/// 看牌费不够时按房主决定（D4）明确提示并突出补码按钮，而不是让人纳闷
+/// 为什么看不到牌。
+class _SpectatorActions extends StatelessWidget {
+  const _SpectatorActions({
+    required this.client,
+    required this.userId,
+    required this.snapshot,
+    required this.onRebuy,
+    required this.vertical,
+  });
+
+  final GameSocketClient client;
+  final String userId;
+  final TableSnapshot snapshot;
+  final VoidCallback onRebuy;
+  final bool vertical;
+
+  @override
+  Widget build(BuildContext context) {
+    final me = snapshot.spectators
+        .where((spectator) => spectator.userId == userId)
+        .firstOrNull;
+    final feeBigBlinds = snapshot.spectatorSettings.feeBigBlinds;
+    final joined = client.status == GameSocketStatus.joined;
+    final canSee = me?.canSeeHoleCards ?? false;
+    final needsChips = !canSee && feeBigBlinds > 0;
+    final status = needsChips
+        ? '筹码不足以支付看牌费（$feeBigBlinds 个大盲/手），补码后可查看所有玩家手牌'
+        : canSee
+        ? '观战中 · 本手可查看所有玩家手牌'
+        : '观战中';
+    final rebuy = needsChips
+        // 突出补码：这是恢复看牌的唯一途径
+        ? FilledButton.icon(
+            key: const ValueKey('spectator-rebuy-button'),
+            onPressed: joined && (me?.stack ?? 0) < snapshot.maxBuyIn
+                ? onRebuy
+                : null,
+            icon: const Icon(Icons.add_circle_outline),
+            label: const Text('补码'),
+          )
+        : OutlinedButton.icon(
+            key: const ValueKey('spectator-rebuy-button'),
+            onPressed: joined && (me?.stack ?? 0) < snapshot.maxBuyIn
+                ? onRebuy
+                : null,
+            icon: const Icon(Icons.add_circle_outline),
+            label: const Text('补码'),
+          );
+    final children = <Widget>[
+      Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Text(
+          status,
+          key: const ValueKey('spectator-status'),
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: needsChips ? Colors.orangeAccent : Colors.white70,
+            fontSize: 12,
+          ),
+        ),
+      ),
+      FilledButton.icon(
+        key: const ValueKey('take-seat-button'),
+        // 手间立即入座；牌局进行中只记录意向。座位满时服务端拒绝并提示。
+        onPressed: joined && me?.pendingSeat != true ? client.takeSeat : null,
+        icon: const Icon(Icons.chair_alt_outlined),
+        label: Text(me?.pendingSeat == true ? '本手结束后上桌' : '上桌'),
+      ),
+      rebuy,
+    ];
+    return _stack(children, vertical);
+  }
 }

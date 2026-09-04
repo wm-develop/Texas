@@ -227,12 +227,16 @@ func (repository *PostgresRepository) Save(ctx context.Context, value Room) erro
 		ctx,
 		`UPDATE rooms SET owner_user_id = $2, preset = $3, password_hash = $4,
 		 max_players = $5, small_blind = $6, big_blind = $7, max_buy_in = $8,
-		 action_seconds = $9, join_locked = $10, revision = $11
+		 action_seconds = $9, join_locked = $10, revision = $11,
+		 spectator_fee_big_blinds = $12, spectator_voice_allowed = $13,
+		 spectator_chat_allowed = $14, spectator_emote_allowed = $15
 		 WHERE room_id = $1 AND status <> 'closed'`,
 		value.RoomID, value.OwnerUserID, value.Preset, value.PasswordHash,
 		value.MaxPlayers, value.Rules.SmallBlind, value.Rules.BigBlind,
 		value.Rules.MaxBuyIn, value.Rules.ActionSeconds, value.JoinLocked,
 		value.Revision,
+		value.Spectator.FeeBigBlinds, value.Spectator.VoiceAllowed,
+		value.Spectator.ChatAllowed, value.Spectator.EmoteAllowed,
 	)
 	if err != nil {
 		_ = transaction.Rollback()
@@ -311,14 +315,32 @@ type roomQueryer interface {
 // 走的是内存仓储，集成测试又需要 TEST_DATABASE_URL 才会运行。
 const roomSelectColumns = `r.room_id, trim(r.room_code), r.owner_user_id, r.preset,
 		 r.password_hash, r.max_players, r.small_blind, r.big_blind,
-		 r.max_buy_in, r.action_seconds, r.join_locked, r.revision, r.created_at`
+		 r.max_buy_in, r.action_seconds, r.join_locked,
+		 r.spectator_fee_big_blinds, r.spectator_voice_allowed,
+		 r.spectator_chat_allowed, r.spectator_emote_allowed,
+		 r.revision, r.created_at`
+
+// memberSelectColumns 与 memberScanTargets 同样一一对应，由
+// TestMemberSelectColumnsMatchScanTargets 校验列数。
+const memberSelectColumns = `m.user_id, u.display_name, m.seat_number, m.ready,
+		 m.table_chips, m.joined_at, m.spectating`
+
+func memberScanTargets(member *Member) []any {
+	return []any{
+		&member.UserID, &member.DisplayName, &member.Seat,
+		&member.Ready, &member.Stack, &member.JoinedAt, &member.Spectating,
+	}
+}
 
 func roomScanTargets(value *Room, revision *int64) []any {
 	return []any{
 		&value.RoomID, &value.Code, &value.OwnerUserID, &value.Preset,
 		&value.PasswordHash, &value.MaxPlayers, &value.Rules.SmallBlind,
 		&value.Rules.BigBlind, &value.Rules.MaxBuyIn, &value.Rules.ActionSeconds,
-		&value.JoinLocked, revision, &value.CreatedAt,
+		&value.JoinLocked,
+		&value.Spectator.FeeBigBlinds, &value.Spectator.VoiceAllowed,
+		&value.Spectator.ChatAllowed, &value.Spectator.EmoteAllowed,
+		revision, &value.CreatedAt,
 	}
 }
 
@@ -344,8 +366,7 @@ func loadRoom(ctx context.Context, queryer roomQueryer, predicate string, argume
 	value.Rules.StartingChips = value.Rules.MaxBuyIn
 	rows, err := queryer.QueryContext(
 		ctx,
-		`SELECT m.user_id, u.display_name, m.seat_number, m.ready,
-		 m.table_chips, m.joined_at
+		`SELECT `+memberSelectColumns+`
 		 FROM room_members m JOIN users u ON u.user_id = m.user_id
 		 WHERE m.room_id = $1 ORDER BY m.seat_number`,
 		value.RoomID,
@@ -356,10 +377,7 @@ func loadRoom(ctx context.Context, queryer roomQueryer, predicate string, argume
 	defer rows.Close()
 	for rows.Next() {
 		var member Member
-		if err := rows.Scan(
-			&member.UserID, &member.DisplayName, &member.Seat,
-			&member.Ready, &member.Stack, &member.JoinedAt,
-		); err != nil {
+		if err := rows.Scan(memberScanTargets(&member)...); err != nil {
 			return Room{}, fmt.Errorf("scan room member: %w", err)
 		}
 		value.Members = append(value.Members, member)
@@ -375,12 +393,18 @@ func insertRoom(ctx context.Context, transaction *sql.Tx, value Room) error {
 		ctx,
 		`INSERT INTO rooms (
 		 room_id, room_code, owner_user_id, preset, password_hash, max_players,
-		 small_blind, big_blind, max_buy_in, action_seconds, join_locked, revision, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		 small_blind, big_blind, max_buy_in, action_seconds, join_locked,
+		 spectator_fee_big_blinds, spectator_voice_allowed,
+		 spectator_chat_allowed, spectator_emote_allowed,
+		 revision, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
 		value.RoomID, value.Code, value.OwnerUserID, value.Preset,
 		value.PasswordHash, value.MaxPlayers, value.Rules.SmallBlind,
 		value.Rules.BigBlind, value.Rules.MaxBuyIn, value.Rules.ActionSeconds,
-		value.JoinLocked, value.Revision, value.CreatedAt,
+		value.JoinLocked,
+		value.Spectator.FeeBigBlinds, value.Spectator.VoiceAllowed,
+		value.Spectator.ChatAllowed, value.Spectator.EmoteAllowed,
+		value.Revision, value.CreatedAt,
 	)
 	if err != nil {
 		return postgresRoomError("insert room", err)
@@ -395,9 +419,10 @@ func insertMembers(ctx context.Context, transaction *sql.Tx, roomID string, memb
 		_, err := transaction.ExecContext(
 			ctx,
 			`INSERT INTO room_members (
-			 room_id, user_id, seat_number, table_chips, ready, joined_at
-			) VALUES ($1, $2, $3, $4, $5, $6)`,
+			 room_id, user_id, seat_number, table_chips, ready, joined_at, spectating
+			) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 			roomID, member.UserID, member.Seat, member.Stack, member.Ready, member.JoinedAt,
+			member.Spectating,
 		)
 		if err != nil {
 			return postgresRoomError("insert room member", err)
