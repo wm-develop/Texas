@@ -18,6 +18,7 @@ class TableRoomHeader extends StatelessWidget {
     required this.onToggleChat,
     this.unreadChatCount = 0,
     this.spectatorCount = 0,
+    this.maxPlayers = 10,
     this.onShowRoster,
     this.compact = false,
     super.key,
@@ -45,7 +46,10 @@ class TableRoomHeader extends StatelessWidget {
   /// 点击人数文字打开房间名单。
   final VoidCallback? onShowRoster;
 
-  String get rosterText => '$currentPlayers/10（OB: $spectatorCount）';
+  /// 分母是房间的最大人数：开 6 人房时写死 10 会让人以为还有空位。
+  final int maxPlayers;
+
+  String get rosterText => '$currentPlayers/$maxPlayers（OB: $spectatorCount）';
   final bool compact;
 
   @override

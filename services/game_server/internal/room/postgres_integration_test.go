@@ -107,6 +107,82 @@ func TestPostgresPhase3PersistenceFlow(t *testing.T) {
 	if err != nil || len(joined.Members) != 2 {
 		t.Fatalf("JoinWithBuyIn room=%#v err=%v", joined, err)
 	}
+	// 观战位的持久化：seat_number = 0 必须能写入并读回，两名观战者共用 0 不能撞上
+	// 座位唯一索引，观战设置四列要完整往返。内存仓储测不出这些。
+	spectating, err := rooms.EnterSpectate(ctx, "guest")
+	if err != nil {
+		t.Fatalf("EnterSpectate(guest): %v", err)
+	}
+	if _, err := rooms.EnterSpectate(ctx, "owner"); err != nil {
+		t.Fatalf("EnterSpectate(owner) alongside another spectator: %v", err)
+	}
+	reloaded, err := rooms.Current(ctx, "guest")
+	if err != nil {
+		t.Fatalf("Current after spectating: %v", err)
+	}
+	for _, member := range reloaded.Members {
+		if !member.Spectating || member.Seat != 0 {
+			t.Fatalf("spectating member must reload with seat 0: %#v", member)
+		}
+		if member.UserID == "guest" && member.Stack != 500 {
+			t.Fatalf("spectator keeps their table chips: %#v", member)
+		}
+	}
+	if reloaded.Revision <= spectating.Revision-1 {
+		t.Fatalf("revision should advance: %#v", reloaded)
+	}
+	wantSettings := room.SpectatorSettings{FeeBigBlinds: 0, VoiceAllowed: false, ChatAllowed: true, EmoteAllowed: false}
+	if _, err := rooms.UpdateSpectatorSettings(ctx, "owner", wantSettings); err != nil {
+		t.Fatalf("UpdateSpectatorSettings: %v", err)
+	}
+	if reloaded, err = rooms.Current(ctx, "owner"); err != nil || reloaded.Spectator != wantSettings {
+		t.Fatalf("spectator settings did not round-trip: %#v err=%v", reloaded.Spectator, err)
+	}
+	// 观战者不占座位：两人都在观战位时，第三人必须能带入并坐下——此前的
+	// 满员计数 count(*) 把观战者也算了进去，2 人房两人观战就把新人挡在门外。
+	if err := accounts.CreateUser(ctx, account.User{
+		UserID: "third", Username: "third", DisplayName: "玩家third",
+		PasswordHash: "hash", CreatedAt: now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatalf("CreateUser(third): %v", err)
+	}
+	if _, err := chips.TopUp(ctx, "third", "topup:third", 5_000); err != nil {
+		t.Fatalf("TopUp(third): %v", err)
+	}
+	withThird, err := rooms.JoinWithBuyIn(ctx, room.Participant{
+		UserID: "third", DisplayName: "玩家third",
+	}, room.JoinOptions{Code: created.Code, BuyIn: 500, RequestID: "join-third"})
+	if err != nil {
+		t.Fatalf("JoinWithBuyIn while both members spectate must succeed: %v", err)
+	}
+	if len(withThird.SeatedMembers()) != 1 || len(withThird.SpectatorMembers()) != 2 {
+		t.Fatalf("one seated, two spectating: %#v", withThird.Members)
+	}
+	// 现在只剩一个座位：先让 owner 坐回去，guest 再上桌就该被拒
+	if _, err := rooms.TakeSeat(ctx, "owner"); err != nil {
+		t.Fatalf("TakeSeat(owner): %v", err)
+	}
+	if _, err := rooms.TakeSeat(ctx, "guest"); err == nil {
+		t.Fatal("two seats occupied, guest must be refused")
+	}
+	if _, err := chips.CashOut(ctx, "third", created.RoomID, "cashout-third"); err != nil {
+		t.Fatalf("CashOut(third): %v", err)
+	}
+	if _, err := rooms.Leave(ctx, "third"); err != nil {
+		t.Fatalf("Leave(third): %v", err)
+	}
+	// 两人回到座位，房间恢复成 2 人满员，后面的牌局流程照旧
+	for _, userID := range []string{"owner", "guest"} {
+		if _, err := rooms.TakeSeat(ctx, userID); err != nil {
+			t.Fatalf("TakeSeat(%s): %v", userID, err)
+		}
+	}
+	if reloaded, err = rooms.Current(ctx, "owner"); err != nil || len(reloaded.SeatedMembers()) != 2 || len(reloaded.SpectatorMembers()) != 0 {
+		t.Fatalf("both should be seated again: %#v err=%v", reloaded.Members, err)
+	}
+	if _, err := rooms.UpdateSpectatorSettings(ctx, "owner", room.DefaultSpectatorSettings()); err != nil {
+		t.Fatalf("restore spectator settings: %v", err)
+	}
 	ownerPosition, err := chips.Rebuy(ctx, "owner", created.RoomID, "rebuy-owner", 500, 2_000)
 	if err != nil || ownerPosition.TableChips != 1_500 {
 		t.Fatalf("Rebuy position=%#v err=%v", ownerPosition, err)

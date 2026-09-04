@@ -154,7 +154,9 @@ func (repository *PostgresRepository) JoinWithBuyIn(
 	}
 	var count int
 	if err := transaction.QueryRowContext(
-		ctx, `SELECT count(*) FROM room_members WHERE room_id = $1`, roomID,
+		// 观战者也是成员行，但不占座位：满员只看上桌的人，否则 5 人上桌加
+		// 5 人观战就会把新来的人挡在门外。
+		ctx, `SELECT count(*) FROM room_members WHERE room_id = $1 AND NOT spectating`, roomID,
 	).Scan(&count); err != nil {
 		_ = transaction.Rollback()
 		return Room{}, fmt.Errorf("count room members: %w", err)

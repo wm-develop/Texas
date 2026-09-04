@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -202,6 +203,10 @@ type Snapshot struct {
 	Spectators []SpectatorSnapshot `json:"spectators,omitempty"`
 	// SpectatorSettings 是房主对观战位的设置，客户端据此显示或隐藏入口。
 	SpectatorSettings room.SpectatorSettings `json:"spectatorSettings"`
+	// SpectatorFee 是每手看牌费的筹码数（FeeBigBlinds × 大盲），0 为免费。
+	// 客户端据此判断观战者筹码够不够，而不是拿「本手看不到牌」当作「筹码不足」：
+	// 看牌权只在开局收费时发放，手间与中途进入的观战者都还没付过费。
+	SpectatorFee int64 `json:"spectatorFee"`
 	// SpectatorFees 是最近一手看牌费的收付明细，只在该手结算展示期间下发。
 	SpectatorFees *SpectatorFeeSnapshot `json:"spectatorFees,omitempty"`
 	// Spectating 表示接收者本人在观战位。
@@ -321,49 +326,68 @@ func (manager *Manager) SetReady(ctx context.Context, userID string, ready bool)
 			runtime.autoReadyCancelled[userID] = true
 		}
 	}
-	if allReady(roomValue.Members) &&
-		(runtime.engine.Phase() == holdem.PhaseWaiting || runtime.engine.Phase() == holdem.PhaseWaitingNextHand) {
-		manager.clearAutoReadyLocked(runtime)
-		runtime.voluntarilyRevealedHands = make(map[string]holdem.RevealedHand)
-		runtime.holeCardViewRequests = make(map[string]holeCardViewRequest)
-		runtime.privateHoleCardViews = make(map[string]map[string]holdem.RevealedHand)
-		runtime.seatSwapRequests = make(map[string]seatSwapRequest)
-		runtime.handStartedAt = manager.now()
-		runtime.actions = nil
-		runtime.lastAction = nil
-		runtime.persistedHandID = ""
-		// 看牌费必须在发牌之前收：引擎在 StartHand 里记下每人的起始筹码作为
-		// 结算守恒校验的基线，发牌后再往玩家筹码里加钱会让 Σ(结束−起始) ≠ 0。
-		roomValue, err = manager.collectSpectatorFeesLocked(ctx, runtime, roomValue)
-		if err != nil {
-			return Snapshot{}, err
-		}
-		if err := runtime.engine.StartHand(manager.random); err != nil {
-			return Snapshot{}, err
-		}
-		if runtime.spectatorFees != nil {
-			runtime.spectatorFees.HandID = runtime.engine.HandID()
-		}
-		runtime.timeExtensions = make(map[string]int)
-		for _, player := range runtime.engine.Players() {
-			if player.Participating {
-				runtime.timeExtensions[player.PlayerID] = timeExtensionsPerHand
-			}
-		}
-		if runtime.engine.Phase() == holdem.PhaseWaitingNextHand {
-			if err := manager.persistSettlementLocked(runtime, roomValue); err != nil {
-				return Snapshot{}, err
-			}
-			roomValue, err = manager.resetReadyLocked(ctx, runtime, roomValue)
-			if err != nil {
-				return Snapshot{}, err
-			}
-			manager.scheduleAutoReadyLocked(runtime)
-		} else {
-			manager.refreshDeadlineLocked(runtime)
-		}
+	roomValue, err = manager.startHandIfReadyLocked(ctx, runtime, roomValue)
+	if err != nil {
+		return Snapshot{}, err
 	}
 	return snapshotForRuntime(runtime, roomValue, userID)
+}
+
+// startHandIfReadyLocked 在全员准备完成且处于手间时开局，否则原样返回。
+//
+// 除了点准备之外，成员转去观战也可能让「剩下的人恰好全都准备好了」成立：
+// 例如唯一没准备的人进了观战位。这些入口都要走同一段开局逻辑，否则牌桌
+// 会一直等着一个已经不在座位上的人。
+func (manager *Manager) startHandIfReadyLocked(
+	ctx context.Context,
+	runtime *runtime,
+	roomValue room.Room,
+) (room.Room, error) {
+	if !allReady(roomValue.Members) ||
+		(runtime.engine.Phase() != holdem.PhaseWaiting && runtime.engine.Phase() != holdem.PhaseWaitingNextHand) {
+		return roomValue, nil
+	}
+	var err error
+	manager.clearAutoReadyLocked(runtime)
+	runtime.voluntarilyRevealedHands = make(map[string]holdem.RevealedHand)
+	runtime.holeCardViewRequests = make(map[string]holeCardViewRequest)
+	runtime.privateHoleCardViews = make(map[string]map[string]holdem.RevealedHand)
+	runtime.seatSwapRequests = make(map[string]seatSwapRequest)
+	runtime.handStartedAt = manager.now()
+	runtime.actions = nil
+	runtime.lastAction = nil
+	runtime.persistedHandID = ""
+	// 看牌费必须在发牌之前收：引擎在 StartHand 里记下每人的起始筹码作为
+	// 结算守恒校验的基线，发牌后再往玩家筹码里加钱会让 Σ(结束−起始) ≠ 0。
+	roomValue, err = manager.collectSpectatorFeesLocked(ctx, runtime, roomValue)
+	if err != nil {
+		return room.Room{}, err
+	}
+	if err := runtime.engine.StartHand(manager.random); err != nil {
+		return room.Room{}, err
+	}
+	if runtime.spectatorFees != nil {
+		runtime.spectatorFees.HandID = runtime.engine.HandID()
+	}
+	runtime.timeExtensions = make(map[string]int)
+	for _, player := range runtime.engine.Players() {
+		if player.Participating {
+			runtime.timeExtensions[player.PlayerID] = timeExtensionsPerHand
+		}
+	}
+	if runtime.engine.Phase() == holdem.PhaseWaitingNextHand {
+		if err := manager.persistSettlementLocked(runtime, roomValue); err != nil {
+			return room.Room{}, err
+		}
+		roomValue, err = manager.resetReadyLocked(ctx, runtime, roomValue)
+		if err != nil {
+			return room.Room{}, err
+		}
+		manager.scheduleAutoReadyLocked(runtime)
+	} else {
+		manager.refreshDeadlineLocked(runtime)
+	}
+	return roomValue, nil
 }
 
 func (manager *Manager) SubmitAction(
@@ -593,9 +617,19 @@ func (manager *Manager) RequestSeatChange(
 	if runtime.engine.Phase() != holdem.PhaseWaiting && runtime.engine.Phase() != holdem.PhaseWaitingNextHand {
 		return Snapshot{}, holdem.RuleError{Code: "hand_in_progress"}
 	}
+	// 观战者没有座位可换，也不能成为换座目标：座位号 0 是观战位的占位，
+	// 不校验的话「换到 0 号位」会匹配到第一个观战者。
+	if targetSeat < 1 || targetSeat > roomValue.MaxPlayers {
+		return Snapshot{}, room.Error{Code: "invalid_seat"}
+	}
+	for _, member := range roomValue.Members {
+		if member.UserID == requesterUserID && member.Spectating {
+			return Snapshot{}, room.Error{Code: "spectator_cannot_move"}
+		}
+	}
 	var targetUserID string
 	for _, member := range roomValue.Members {
-		if member.Seat == targetSeat {
+		if member.Seat == targetSeat && !member.Spectating {
 			targetUserID = member.UserID
 			break
 		}
@@ -1658,21 +1692,25 @@ func (manager *Manager) KickMember(ctx context.Context, ownerUserID, targetUserI
 	if targetUserID == ownerUserID {
 		return false, room.Error{Code: "cannot_remove_self"}
 	}
-	var found bool
-	for _, member := range roomValue.Members {
-		if member.UserID == targetUserID {
-			found = true
+	var target *room.Member
+	for index := range roomValue.Members {
+		if roomValue.Members[index].UserID == targetUserID {
+			target = &roomValue.Members[index]
 		}
 	}
-	if !found {
+	if target == nil {
 		return false, room.Error{Code: "member_not_found"}
 	}
-	if runtime := manager.existingRuntime(roomValue.RoomID); runtime != nil {
-		runtime.mu.Lock()
-		phase := runtime.engine.Phase()
-		runtime.mu.Unlock()
-		if phase != holdem.PhaseWaiting && phase != holdem.PhaseWaitingNextHand {
-			return false, room.Error{Code: "hand_in_progress"}
+	// 上桌玩家只能在手间移出：牌局中把人踢走会牵扯底池归属与行动顺序。
+	// 观战者不在牌局里，随时可以移出。
+	if !target.Spectating {
+		if runtime := manager.existingRuntime(roomValue.RoomID); runtime != nil {
+			runtime.mu.Lock()
+			phase := runtime.engine.Phase()
+			runtime.mu.Unlock()
+			if phase != holdem.PhaseWaiting && phase != holdem.PhaseWaitingNextHand {
+				return false, room.Error{Code: "hand_in_progress"}
+			}
 		}
 	}
 	return manager.Leave(ctx, targetUserID)
@@ -1798,6 +1836,11 @@ func (manager *Manager) EnterSpectate(ctx context.Context, userID string, roomID
 		_ = runtime.engine.RequestLeave(userID)
 		delete(runtime.pendingSeat, userID)
 		if err := syncMembers(runtime.engine, roomValue, runtime.online); err != nil {
+			return Snapshot{}, err
+		}
+		// 他可能正是唯一没准备的人：剩下的人若已全部准备好，这里就该开局
+		roomValue, err = manager.startHandIfReadyLocked(ctx, runtime, roomValue)
+		if err != nil {
 			return Snapshot{}, err
 		}
 		return snapshotForRuntime(runtime, roomValue, userID)
@@ -1983,7 +2026,14 @@ func (manager *Manager) collectSpectatorFeesLocked(
 	balances := make(map[string]int64, len(payers)+len(ordered))
 	// HandID 在 StartHand 成功后由调用方补上。
 	record := &SpectatorFeeSnapshot{FeePerSpectator: fee}
-	feeKey := "spectator_fee:after:" + runtime.engine.HandID()
+	previousHandID := runtime.engine.HandID()
+	if previousHandID == "" {
+		// 运行时刚建立（含进程重启后）还没有上一手。空串会让同一房间每次
+		// 重启后的第一手都用同一个键，账本按幂等静默跳过，费用就只动了
+		// 牌桌余额而没有流水。用时间戳区分；这一手的收费本就只会走一次。
+		previousHandID = "runtime_" + strconv.FormatInt(manager.now().UnixNano(), 10)
+	}
+	feeKey := "spectator_fee:after:" + previousHandID
 	for _, payer := range payers {
 		balances[payer.UserID] = payer.Stack - fee
 		record.Payers = append(record.Payers, SpectatorFeeShare{
@@ -2028,7 +2078,10 @@ func (manager *Manager) collectSpectatorFeesLocked(
 func annotateSpectators(runtime *runtime, roomValue room.Room, recipientUserID string, result *Snapshot) {
 	ensureSpectatorMaps(runtime)
 	result.SpectatorSettings = roomValue.Spectator
-	free := roomValue.Spectator.FeeBigBlinds <= 0
+	result.SpectatorFee = int64(roomValue.Spectator.FeeBigBlinds) * roomValue.Rules.BigBlind
+	// 看牌权一律在开局时发放（免费模式发给所有在场观战者）。免费模式若按
+	// 「只要在观战位就能看」处理，输了的人手间进观战就能看到对手刚盖掉的牌，
+	// 再坐回去，一分钱不花；牌局中途才进来的人也能直接看现场。
 	recipientSpectating := false
 	for _, member := range roomValue.SpectatorMembers() {
 		if member.UserID == recipientUserID {
@@ -2037,7 +2090,7 @@ func annotateSpectators(runtime *runtime, roomValue room.Room, recipientUserID s
 		result.Spectators = append(result.Spectators, SpectatorSnapshot{
 			UserID: member.UserID, DisplayName: member.DisplayName,
 			Connected: runtime.online[member.UserID], Stack: member.Stack,
-			CanSeeHoleCards: free || runtime.spectatorAccess[member.UserID],
+			CanSeeHoleCards: runtime.spectatorAccess[member.UserID],
 			PendingSeat:     runtime.pendingSeat[member.UserID],
 		})
 	}
@@ -2049,7 +2102,7 @@ func annotateSpectators(runtime *runtime, roomValue room.Room, recipientUserID s
 	}
 	// 每次开局收费时都会重置这份明细，因此它始终属于当前这一手（含其结算展示期）。
 	result.SpectatorFees = runtime.spectatorFees
-	if !recipientSpectating || !(free || runtime.spectatorAccess[recipientUserID]) {
+	if !recipientSpectating || !runtime.spectatorAccess[recipientUserID] {
 		return
 	}
 	cards := make(map[string][]string)

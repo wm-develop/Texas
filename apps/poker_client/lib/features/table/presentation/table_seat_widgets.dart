@@ -118,9 +118,7 @@ class TableSeatCard extends StatelessWidget {
                     seat: seat,
                     winnerAmount: winnerAmount,
                   )
-                // 本人的座位，或观战者付费后拿到手牌的座位：都按正面展示。
-                // 普通玩家的快照里别人的座位没有 holeCards，不会进这个分支。
-                else if (seat.isCurrentUser || seat.holeCards.isNotEmpty)
+                else if (seat.isCurrentUser)
                   TableCurrentSeatSummary(
                     seat: seat,
                     showReadyStatus: showReadyStatus,
@@ -128,9 +126,41 @@ class TableSeatCard extends StatelessWidget {
                     deal: deal,
                   )
                 else ...[
-                  // 别人的底牌只在发牌演出期间以牌背出现，随后淡出；
-                  // 玩家框还要承载筹码、位置等信息，不能被牌常驻占用。
-                  if (deal.isDealing && deal.dealtCards > 0)
+                  // 观战者付费后服务端会把这个座位的手牌填进来：发牌演出时翻开、
+                  // 之后常驻正面，昵称、断线、全下等信息照旧显示——此前把这种
+                  // 座位整个换成「本人座位」的样式，观战者就分不清谁是谁了。
+                  if (seat.holeCards.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 3),
+                      child: Row(
+                        children: [
+                          for (
+                            var index = 0;
+                            index < seat.holeCards.length;
+                            index++
+                          ) ...[
+                            if (index > 0) const SizedBox(width: 3),
+                            if (!deal.isDealing)
+                              TableMiniCard(
+                                label:
+                                    '${cardRank(seat.holeCards[index])}'
+                                    '${cardSuit(seat.holeCards[index])}',
+                                compact: true,
+                              )
+                            else if (index < deal.dealtCards)
+                              TableMiniFlipCard(
+                                progress: deal.flipProgress,
+                                label:
+                                    '${cardRank(seat.holeCards[index])}'
+                                    '${cardSuit(seat.holeCards[index])}',
+                              ),
+                          ],
+                        ],
+                      ),
+                    )
+                  // 普通玩家拿不到别人的牌：牌背只在发牌演出期间出现，随后淡出；
+                  // 玩家框还要承载筹码、位置等信息，不能被牌背常驻占用。
+                  else if (deal.isDealing && deal.dealtCards > 0)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 3),
                       child: Opacity(

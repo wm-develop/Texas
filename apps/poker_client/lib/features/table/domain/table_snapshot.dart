@@ -473,6 +473,7 @@ class TableSnapshot {
     this.joinLocked = false,
     this.spectators = const [],
     this.spectatorSettings = const SpectatorSettings(),
+    this.spectatorFee = 0,
     this.spectatorFees,
     this.spectating = false,
   });
@@ -515,6 +516,21 @@ class TableSnapshot {
 
   /// 房主对观战位的设置。
   final SpectatorSettings spectatorSettings;
+
+  /// 每手看牌费的筹码数（= feeBigBlinds × 大盲）。0 表示免费。
+  final int spectatorFee;
+
+  /// 某位成员的桌上筹码：上桌玩家取座位，观战者取观战位；不在房间返回 null。
+  /// 补码等只关心「他有多少筹码」的逻辑用这个，别只认座位——观战者没有座位。
+  int? stackForUser(String userId) {
+    for (final seat in seats) {
+      if (seat.userId == userId) return seat.stack;
+    }
+    for (final spectator in spectators) {
+      if (spectator.userId == userId) return spectator.stack;
+    }
+    return null;
+  }
 
   /// 本手看牌费明细，只在该手（含结算展示期）下发。
   final SpectatorFees? spectatorFees;
@@ -600,6 +616,7 @@ class TableSnapshot {
         ? null
         : SpectatorFees.fromJson(json['spectatorFees'] as Map<String, dynamic>),
     spectating: json['spectating'] as bool? ?? false,
+    spectatorFee: json['spectatorFee'] as int? ?? 0,
   );
 }
 

@@ -108,19 +108,61 @@ docker exec texas-postgres psql -U texas -d texas -c "\dt"
 
 ### 可选：运行真实 PostgreSQL 集成测试
 
-只有已经单独配置 `/opt/texas/secrets/game-server-test.env`，并且它连接的是可丢弃的测试数据库时才执行。严禁让测试环境变量指向生产数据库。
+内存仓储的单元测试拦不住 SQL 与真实库的错配（列数、约束、索引），这类问题历史上出过 P0。凡是本次更新**包含新迁移或改动了 `*postgres_repository.go`**，都建议在服务器上跑一遍这一节。
 
-```bash
-docker build --target build -t "texas-game-server-test:${IMAGE_TAG}" services/game_server
-docker run --rm \
-  --network texas-internal \
-  --env-file /opt/texas/secrets/game-server-test.env \
-  -e GOMAXPROCS=2 \
-  "texas-game-server-test:${IMAGE_TAG}" \
-  go test -p 1 ./... -count=1
+**测试环境文件只需要一个变量。** `game-server.env` 里的其他变量（`DATABASE_URL`、TRTC、限流……）测试一律不读，不要复制过来——尤其不能带上 `DATABASE_URL`，免得哪天有人把测试文件误当生产文件用。因此 `game-server-test.env` 不需要跟着 `game-server.env` 的每次变更同步，只要下面这一行还对就行：
+
+```
+TEST_DATABASE_URL=postgres://texas:<数据库密码>@texas-postgres:5432/texas_test?sslmode=disable
 ```
 
-如果该测试环境文件不存在，可以跳过本节，不能改用生产环境文件代替。
+其中用户名与密码与 `game-server.env` 里 `DATABASE_URL` 的相同，**数据库名必须是单独的测试库**（这里用 `texas_test`），严禁指向生产库 `texas`。
+
+1. 在同一个 Postgres 容器里建一个可丢弃的测试库（已存在时会报 `already exists`，忽略即可）：
+
+   ```bash
+   docker exec texas-postgres psql -U texas -d postgres -c "CREATE DATABASE texas_test"
+   ```
+
+2. 写测试环境文件并确认它只有这一行、且指向测试库：
+
+   ```bash
+   install -m 600 /dev/null /opt/texas/secrets/game-server-test.env
+   printf 'TEST_DATABASE_URL=postgres://texas:%s@texas-postgres:5432/texas_test?sslmode=disable\n' '<数据库密码>' \
+     > /opt/texas/secrets/game-server-test.env
+   grep -c 'DATABASE_URL=' /opt/texas/secrets/game-server-test.env   # 必须输出 1
+   grep -c '/texas_test' /opt/texas/secrets/game-server-test.env     # 必须输出 1
+   ```
+
+3. 用构建阶段镜像先只跑 Postgres 用例（`-v` 是为了看到它们确实没被跳过）：
+
+   ```bash
+   docker build --target build -t "texas-game-server-test:${IMAGE_TAG}" services/game_server
+   docker run --rm \
+     --network texas-internal \
+     --env-file /opt/texas/secrets/game-server-test.env \
+     -e GOMAXPROCS=2 \
+     "texas-game-server-test:${IMAGE_TAG}" \
+     go test -p 1 -count=1 -v -run 'Postgres' \
+       ./internal/account/ ./internal/chat/ ./internal/postgres/ ./internal/room/
+   ```
+
+   输出里应出现 `--- PASS: TestPostgresPhase3PersistenceFlow`、`--- PASS: TestMigratorUpgradeRepeatAndRollbackAgainstPostgres` 等。若看到 `--- SKIP` 加上 `TEST_DATABASE_URL is not configured`，说明变量没传进容器，结果不算数。
+
+4. 再跑全量：
+
+   ```bash
+   docker run --rm \
+     --network texas-internal \
+     --env-file /opt/texas/secrets/game-server-test.env \
+     -e GOMAXPROCS=2 \
+     "texas-game-server-test:${IMAGE_TAG}" \
+     go test -p 1 ./... -count=1
+   ```
+
+这些用例每次都在测试库里新建自己的 schema（`*_test_<时间戳>`），跑完即删，可以反复运行，测试库留着下次复用即可。任何 Postgres 用例失败都表示新 SQL 或迁移与真实库不兼容：**停止本次发布**，保留完整输出。
+
+如果没有条件建测试库，可以跳过本节，但不能改用生产环境文件代替。
 
 ## 三、更新游戏服务
 

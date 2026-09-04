@@ -74,7 +74,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
   late final GameApiClient _api;
   late final TableVoiceController _voice;
   Timer? _tableClock;
-  String? _lastShownGameError;
+  int _lastShownErrorSequence = 0;
   GameSocketStatus? _lastGameSocketStatus;
   final TableActionSoundTracker _actionSoundTracker = TableActionSoundTracker();
   final TableSoundClipFiles _soundClipFiles = TableSoundClipFiles();
@@ -272,8 +272,11 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                   room: widget.room,
                   currentPlayers:
                       _gameSocket.snapshot?.seats.length ??
-                      widget.room.members.length,
+                      widget.room.members
+                          .where((member) => member.seat > 0)
+                          .length,
                   spectatorCount: _gameSocket.snapshot?.spectators.length ?? 0,
+                  maxPlayers: widget.room.maxPlayers,
                   onShowRoster: _openRoster,
                   compact: true,
                   onLeave: _leaveTable,
@@ -488,6 +491,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
       context,
       snapshot: snapshot,
       currentUserId: widget.session.user.userId,
+      maxPlayers: widget.room.maxPlayers,
     );
   }
 
@@ -617,7 +621,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
     if (!_removedFromRoomHandled && GameSocketClient.isRemovedFromRoom(error)) {
       _removedFromRoomHandled = true;
       // 不要再把它当成一次失败的牌桌操作弹错误提示；离开原因交给大厅说明
-      _lastShownGameError = error;
+      _lastShownErrorSequence = _gameSocket.errorSequence;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) unawaited(widget.onRemoved(error ?? ''));
       });
@@ -635,9 +639,10 @@ class _TablePrototypePageState extends State<TablePrototypePage>
     _enforceSpectatorVoiceRule();
     _offerAutomaticRebuy();
     _offerPendingTableRequest();
-    if (error == null) _lastShownGameError = null;
-    if (error != null && error != _lastShownGameError) {
-      _lastShownGameError = error;
+    final errorSequence = _gameSocket.errorSequence;
+    // 按序号而不是按文本去重：同一个错误连续出现两次也要提示两次
+    if (error != null && errorSequence != _lastShownErrorSequence) {
+      _lastShownErrorSequence = errorSequence;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         ScaffoldMessenger.of(context)
@@ -737,6 +742,9 @@ class _TablePrototypePageState extends State<TablePrototypePage>
   Future<void> _handleSeatTap(TableSeat seat) async {
     final snapshot = _gameSocket.snapshot;
     if (snapshot == null) return;
+    // 观战者没有座位可换，上桌走面板里的「上桌」按钮；这里弹「申请换位」
+    // 只会得到服务端一句拒绝。
+    if (snapshot.spectating) return;
     final waiting =
         snapshot.phase == 'WAITING' || snapshot.phase == 'WAITING_NEXT_HAND';
     if (waiting) {
@@ -846,14 +854,16 @@ class _TablePrototypePageState extends State<TablePrototypePage>
   Future<void> _showRebuyDialog({bool automatic = false}) async {
     if (_automation.rebuyDialogOpen) return;
     final snapshot = _gameSocket.snapshot;
-    final ownSeat = snapshot?.seats
-        .where((seat) => seat.userId == widget.session.user.userId)
-        .firstOrNull;
-    if (snapshot == null || ownSeat == null) return;
+    if (snapshot == null) return;
+    final userId = widget.session.user.userId;
+    // 观战者没有座位，筹码记在观战位上；此前这里只认座位，观战者点「补码」
+    // 会静默地什么都不发生——而补码正是他恢复看牌的唯一途径。
+    final currentStack = snapshot.stackForUser(userId);
+    if (currentStack == null) return;
     final maximum = snapshot.maxBuyIn > 0
         ? snapshot.maxBuyIn
         : widget.room.rules.maxBuyIn;
-    final room = maximum - ownSeat.stack;
+    final room = maximum - currentStack;
     if (room <= 0) {
       ScaffoldMessenger.of(
         context,
@@ -871,7 +881,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
         builder: (context) => TableRebuyAmountDialog(
           automatic: automatic,
           walletChips: bankroll.walletChips,
-          currentStack: ownSeat.stack,
+          currentStack: currentStack,
           maximum: maximum,
           available: available,
         ),

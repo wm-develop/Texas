@@ -312,12 +312,22 @@ class _SpectatorActions extends StatelessWidget {
     final feeBigBlinds = snapshot.spectatorSettings.feeBigBlinds;
     final joined = client.status == GameSocketStatus.joined;
     final canSee = me?.canSeeHoleCards ?? false;
-    final needsChips = !canSee && feeBigBlinds > 0;
+    final fee = snapshot.spectatorFee;
+    final inHand =
+        snapshot.phase != 'WAITING' && snapshot.phase != 'WAITING_NEXT_HAND';
+    // 看牌权是开局收费时才发放的：手间、以及牌局中途才进来的观战者都还
+    // 没付过费，此时 canSee 为 false 并不表示筹码不够。只有筹码真的低于
+    // 看牌费才提示补码，否则告诉他什么时候能看到。
+    final needsChips = fee > 0 && (me?.stack ?? 0) < fee;
     final status = needsChips
-        ? '筹码不足以支付看牌费（$feeBigBlinds 个大盲/手），补码后可查看所有玩家手牌'
+        ? '筹码不足以支付看牌费（$feeBigBlinds 个大盲/手，共 $fee），补码后可查看所有玩家手牌'
         : canSee
         ? '观战中 · 本手可查看所有玩家手牌'
-        : '观战中';
+        : fee == 0
+        ? '观战中 · 免费观战，下一手起可查看所有玩家手牌'
+        : inHand
+        ? '观战中 · 本手中途进入，下一手起支付看牌费后可查看所有玩家手牌'
+        : '观战中 · 下一手开始时支付看牌费（$feeBigBlinds 个大盲）后可查看所有玩家手牌';
     final rebuy = needsChips
         // 突出补码：这是恢复看牌的唯一途径
         ? FilledButton.icon(

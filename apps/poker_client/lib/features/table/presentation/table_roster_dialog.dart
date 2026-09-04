@@ -9,20 +9,26 @@ class TableRosterDialog extends StatelessWidget {
   const TableRosterDialog({
     required this.snapshot,
     required this.currentUserId,
+    this.maxPlayers = 10,
     super.key,
   });
 
   final TableSnapshot snapshot;
   final String currentUserId;
+  final int maxPlayers;
 
   static Future<void> show(
     BuildContext context, {
     required TableSnapshot snapshot,
     required String currentUserId,
+    int maxPlayers = 10,
   }) => showDialog<void>(
     context: context,
-    builder: (_) =>
-        TableRosterDialog(snapshot: snapshot, currentUserId: currentUserId),
+    builder: (_) => TableRosterDialog(
+      snapshot: snapshot,
+      currentUserId: currentUserId,
+      maxPlayers: maxPlayers,
+    ),
   );
 
   @override
@@ -31,7 +37,9 @@ class TableRosterDialog extends StatelessWidget {
       ..sort((left, right) => left.seat.compareTo(right.seat));
     final spectators = snapshot.spectators;
     return AlertDialog(
-      title: Text('房间名单 · ${seats.length}/10（OB: ${spectators.length}）'),
+      title: Text(
+        '房间名单 · ${seats.length}/$maxPlayers（OB: ${spectators.length}）',
+      ),
       content: SizedBox(
         width: 380,
         // 人多时列表很长，手机横屏更放不下，一律可滚动

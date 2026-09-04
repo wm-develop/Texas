@@ -123,6 +123,9 @@ String gameErrorLabel(String code) => switch (code) {
   'spectator_emote_disabled' => '房主已关闭观战者的赞赏与嘲讽',
   'spectator_voice_disabled' => '房主已关闭观战者的麦克风',
   'invalid_spectator_settings' => '看牌费需在 0～100 个大盲之间',
+  'insufficient_chips' => '牌桌筹码为 0，请先补码再上桌',
+  'invalid_seat' => '座位号无效',
+  'owner_required' => '只有房主可以进行这项操作',
   _ when code.startsWith('invalid_server_message') => '收到的牌桌数据无法解析',
   _ => '牌桌操作失败（$code）',
 };

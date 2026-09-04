@@ -7,7 +7,10 @@ import 'package:poker_client/features/table/domain/table_snapshot.dart';
 import 'package:poker_client/features/table/presentation/room_management_dialog.dart';
 import 'package:poker_client/features/table/presentation/room_result_dialog.dart';
 
-TableSnapshot _snapshot({String phase = 'WAITING_NEXT_HAND'}) =>
+TableSnapshot _snapshot({
+  String phase = 'WAITING_NEXT_HAND',
+  bool withSpectator = false,
+}) =>
     TableSnapshot.fromJson({
       'roomId': 'room_1',
       'roomCode': '123456',
@@ -39,6 +42,17 @@ TableSnapshot _snapshot({String phase = 'WAITING_NEXT_HAND'}) =>
             'timeExtensions': 0,
           },
       ],
+      if (withSpectator)
+        'spectators': [
+          {
+            'userId': 'watcher',
+            'displayName': '观众',
+            'connected': true,
+            'stack': 800,
+            'canSeeHoleCards': false,
+            'pendingSeat': false,
+          },
+        ],
     });
 
 void main() {
@@ -111,6 +125,7 @@ void main() {
     Future<void> pump(
       WidgetTester tester, {
       required String phase,
+      bool withSpectator = false,
       bool joinLocked = false,
       Future<bool> Function(bool)? onSetJoinLocked,
       Future<void> Function(String)? onRemoveMember,
@@ -118,13 +133,13 @@ void main() {
       MaterialApp(
         home: Scaffold(
           body: RoomManagementDialog(
-            snapshot: _snapshot(phase: phase),
+            snapshot: _snapshot(phase: phase, withSpectator: withSpectator),
             currentUserId: 'me',
             joinLocked: joinLocked,
             onSetJoinLocked: onSetJoinLocked ?? (locked) async => locked,
             onRemoveMember: onRemoveMember ?? (_) async {},
             spectatorSettings: const SpectatorSettings(),
-            onUpdateSpectatorSettings: (_) {},
+            onUpdateSpectatorSettings: (_) => true,
           ),
         ),
       ),
@@ -151,6 +166,35 @@ void main() {
       await tester.tap(find.widgetWithText(FilledButton, '移出'));
       await tester.pumpAndSettle();
       expect(removed, 'other');
+    });
+
+    testWidgets('观战者也在移出列表里，能被房主移出', (tester) async {
+      // 观战者不占座位，只列座位的话房主根本找不到请他出去的入口
+      String? removed;
+      await pump(
+        tester,
+        phase: 'WAITING_NEXT_HAND',
+        withSpectator: true,
+        onRemoveMember: (userId) async => removed = userId,
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('观众'), findsOneWidget);
+      expect(find.textContaining('观战 · 筹码 800'), findsOneWidget);
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('remove-member-watcher')),
+      );
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(const ValueKey('remove-member-watcher')),
+          matching: find.text('移出'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('确定把「观众」移出房间吗'), findsOneWidget);
+      await tester.tap(find.widgetWithText(FilledButton, '移出'));
+      await tester.pumpAndSettle();
+      expect(removed, 'watcher');
     });
 
     testWidgets('牌局进行中不能移出玩家', (tester) async {

@@ -286,3 +286,37 @@ func TestAutoReadySkipsSpectators(t *testing.T) {
 		t.Fatalf("the spectator pays again and sees the auto-started hand: %#v", third)
 	}
 }
+
+// 快照带上看牌费的筹码数：真机上带入 100 个大盲的观战者一进观战就被提示
+// 「筹码不足」，因为客户端把「手间还没发放看牌权」当成了「付不起」。
+func TestSnapshotCarriesSpectatorFeeAmount(t *testing.T) {
+	ctx := context.Background()
+	manager, rooms, created := spectatorFixture(t, 3, "owner", "guest", "third")
+	if _, err := manager.EnterSpectate(ctx, "third", created.RoomID); err != nil {
+		t.Fatal(err)
+	}
+	between, err := manager.Snapshot(ctx, "third", created.RoomID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := int64(room.DefaultSpectatorFeeBigBlinds) * created.Rules.BigBlind
+	if between.SpectatorFee != want {
+		t.Fatalf("fee amount should be %d between hands, got %d", want, between.SpectatorFee)
+	}
+	// 手间没人付过费：看不到牌，但筹码充足，客户端不得据此提示不足
+	if third := spectatorOf(between, "third"); third == nil || third.CanSeeHoleCards || third.Stack < want {
+		t.Fatalf("between hands access is not granted yet while chips are plentiful: %#v", third)
+	}
+	free := room.DefaultSpectatorSettings()
+	free.FeeBigBlinds = 0
+	if _, err := rooms.UpdateSpectatorSettings(ctx, "owner", free); err != nil {
+		t.Fatal(err)
+	}
+	freeSnapshot, err := manager.Snapshot(ctx, "third", created.RoomID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if freeSnapshot.SpectatorFee != 0 {
+		t.Fatalf("free mode must report a zero fee, got %d", freeSnapshot.SpectatorFee)
+	}
+}

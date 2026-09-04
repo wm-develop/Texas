@@ -248,6 +248,7 @@
 | `joinLocked` | 房主是否已关闭房间入口；为 false 时省略 |
 | `spectators[]` | 观战位上的成员：`userId`、`displayName`、`connected`、`stack`、`canSeeHoleCards`（本手已付费或免费模式）、`pendingSeat`（已申请本手结束后上桌）。观战者**不出现在** `seats[]` 里 |
 | `spectatorSettings` | 房主对观战位的设置：`feeBigBlinds`、`voiceAllowed`、`chatAllowed`、`emoteAllowed` |
+| `spectatorFee` | 每手看牌费的筹码数（= `feeBigBlinds` × 房间大盲），0 为免费。客户端据此判断观战者的筹码是否够付，而不是拿「本手看不到牌」当作「筹码不足」——看牌权只在开局收费时发放，手间与中途进入的观战者都还没付过费 |
 | `spectatorFees` | 本手看牌费明细：`handId`、`feePerSpectator`、`payers[]`、`recipients[]`（各含 `userId`、`displayName`、`amount`）。只在该手（含结算展示期）下发 |
 | `draining` | 为 `true` 表示服务端正在优雅停机：本手打完后不再开新局，`table.ready.set {"ready": true}` 返回 `server_draining`，自动准备倒计时也不会安排；重启完成后该字段消失（见 6.8） |
 
@@ -362,7 +363,8 @@
 | `invalid_seat` | 座位号不合法 |
 | `spectators_full` | 观战位已满（最多 10 人） |
 | `spectator_cannot_ready` | 观战者不能准备（取消准备会被静默接受） |
-| `spectator_cannot_move` | 观战者不能换座位 |
+| `spectator_cannot_move` | 观战者不能换座位（也不能作为换位目标） |
+| `insufficient_chips` | 观战者牌桌筹码为 0，先补码再上桌 |
 | `invalid_spectator_settings` | 观战位设置越界（看牌费需在 0～100 个大盲之间） |
 
 ### 7.3 牌局规则

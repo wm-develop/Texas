@@ -42,6 +42,11 @@ class GameSocketClient extends ChangeNotifier {
   GameSocketStatus _status = GameSocketStatus.disconnected;
   String? _lastMessageType;
   String? _errorMessage;
+
+  /// 每次出现错误都递增。同一个错误码连续出现时 [errorMessage] 不变，界面
+  /// 只比较文本就会把第二次吞掉——观战者连点两次「上桌」只提示一次。
+  int _errorSequence = 0;
+  int get errorSequence => _errorSequence;
   TableSnapshot? _snapshot;
   final List<TableChatMessage> _chatMessages = [];
   final List<TablePlayerInteraction> _playerInteractions = [];
@@ -170,6 +175,7 @@ class GameSocketClient extends ChangeNotifier {
     } on Object {
       await pendingChannel?.sink.close();
       _errorMessage = 'connection_failed';
+      _errorSequence++;
       _scheduleReconnect();
     }
   }
@@ -192,9 +198,12 @@ class GameSocketClient extends ChangeNotifier {
     _send('table.seat.take', payload: const {});
   }
 
-  /// 房主调整观战位设置，服务端立即生效并广播。
-  void setSpectatorSettings(SpectatorSettings settings) {
+  /// 房主调整观战位设置，服务端立即生效并广播。返回是否真的发出去了：
+  /// 未连上牌桌时 [_send] 会静默丢弃，调用方不能把界面拨到新状态。
+  bool setSpectatorSettings(SpectatorSettings settings) {
+    if (_status != GameSocketStatus.joined) return false;
     _send('table.spectator.settings.set', payload: settings.toJson());
+    return true;
   }
 
   void showHoleCards() {
@@ -265,6 +274,7 @@ class GameSocketClient extends ChangeNotifier {
   void sendChat(String content, {String kind = 'text'}) {
     if (_spectatorBlocked((settings) => settings.chatAllowed)) {
       _errorMessage = 'spectator_chat_disabled';
+      _errorSequence++;
       notifyListeners();
       return;
     }
@@ -284,6 +294,7 @@ class GameSocketClient extends ChangeNotifier {
     if (targetUserId.isEmpty || (kind != 'praise' && kind != 'taunt')) return;
     if (_spectatorBlocked((settings) => settings.emoteAllowed)) {
       _errorMessage = 'spectator_emote_disabled';
+      _errorSequence++;
       notifyListeners();
       return;
     }
@@ -448,6 +459,7 @@ class GameSocketClient extends ChangeNotifier {
         case 'table.rebuy.rejected':
           if (payload is Map<String, dynamic>) {
             _errorMessage = payload['code'] as String? ?? type;
+            _errorSequence++;
             if (type == 'system.error' &&
                 _errorMessage == 'authentication_required') {
               _forceRefreshOnNextConnect = true;
@@ -467,12 +479,14 @@ class GameSocketClient extends ChangeNotifier {
       notifyListeners();
     } on Object catch (error) {
       _errorMessage = 'invalid_server_message: $error';
+      _errorSequence++;
       notifyListeners();
     }
   }
 
   void _handleError(Object error, StackTrace stackTrace) {
     _errorMessage = 'connection_failed';
+    _errorSequence++;
     _scheduleReconnect();
   }
 
@@ -487,6 +501,7 @@ class GameSocketClient extends ChangeNotifier {
       _errorMessage = reason == null || reason.isEmpty
           ? removedByAdministrator
           : reason;
+      _errorSequence++;
       _setStatus(GameSocketStatus.disconnected);
       return;
     }
@@ -495,6 +510,7 @@ class GameSocketClient extends ChangeNotifier {
       _heartbeatTimer?.cancel();
       _clearPendingAction();
       _errorMessage = 'superseded';
+      _errorSequence++;
       _setStatus(GameSocketStatus.disconnected);
       return;
     }
@@ -530,6 +546,7 @@ class GameSocketClient extends ChangeNotifier {
       if (!_actionPending) return;
       _clearPendingAction();
       _errorMessage = 'action_timeout';
+      _errorSequence++;
       // 回执迟迟不到，多半是状态已经不一致，顺手重新同步一次
       requestSnapshot(reason: 'action_timeout');
       notifyListeners();
@@ -552,6 +569,7 @@ class GameSocketClient extends ChangeNotifier {
       if (DateTime.now().difference(_lastServerMessageAt) >
           const Duration(seconds: 75)) {
         _errorMessage = 'connection_failed';
+        _errorSequence++;
         unawaited(_channel?.sink.close());
         _scheduleReconnect();
         return;
@@ -583,6 +601,7 @@ class GameSocketClient extends ChangeNotifier {
       case TableSequenceDisposition.gap:
         _recoveringSequenceGap = true;
         _errorMessage = 'sequence_gap';
+        _errorSequence++;
         requestSnapshot(reason: 'sequence_gap');
         return false;
     }

@@ -511,6 +511,11 @@ func (service *Service) SwapSeats(ctx context.Context, firstUserID, secondUserID
 	if firstIndex < 0 || secondIndex < 0 || firstUserID == secondUserID {
 		return Room{}, Error{Code: "invalid_seat_swap"}
 	}
+	// 观战者的座位号 0 只是占位，换过去会写出「已入座却是 0 号位」的成员，
+	// 数据库约束直接拒绝，内存仓储则留下一条同步不进引擎的脏数据。
+	if value.Members[firstIndex].Spectating || value.Members[secondIndex].Spectating {
+		return Room{}, Error{Code: "spectator_cannot_move"}
+	}
 	value.Members[firstIndex].Seat, value.Members[secondIndex].Seat =
 		value.Members[secondIndex].Seat, value.Members[firstIndex].Seat
 	sort.Slice(value.Members, func(left, right int) bool { return value.Members[left].Seat < value.Members[right].Seat })
@@ -738,6 +743,11 @@ func (service *Service) TakeSeat(ctx context.Context, userID string) (Room, erro
 		}
 		if !value.Members[index].Spectating {
 			return publicRoom(value), nil
+		}
+		// 引擎不接受 0 筹码入座。放行的话该成员会以「已入座但不在引擎里」的
+		// 状态被持久化，此后每次同步成员都失败，整桌人都无法准备或重连。
+		if value.Members[index].Stack <= 0 {
+			return Room{}, Error{Code: "insufficient_chips"}
 		}
 		if seatedCount(value.Members) >= value.MaxPlayers {
 			return Room{}, Error{Code: "room_full"}

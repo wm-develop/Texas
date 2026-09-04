@@ -53,6 +53,7 @@ Map<String, dynamic> _payload({
   List<Map<String, dynamic>> spectators = const [],
   bool spectating = false,
   int feeBigBlinds = 10,
+  int? spectatorFee,
   Map<String, dynamic>? spectatorFees,
 }) => {
   'roomId': 'room_1',
@@ -71,6 +72,8 @@ Map<String, dynamic> _payload({
     'emoteAllowed': true,
   },
   'spectating': spectating,
+  // 默认按 20 的大盲算：10 个大盲 = 200
+  'spectatorFee': spectatorFee ?? feeBigBlinds * 20,
   'spectatorFees': ?spectatorFees,
 };
 
@@ -224,6 +227,73 @@ void main() {
       client.dispose();
     });
 
+    testWidgets('手间还没收费时不能说筹码不足，而是告诉他下一手可看', (tester) async {
+      // 真机复现：带入 100 个大盲、刚进观战就被提示筹码不足——看牌权是
+      // 开局收费时才发放的，手间 canSee 必然为 false，与筹码多少无关
+      final client = _clientWith(
+        _payload(
+          seats: [_seat('a')],
+          spectators: [_spectator('me', stack: 2000, canSee: false)],
+          spectating: true,
+        ),
+      );
+      await _pumpBar(tester, client);
+
+      expect(find.textContaining('筹码不足'), findsNothing);
+      expect(find.textContaining('下一手开始时支付看牌费'), findsOneWidget);
+      final rebuy = find.byKey(const ValueKey('spectator-rebuy-button'));
+      expect(tester.widget(rebuy), isA<OutlinedButton>(), reason: '不必突出补码');
+      client.dispose();
+    });
+
+    testWidgets('牌局中途进入的观战者：本手没付费，说明下一手起可看', (tester) async {
+      final client = _clientWith(
+        _payload(
+          phase: 'FLOP',
+          seats: [_seat('a')],
+          spectators: [_spectator('me', stack: 2000, canSee: false)],
+          spectating: true,
+        ),
+      );
+      await _pumpBar(tester, client);
+
+      expect(find.textContaining('筹码不足'), findsNothing);
+      expect(find.textContaining('本手中途进入'), findsOneWidget);
+      client.dispose();
+    });
+
+    testWidgets('免费观战时无论筹码多少都不提示不足', (tester) async {
+      final client = _clientWith(
+        _payload(
+          seats: [_seat('a')],
+          spectators: [_spectator('me', stack: 0, canSee: false)],
+          spectating: true,
+          feeBigBlinds: 0,
+        ),
+      );
+      await _pumpBar(tester, client);
+
+      expect(find.textContaining('筹码不足'), findsNothing);
+      expect(find.textContaining('免费观战'), findsOneWidget);
+      client.dispose();
+    });
+
+    testWidgets('筹码不足的判断以看牌费的筹码数为准，与是否在牌局中无关', (tester) async {
+      // 手间、筹码 150 < 看牌费 200：这才是真正的不足
+      final client = _clientWith(
+        _payload(
+          seats: [_seat('a')],
+          spectators: [_spectator('me', stack: 150, canSee: false)],
+          spectating: true,
+        ),
+      );
+      await _pumpBar(tester, client);
+
+      expect(find.textContaining('筹码不足以支付看牌费'), findsOneWidget);
+      expect(find.textContaining('共 200'), findsOneWidget);
+      client.dispose();
+    });
+
     testWidgets('已申请上桌时按钮改为「本手结束后上桌」并禁用', (tester) async {
       final client = _clientWith(
         _payload(
@@ -302,6 +372,45 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('roster-label')));
       expect(opened, 1);
     });
+
+    testWidgets('分母是房间的最大人数，不写死 10', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 240,
+              child: TableRoomHeader(
+                room: _room(),
+                currentPlayers: 3,
+                spectatorCount: 1,
+                maxPlayers: 6,
+                compact: true,
+                onLeave: () async {},
+                onSettings: () {},
+                onShowResult: () {},
+                onToggleChat: null,
+                onShowRoster: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(find.text('3/6（OB: 1）'), findsOneWidget);
+    });
+
+    test('stackForUser 对座位与观战位都有效：补码弹窗靠它拿观战者的筹码', () {
+      // 真机复现路径：观战者点补码，页面只在座位里找自己 → 找不到 → 静默返回
+      final snapshot = TableSnapshot.fromJson(
+        _payload(
+          seats: [_seat('a', stack: 1500)],
+          spectators: [_spectator('me', stack: 300)],
+          spectating: true,
+        ),
+      );
+      expect(snapshot.stackForUser('a'), 1500);
+      expect(snapshot.stackForUser('me'), 300);
+      expect(snapshot.stackForUser('nobody'), isNull);
+    });
   });
 
   group('房间名单', () {
@@ -345,7 +454,10 @@ void main() {
               onSetJoinLocked: (locked) async => locked,
               onRemoveMember: (_) async {},
               spectatorSettings: const SpectatorSettings(feeBigBlinds: 10),
-              onUpdateSpectatorSettings: updates.add,
+              onUpdateSpectatorSettings: (settings) {
+                updates.add(settings);
+                return true;
+              },
             ),
           ),
         ),
@@ -443,6 +555,63 @@ void main() {
       player.sendChat('hello');
       expect(player.errorMessage, isNot('spectator_chat_disabled'));
       player.dispose();
+    });
+  });
+
+  group('错误提示不吞第二次', () {
+    test('同一个错误码连续两次，序号也要递增两次', () {
+      // 观战者连点两次「上桌」都被拒：文本相同，界面靠序号才能再提示一次
+      final client = _clientWith(_payload(spectating: true, spectators: [_spectator('me')]));
+      final before = client.errorSequence;
+      for (var round = 0; round < 2; round++) {
+        client.debugHandleMessage(
+          jsonEncode({
+            'version': 1,
+            'type': 'system.error',
+            'payload': {'code': 'room_full'},
+          }),
+        );
+      }
+      expect(client.errorMessage, 'room_full');
+      expect(client.errorSequence, before + 2);
+      client.dispose();
+    });
+  });
+
+  group('房主设置在未连接时不假装成功', () {
+    test('没连上牌桌时 setSpectatorSettings 返回 false', () {
+      final client = GameSocketClient(
+        accessTokenProvider: ({bool forceRefresh = false}) async => 'token',
+        roomId: 'room_1',
+        userId: 'owner',
+      );
+      expect(client.setSpectatorSettings(const SpectatorSettings()), isFalse);
+      client.dispose();
+    });
+
+    testWidgets('发送失败时开关不拨过去，并给出提示', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: RoomManagementDialog(
+              snapshot: TableSnapshot.fromJson(_payload(seats: [_seat('owner')])),
+              currentUserId: 'owner',
+              joinLocked: false,
+              onSetJoinLocked: (locked) async => locked,
+              onRemoveMember: (_) async {},
+              spectatorSettings: const SpectatorSettings(),
+              onUpdateSpectatorSettings: (_) => false,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final voice = find.byKey(const ValueKey('spectator-voice-switch'));
+      await tester.ensureVisible(voice);
+      await tester.tap(voice);
+      await tester.pumpAndSettle();
+      expect(tester.widget<SwitchListTile>(voice).value, isTrue, reason: '仍是默认允许');
+      expect(find.text('还没连上牌桌，请稍后再试'), findsOneWidget);
     });
   });
 

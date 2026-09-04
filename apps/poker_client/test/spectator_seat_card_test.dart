@@ -59,6 +59,9 @@ void main() {
     expect(find.byType(TableMiniFlipCard), findsNWidgets(2));
     expect(find.text('A♠'), findsOneWidget);
     expect(find.text('K♦'), findsOneWidget);
+    // 牌翻开了，但这仍是别人的座位：昵称等信息不能丢
+    expect(find.text('对手'), findsOneWidget);
+    expect(find.byKey(const ValueKey('seat-time-extension')), findsNothing);
   });
 
   testWidgets('普通玩家看别人的座位仍然只有牌背', (tester) async {

@@ -12,8 +12,8 @@
 /// - `pubspec.yaml` 的 `version: <name>+<code>`
 /// - `ohos/AppScope/app.json5` 的 `versionName` 与 `versionCode`
 /// - 本文件
-const String appVersionName = '0.4.0';
-const int appVersionCode = 4000;
+const String appVersionName = '0.4.1';
+const int appVersionCode = 4001;
 
 /// 客户端上报自身版本的两种方式。浏览器的 WebSocket API 不允许设置自定义
 /// 请求头，因此 WS 走查询参数，普通 HTTP 走请求头；服务端两者都认。

@@ -163,7 +163,15 @@ class TableChatPanelState extends State<TableChatPanel> {
   }
 
   void _showBlockedUsers() {
-    final seats = widget.client.snapshot?.seats ?? const <TableSeatSnapshot>[];
+    // 观战者也能发言、也可能被屏蔽；昵称要从座位和观战位两边找
+    final snapshot = widget.client.snapshot;
+    final names = {
+      for (final seat in snapshot?.seats ?? const <TableSeatSnapshot>[])
+        seat.userId: seat.displayName,
+      for (final spectator
+          in snapshot?.spectators ?? const <SpectatorSnapshot>[])
+        spectator.userId: spectator.displayName,
+    };
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
@@ -175,13 +183,7 @@ class TableChatPanelState extends State<TableChatPanel> {
             children: [
               for (final userId in widget.blockedUserIds)
                 ListTile(
-                  title: Text(
-                    seats
-                            .where((seat) => seat.userId == userId)
-                            .map((seat) => seat.displayName)
-                            .firstOrNull ??
-                        userId,
-                  ),
+                  title: Text(names[userId] ?? userId),
                   subtitle: const Text('文字和语音均已屏蔽'),
                   trailing: TextButton(
                     onPressed: () {
