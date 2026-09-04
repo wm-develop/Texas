@@ -220,3 +220,52 @@ func TestAdminIsNotLockedOutByTheirOwnGate(t *testing.T) {
 		t.Fatal("the administrator must be able to undo their own lockout")
 	}
 }
+
+// 浏览器对自定义请求头会先发预检。服务端不声明允许 X-Client-Version 时，
+// 真正的请求会被浏览器拦下——Web 端表现为「无法连接游戏服务」，而其他
+// 平台不走 CORS 一切正常，非常难查。
+func TestPreflightAllowsTheClientVersionHeader(t *testing.T) {
+	server, _ := versionTestServer(t, 0)
+	request, err := http.NewRequest(http.MethodOptions, server.URL+"/v1/auth/login", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Origin", "http://localhost:5173")
+	request.Header.Set("Access-Control-Request-Method", "POST")
+	request.Header.Set("Access-Control-Request-Headers", clientVersionHeader)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+
+	allowed := response.Header.Get("Access-Control-Allow-Headers")
+	if !strings.Contains(strings.ToLower(allowed), strings.ToLower(clientVersionHeader)) {
+		t.Fatalf("preflight must allow %s, got %q", clientVersionHeader, allowed)
+	}
+}
+
+// 预检本身不带任何自定义请求头，按版本判断必然被当成过旧。挡掉预检等于
+// 挡掉 Web 端的每一个请求，而浏览器只会报一句含糊的跨域失败。
+func TestPreflightIsNotBlockedByTheVersionGate(t *testing.T) {
+	server, _ := versionTestServer(t, 999_000_000)
+	request, err := http.NewRequest(http.MethodOptions, server.URL+"/v1/rooms/current", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Origin", "http://localhost:5173")
+	request.Header.Set("Access-Control-Request-Method", "GET")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode == http.StatusUpgradeRequired {
+		t.Fatal("the gate must let preflight through, or Web clients cannot talk to the server at all")
+	}
+	// 真正的请求随后仍要过这道门
+	if actual := getWithVersion(t, server.URL+"/v1/rooms/current", "3000", ""); actual.StatusCode != http.StatusUpgradeRequired {
+		t.Fatalf("the real request must still be gated, got %d", actual.StatusCode)
+	}
+}

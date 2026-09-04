@@ -149,7 +149,13 @@ func configuredCORS(next http.Handler, allowedOrigins []string) http.Handler {
 		if explicitlyAllowed || isLocalDevelopmentOrigin(origin) {
 			writer.Header().Set("Access-Control-Allow-Origin", origin)
 			writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			// 必须声明 X-Client-Version：浏览器对自定义请求头会先发预检，
+			// 服务端不声明允许它，真正的请求就会被浏览器拦下——表现为 Web
+			// 端「无法连接游戏服务」，而其他平台不走 CORS 一切正常。
+			writer.Header().Set(
+				"Access-Control-Allow-Headers",
+				"Authorization, Content-Type, "+clientVersionHeader,
+			)
 			writer.Header().Add("Vary", "Origin")
 			if request.Method == http.MethodOptions {
 				writer.WriteHeader(http.StatusNoContent)

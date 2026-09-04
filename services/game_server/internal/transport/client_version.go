@@ -105,6 +105,14 @@ func clientVersionGuard(gate *clientVersionGate, next http.Handler) http.Handler
 			next.ServeHTTP(writer, request)
 			return
 		}
+		// CORS 预检不携带任何自定义请求头，按版本判断必然被当成过旧。挡掉
+		// 预检等于挡掉 Web 端的每一个请求，而且浏览器只会报一句含糊的跨域
+		// 失败，排查起来毫无线索。放行它不削弱防护：真正的请求随后仍要过
+		// 这道门。
+		if request.Method == http.MethodOptions {
+			next.ServeHTTP(writer, request)
+			return
+		}
 		if _, exempt := clientVersionExemptPaths[request.URL.Path]; exempt {
 			next.ServeHTTP(writer, request)
 			return
