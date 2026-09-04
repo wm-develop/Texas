@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import 'package:poker_client/core/app_version.dart';
 
 class TrtcCredentials {
   const TrtcCredentials({
@@ -63,6 +64,9 @@ class TrtcCredentialClient {
     final headers = <String, String>{
       'content-type': 'application/json; charset=utf-8',
       'accept': 'application/json',
+      // 语音凭证不走 GameApiClient，版本头要自己带：版本门禁包在整个服务
+      // 外层，少了这个头，门槛一开语音就会被 426 拒绝，而其他功能全都正常。
+      clientVersionHeader: '$appVersionCode',
     };
     final token = accessToken?.trim().isNotEmpty == true
         ? accessToken!.trim()

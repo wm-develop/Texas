@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:poker_client/core/app_version.dart';
 import 'package:poker_client/core/network/trtc_credential_client.dart';
 
 void main() {
@@ -65,4 +66,30 @@ void main() {
       );
     },
   );
+  test('带上客户端版本头，否则版本门禁一开语音就被 426 拒绝', () async {
+    // 真机复现：管理员设置最低版本后，其他功能正常，只有语音提示
+    // 「获取语音凭证失败」——这个请求不走 GameApiClient，此前没带版本头。
+    String? reported;
+    final mock = MockClient((request) async {
+      reported = request.headers[clientVersionHeader.toLowerCase()] ??
+          request.headers[clientVersionHeader];
+      return http.Response(
+        jsonEncode({
+          'sdkAppId': 1400000000,
+          'userId': 'player_1',
+          'roomId': 'table_7',
+          'userSig': 'sig',
+          'expireIn': 3600,
+        }),
+        200,
+        headers: {'content-type': 'application/json'},
+      );
+    });
+    final client = TrtcCredentialClient(
+      serverBaseUri: Uri.parse('http://localhost:8080'),
+      httpClient: mock,
+    );
+    await client.issue(userId: 'player_1', roomId: 'table_7');
+    expect(reported, '$appVersionCode');
+  });
 }

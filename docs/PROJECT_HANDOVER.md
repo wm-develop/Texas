@@ -270,6 +270,7 @@ ADR 已完成：[ADR-002](decisions/ADR-002-MULTI-INSTANCE.md)。结论是**暂�
 - 不要把 HarmonyOS 原生系统数字键盘重新用于横屏金额输入，当前设备上曾出现数字不可达和输入闪退。
 - 不要用固定安全边距代替 Android/HarmonyOS 原生挖孔 API。屏幕圆角不在挖孔与系统栏的 inset 里，需要单独让开。
 - **改动 HTTP 语义时必须专门过一遍 Web。** 四端里只有 Web 有 CORS 这一层：新增自定义请求头会触发浏览器预检，服务端的 `Access-Control-Allow-Headers` 不声明它，真正的请求就会被浏览器拦下，而前端只看到一句笼统的连接失败——原生客户端不走 CORS，全都正常，问题极难定位。v0.3.0 加 `X-Client-Version` 时就踩了这个坑。同理，CORS 预检的 OPTIONS 请求不携带任何自定义头，任何按请求头判断的拦截都必须放行它。
+- **新增任何 HTTP 请求都要带 `X-Client-Version`。** 版本门禁包在整个服务外层，不带头的请求在门槛开启后一律 426。客户端目前有两个 HTTP 客户端：`GameApiClient` 和独立的 `TrtcCredentialClient`（语音凭证），后者在 0.4.1 之前没带头，表现为门槛一开、其他功能全部正常、只有语音提示「获取语音凭证失败」。再加第三个客户端时同样要带，并写一条断言请求头的测试。
 - 不要在生产执行 `migrate down`；应用镜像回滚与数据库回滚是两件事。
 - 不要使用 `postgres:latest`，固定 PostgreSQL 主版本。
 - 不要在文档、提交、日志或截图中泄漏真实域名、数据库 URL、TRTC SecretKey 或签名路径。
