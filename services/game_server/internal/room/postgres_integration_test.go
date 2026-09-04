@@ -140,6 +140,11 @@ func TestPostgresPhase3PersistenceFlow(t *testing.T) {
 	}
 	// 观战者不占座位：两人都在观战位时，第三人必须能带入并坐下——此前的
 	// 满员计数 count(*) 把观战者也算了进去，2 人房两人观战就把新人挡在门外。
+	// CreateConfigured 会把人数强制成 10（客户端传的 maxPlayers 已弃用），
+	// 这里直接把库里的上限改成 2，让满员判断真正被触发。
+	if _, err := database.ExecContext(ctx, `UPDATE rooms SET max_players = 2 WHERE room_id = $1`, created.RoomID); err != nil {
+		t.Fatalf("shrink max_players: %v", err)
+	}
 	if err := accounts.CreateUser(ctx, account.User{
 		UserID: "third", Username: "third", DisplayName: "玩家third",
 		PasswordHash: "hash", CreatedAt: now.Add(2 * time.Second),
@@ -170,6 +175,9 @@ func TestPostgresPhase3PersistenceFlow(t *testing.T) {
 	}
 	if _, err := rooms.Leave(ctx, "third"); err != nil {
 		t.Fatalf("Leave(third): %v", err)
+	}
+	if _, err := database.ExecContext(ctx, `UPDATE rooms SET max_players = 10 WHERE room_id = $1`, created.RoomID); err != nil {
+		t.Fatalf("restore max_players: %v", err)
 	}
 	// 两人回到座位，房间恢复成 2 人满员，后面的牌局流程照旧
 	for _, userID := range []string{"owner", "guest"} {

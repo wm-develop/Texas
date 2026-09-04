@@ -69,8 +69,11 @@ func TestMigratorUpgradeRepeatAndRollbackAgainstPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMigrator: %v", err)
 	}
-	if count, err := migrator.Up(ctx, database); err != nil || count != 6 {
-		t.Fatalf("first Up count=%d err=%v", count, err)
+	// 版本数以嵌入目录为准：写死数字会在每次新增迁移后过期——这条用例只有
+	// 配了 TEST_DATABASE_URL 才跑，过期了很久都没人发现。
+	total := len(migrator.Versions())
+	if count, err := migrator.Up(ctx, database); err != nil || count != total {
+		t.Fatalf("first Up count=%d want=%d err=%v", count, total, err)
 	}
 	if count, err := migrator.Up(ctx, database); err != nil || count != 0 {
 		t.Fatalf("repeated Up count=%d err=%v", count, err)
@@ -79,8 +82,8 @@ func TestMigratorUpgradeRepeatAndRollbackAgainstPostgres(t *testing.T) {
 	if err := database.QueryRowContext(ctx, `SELECT to_regclass('users')`).Scan(&usersTable); err != nil || !usersTable.Valid {
 		t.Fatalf("users table=%#v err=%v", usersTable, err)
 	}
-	if count, err := migrator.Down(ctx, database, 6); err != nil || count != 6 {
-		t.Fatalf("Down count=%d err=%v", count, err)
+	if count, err := migrator.Down(ctx, database, total); err != nil || count != total {
+		t.Fatalf("Down count=%d want=%d err=%v", count, total, err)
 	}
 	if err := database.QueryRowContext(ctx, `SELECT to_regclass('users')`).Scan(&usersTable); err != nil || usersTable.Valid {
 		t.Fatalf("users table after rollback=%#v err=%v", usersTable, err)
