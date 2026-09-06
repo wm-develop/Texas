@@ -317,12 +317,16 @@ func TestWebSocketReconnectRestoresCurrentHandAndPrivateCards(t *testing.T) {
 		t.Fatalf("guest before cards=%v", guestBefore.HoleCards)
 	}
 	guestConnection.CloseNow()
-	ownerDisconnected := readSnapshotInPhase(t, ctx, ownerConnection, "PREFLOP")
-	for _, seat := range ownerDisconnected.Seats {
-		if seat.UserID == guest.User.UserID && seat.Connected {
-			t.Fatalf("guest remained connected: %#v", seat)
+	// 房主的连接上可能还排着开局前后的几条 PREFLOP 快照（准备回执、开局广播），
+	// 断线通知在它们之后；只读下一条会随机撞上旧快照而误判「仍在线」。
+	readSnapshotUntil(t, ctx, ownerConnection, "guest shows as disconnected", func(snapshot tablemanager.Snapshot) bool {
+		for _, seat := range snapshot.Seats {
+			if seat.UserID == guest.User.UserID {
+				return !seat.Connected
+			}
 		}
-	}
+		return false
+	})
 
 	reconnected := dialTestSocket(t, ctx, server.URL)
 	defer reconnected.CloseNow()
@@ -424,6 +428,28 @@ func readSnapshotInPhase(
 			t.Fatalf("decode snapshot: %v", err)
 		}
 		if string(snapshot.Phase) == phase {
+			return snapshot
+		}
+	}
+}
+
+// readSnapshotUntil 一直读快照，直到 accept 成立；超时由 ctx 控制。
+// 广播是异步的，关心「某个状态终会出现」时用它，别只读下一条。
+func readSnapshotUntil(
+	t *testing.T,
+	ctx context.Context,
+	connection *websocket.Conn,
+	what string,
+	accept func(tablemanager.Snapshot) bool,
+) tablemanager.Snapshot {
+	t.Helper()
+	for {
+		message := readUntilType(t, ctx, connection, protocol.TypeTableSnapshot)
+		var snapshot tablemanager.Snapshot
+		if err := json.Unmarshal(message.Payload, &snapshot); err != nil {
+			t.Fatalf("decode snapshot while waiting until %s: %v", what, err)
+		}
+		if accept(snapshot) {
 			return snapshot
 		}
 	}
