@@ -18,6 +18,29 @@ jobs:
     defaults:
       run:
         working-directory: services/game_server
+
+    # 真实 PostgreSQL：内存仓储的单元测试拦不住 SQL 与真实库的错配（列数、
+    # 约束、索引），这类问题在本项目已经造成过一次 P0，而集成测试在没有
+    # TEST_DATABASE_URL 时会静默跳过——没人跑就等于没有。
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: texas
+          POSTGRES_PASSWORD: texas_ci
+          POSTGRES_DB: texas_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U texas -d texas_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # 一次性测试库，用完随容器销毁。每个用例在库里新建自己的 schema。
+      TEST_DATABASE_URL: postgres://texas:texas_ci@127.0.0.1:5432/texas_test?sslmode=disable
+
     steps:
       - uses: actions/checkout@v4
 
@@ -39,9 +62,30 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: 确认集成测试没有被跳过
+        # 集成测试在缺少 TEST_DATABASE_URL 时会 t.Skip。一旦服务容器或环境
+        # 变量出问题，全量测试仍然全绿，真实库的覆盖会在无人察觉中消失。
+        # 这一步显式检查它们真的跑了。
+        run: |
+          output="$(go test ./internal/account/ ./internal/chat/ ./internal/postgres/ ./internal/room/             -count=1 -v -run 'Postgres|Migrator')"
+          echo "$output"
+          if echo "$output" | grep -q '^--- SKIP'; then
+            echo "::error::集成测试被跳过，TEST_DATABASE_URL 没有生效"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q 'PASS: TestPostgresPhase3PersistenceFlow'; then
+            echo "::error::没有跑到房间持久化集成测试"
+            exit 1
+          fi
+
       - name: go test
         # -count=1 禁用测试缓存
         run: go test ./... -count=1
+
+      - name: 反复运行传输层用例
+        # WebSocket 用例依赖异步广播的到达顺序，竞态在慢机器上才偶发。
+        # 单次绿色不足以说明稳定，这里连跑多轮把不稳定的用例钉出来。
+        run: go test ./internal/transport/ -count=5
 
       - name: go test -race
         # 单独一步：牌桌是单写者模型，一旦被破坏必须暴露。

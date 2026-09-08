@@ -70,7 +70,7 @@ void _authenticated(GameSocketClient client, String instance) =>
 
 void main() {
   group('服务端重启识别', () {
-    test('进程标识变化且上一手未结算时记录作废的手', () {
+    test('重启后换了手号才算作废', () {
       final client = _client();
       _authenticated(client, 'inst_a');
       client.debugHandleMessage(
@@ -80,9 +80,32 @@ void main() {
 
       _authenticated(client, 'inst_b');
       expect(client.serverInstanceId, 'inst_b');
+      // 还没收到新快照，不能下结论：服务端可能已经把这手恢复了
+      expect(client.takeVoidedHandId(), isNull);
+      expect(client.awaitingRestartOutcome, isTrue);
+
+      client.debugHandleMessage(
+        _envelope('table.snapshot', _snapshot(handId: 'hand_8'), sequence: 2),
+      );
       expect(client.takeVoidedHandId(), 'hand_7');
       // 只提示一次
       expect(client.takeVoidedHandId(), isNull);
+    });
+
+    test('重启后手号不变说明服务端恢复了这手，不提示作废', () {
+      // 0.5.0 起服务端会持久化进行中的牌局；一看到进程标识变化就说作废，
+      // 会在恢复成功时冤枉服务端，玩家以为自己的决策白费了
+      final client = _client();
+      _authenticated(client, 'inst_a');
+      client.debugHandleMessage(
+        _envelope('table.snapshot', _snapshot(handId: 'hand_7'), sequence: 1),
+      );
+      _authenticated(client, 'inst_b');
+      client.debugHandleMessage(
+        _envelope('table.snapshot', _snapshot(handId: 'hand_7'), sequence: 2),
+      );
+      expect(client.takeVoidedHandId(), isNull);
+      expect(client.awaitingRestartOutcome, isFalse);
     });
 
     test('同一进程重连、手已结算或没有手时不提示', () {

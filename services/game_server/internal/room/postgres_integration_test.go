@@ -3,6 +3,7 @@ package room_test
 import (
 	"context"
 	cryptorand "crypto/rand"
+	"encoding/json"
 	"fmt"
 	"os"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"texas/services/game_server/internal/postgres"
 	"texas/services/game_server/internal/room"
 	"texas/services/game_server/internal/security"
+	"texas/services/game_server/internal/tablestate"
 	"texas/services/game_server/migrations"
 )
 
@@ -283,6 +285,43 @@ func TestPostgresPhase3PersistenceFlow(t *testing.T) {
 	if recent := historyStore.RecentForPlayer("owner", 10); len(recent) != 2 || recent[0].HandID != "history-hand" || recent[0].DealerSeat != 1 || len(recent[0].Actions) != 1 {
 		t.Fatalf("recent history=%#v", recent)
 	}
+	// 进行中牌局的状态：外键挂在 rooms 上，只有真实库能验证级联与 upsert。
+	tableStates, err := tablestate.NewPostgresStore(database)
+	if err != nil {
+		t.Fatalf("table state store: %v", err)
+	}
+	if err := tableStates.Save(ctx, tablestate.Record{
+		RoomID: created.RoomID, HandID: "hand_state_1", Revision: 7,
+		State: []byte(`{"version":1}`), UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("save table state: %v", err)
+	}
+	// 同一房间再存一次必须覆盖而不是插入第二行
+	if err := tableStates.Save(ctx, tablestate.Record{
+		RoomID: created.RoomID, HandID: "hand_state_1", Revision: 8,
+		State: []byte(`{"version":1,"engine":{}}`), UpdatedAt: now.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("overwrite table state: %v", err)
+	}
+	storedState, found, err := tableStates.Load(ctx, created.RoomID)
+	if err != nil || !found {
+		t.Fatalf("load table state: found=%v err=%v", found, err)
+	}
+	// jsonb 会重排键，按解析后的内容比较而不是比较字符串
+	var decodedState map[string]any
+	if err := json.Unmarshal(storedState.State, &decodedState); err != nil {
+		t.Fatalf("stored state is not valid JSON: %v", err)
+	}
+	if storedState.Revision != 8 || decodedState["version"] != float64(1) {
+		t.Fatalf("table state did not round-trip: %#v %#v", storedState, decodedState)
+	}
+	if removed, err := tableStates.DeleteOlderThan(ctx, now.Add(2*time.Second)); err != nil || removed != 1 {
+		t.Fatalf("stale cleanup removed=%d err=%v", removed, err)
+	}
+	if _, found, err := tableStates.Load(ctx, created.RoomID); err != nil || found {
+		t.Fatalf("cleaned state must be gone: found=%v err=%v", found, err)
+	}
+
 	chatStore, _ := chat.NewPostgresStore(database)
 	message := chat.Message{
 		MessageID: "message-1", ClientMessageID: "client-1", UserID: "owner",

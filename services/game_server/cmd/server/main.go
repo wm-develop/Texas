@@ -25,6 +25,7 @@ import (
 	"texas/services/game_server/internal/postgres"
 	"texas/services/game_server/internal/room"
 	"texas/services/game_server/internal/security"
+	"texas/services/game_server/internal/tablestate"
 	"texas/services/game_server/internal/transport"
 	"texas/services/game_server/internal/trtc"
 	"texas/services/game_server/migrations"
@@ -51,6 +52,9 @@ func main() {
 		ledgerStore        ledger.Store        = ledger.NewInMemoryStore()
 		historyStore       history.Store       = history.NewInMemoryStore()
 		chatStore          chat.Store
+		// 进行中牌局的状态。内存实现无法跨进程恢复，只是让不接数据库的
+		// 部署与生产走同一条代码路径。
+		tableStates tablestate.Store = tablestate.NewMemoryStore()
 	)
 	if appConfig.DatabaseEnabled() {
 		connectContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -93,6 +97,9 @@ func main() {
 		if err == nil {
 			chatStore, err = chat.NewPostgresStore(database)
 		}
+		if err == nil {
+			tableStates, err = tablestate.NewPostgresStore(database)
+		}
 		if err != nil {
 			logger.Error("postgres repository initialization failed", "error", err)
 			os.Exit(1)
@@ -122,11 +129,23 @@ func main() {
 	}
 	tableManager, err := tablemanager.NewWithConfig(roomService, holdem.CryptoRandom{}, tablemanager.ManagerConfig{
 		Ledger: ledgerStore, History: historyStore, Bankroll: bankrollService,
+		TableStates: tableStates, Logger: logger,
 	})
 	if err != nil {
 		logger.Error("table manager initialization failed", "error", err)
 		os.Exit(1)
 	}
+	// 退出前把待写的牌桌状态刷完：排空超时后仍在进行的那一手，靠它在新进程
+	// 里继续。
+	defer tableManager.Close()
+	// 清理没人回来的牌桌留下的孤儿状态：房间还在，外键级联删不掉它们。
+	// 一手牌不可能打一天，超过 24 小时的记录一定是这种情况。
+	if removed, err := tableStates.DeleteOlderThan(context.Background(), time.Now().Add(-24*time.Hour)); err != nil {
+		logger.Warn("could not clean up stale table states", "error", err)
+	} else if removed > 0 {
+		logger.Info("cleaned up stale table states", "count", removed)
+	}
+
 	chatService, err := chat.NewServiceWithStore(chat.Policy{
 		MaximumRunes: 200, MaximumPerWindow: 5, RateWindow: 10 * time.Second, HistoryLimit: 50,
 		AllowedQuickTexts: map[string]struct{}{

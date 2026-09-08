@@ -100,6 +100,7 @@ TRTC：牌桌语音
 8. `000008_room_join_lock`：房间增加 `join_locked`，房主可临时关闭入口。
 9. `000009_client_version_gate`：`server_settings` 增加 `minimum_client_version`，管理员可随时调整客户端版本门槛。
 10. `000010_spectators`：`rooms` 增加观战位设置四列；`room_members` 增加 `spectating`，座位号允许为 0，座位唯一约束改为只对真实座位生效。
+11. `000011_table_states`：新增 `table_states`，保存进行中牌局的状态快照供崩溃后恢复；每房间至多一行，手结束即删除，随房间级联删除。
 
 生产环境必须先运行 `migrate up`，再启动对应版本游戏服务。服务启动会校验迁移版本和 SQL 校验和。
 
@@ -126,7 +127,7 @@ TRTC：牌桌语音
 - 运行中的牌桌状态主要在内存中。数据库保留业务记录，但服务进程异常退出后不能完整恢复进行中的一手牌。
 - 备份、恢复演练、账本对账、健康巡检与告警均已提供可执行方案（`deploy/backup/`、`deploy/monitor/`，见[备份恢复指南](BACKUP_AND_RESTORE_GUIDE.md)与[运行保障指南](OPERATIONS_GUIDE.md)）；2026-09-01 生产服务器已全部安装并验证：备份定时任务、异机复制、恢复演练、对账定时任务、健康巡检，以及钉钉告警通道（手动触发与 OnFailure 链路均实际收到消息）。24 小时故障注入尚未做。
 - `/metrics` 增加 `texas_goroutines`、`texas_memory_heap_bytes`、`texas_process_start_time_seconds` 三项运行时指标，供 `deploy/monitor/texas-soak.sh` 判断协程泄漏、内存增长与静默重启；脚本启动时会核对指标名，服务端改名后立即失败而非静默记 0。
-- 优雅停机已实现：`SIGTERM` 后停开新局、取消自动准备、广播 `draining` 快照并等待所有牌桌到达手间空档（`SHUTDOWN_DRAIN_TIMEOUT_SECONDS`，默认 120 秒），部署时须 `docker stop -t 150`。客户端凭 `session.authenticated` 的 `serverInstanceId` 识别服务端重启，若重连前那一手尚未结算则明确提示「本手作废、筹码已恢复到上一手结算后」。进行中的手仍无法跨重启恢复，见协议文档 6.8。
+- 优雅停机已实现：`SIGTERM` 后停开新局、取消自动准备、广播 `draining` 快照并等待所有牌桌到达手间空档（`SHUTDOWN_DRAIN_TIMEOUT_SECONDS`，默认 120 秒），部署时须 `docker stop -t 150`。客户端凭 `session.authenticated` 的 `serverInstanceId` 识别服务端重启。**进行中的手已能跨重启恢复**（0.5.0，需接入 PostgreSQL）：引擎每次推进后把完整状态写入 `table_states`，手结束即删除，重启后第一个回到房间的人触发恢复并重新安排行动倒计时；状态版本不符、内容自相矛盾或盲注被改过时放弃恢复，退回「本手作废」的旧行为。客户端据此改为等重连后的第一条快照再判断：手号不变即恢复成功，不再提示作废。见协议文档 6.8。
 - 2026-09-03 多人试玩暴露并修复三处连接状态缺陷：同一用户的旧连接关闭会把在线玩家标为断线并取消准备（现在只有当前生效连接的关闭才算离线，旧连接以关闭码 4001 被主动关掉）；牌局中途加入者结算后一律以断线入座（现在按真实在线状态入座）；动作被拒后客户端请求快照却只收到空的 `replay.completed`（现在显式请求一律回完整快照）。客户端另加动作回执 5 秒看门狗、`system.error` 也放开按钮、自动准备 3 秒后重试，发牌动画改用单调时钟。
 - 屏幕圆角与鸿蒙全屏：圆角不属于挖孔也不属于系统栏，两套 inset 都不含它，却会切掉贴顶控件的一角（安卓手机右上角的聊天按钮）。Android 用 `WindowInsets.getRoundedCorner`（API 31+）上报四角半径，顶部两栏据此下移，已被安全区推开的部分不重复计；鸿蒙无对应接口且实测正常，返回 0。另外鸿蒙的 `FlutterAbility` 并不会自动全屏——平板上一直顶着系统状态栏，现在在 `onWindowStageCreate` 里显式做沉浸式布局并隐藏状态栏，只隐藏状态栏、保留手势导航指示器（一起隐藏会让避让区返回 0，界面不再让开，底部按钮又变得点不动）。**平板真机待验证。**
 - 平板横屏右栏按钮被裁掉/点不动：一是右栏可用高度不足时下注区被直接裁掉，改为贴底可滚动；二是手势导航条压在屏幕底部、落在那片区域的按钮触摸归系统，原生避让区查询在挖孔之外补上导航条（HarmonyOS `TYPE_NAVIGATION_INDICATOR`、Android `navigationBars()`），Flutter 侧再用 `viewPadding`/`systemGestureInsets` 与已消费 padding 的差值兜底。**平板真机待验证。**

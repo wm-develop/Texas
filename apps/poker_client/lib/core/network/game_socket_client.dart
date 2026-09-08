@@ -76,6 +76,7 @@ class GameSocketClient extends ChangeNotifier {
   bool _forceRefreshOnNextConnect = false;
   int _requestCounter = 0;
   String? _serverInstanceId;
+  String? _handIdBeforeRestart;
   String? _voidedHandId;
   DateTime _lastServerMessageAt = DateTime.now();
 
@@ -88,12 +89,18 @@ class GameSocketClient extends ChangeNotifier {
   String? get serverInstanceId => _serverInstanceId;
 
   /// 取出并清除「上一手因服务端重启作废」的手牌号；没有则返回 null。
-  /// 进行中的手只存在于旧进程内存里，新进程无法恢复它，玩家需要一个解释。
+  ///
+  /// 服务端从 0.5.0 起会持久化进行中的牌局，重启后多数情况能原样恢复。
+  /// 因此不能一看到进程标识变化就说作废——要等重连后的第一条快照到达，
+  /// 手号还在就是恢复成功，换了手号才是真的作废。
   String? takeVoidedHandId() {
     final value = _voidedHandId;
     _voidedHandId = null;
     return value;
   }
+
+  /// 服务端重启后是否正在等待第一条快照来判断那手的去向。
+  bool get awaitingRestartOutcome => _handIdBeforeRestart != null;
 
   void _observeServerInstance(String? instanceId) {
     if (instanceId == null || instanceId.isEmpty) return;
@@ -105,7 +112,18 @@ class GameSocketClient extends ChangeNotifier {
         snapshot != null &&
         snapshot.handId.isNotEmpty &&
         snapshot.settlement == null) {
-      _voidedHandId = snapshot.handId;
+      // 先记下来，等新进程的第一条快照到了再下结论
+      _handIdBeforeRestart = snapshot.handId;
+    }
+  }
+
+  /// 重启后的第一条快照决定那手是被恢复了还是真的作废了。
+  void _resolveRestartOutcome(TableSnapshot fresh) {
+    final pending = _handIdBeforeRestart;
+    if (pending == null) return;
+    _handIdBeforeRestart = null;
+    if (fresh.handId != pending) {
+      _voidedHandId = pending;
     }
   }
 
@@ -404,6 +422,7 @@ class GameSocketClient extends ChangeNotifier {
         case 'table.snapshot':
           if (payload is Map<String, dynamic>) {
             _snapshot = TableSnapshot.fromJson(payload);
+            _resolveRestartOutcome(_snapshot!);
             _recoveringSequenceGap = false;
             if (_errorMessage == 'sequence_gap') _errorMessage = null;
             if (_pendingRevision != null &&

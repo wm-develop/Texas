@@ -3,6 +3,7 @@ package tablemanager
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"texas/services/game_server/internal/history"
 	"texas/services/game_server/internal/ledger"
 	"texas/services/game_server/internal/room"
+	"texas/services/game_server/internal/tablestate"
 )
 
 type Manager struct {
@@ -30,6 +32,12 @@ type Manager struct {
 	ledger           ledger.Store
 	history          history.Store
 	bankroll         *bankroll.Service
+	// tableStates 保存进行中牌局的状态，供进程重启后恢复那一手。为空时
+	// 行为与从前一致：崩溃后进行中的一手作废。
+	tableStates tablestate.Store
+	// stateWriter 在后台把状态写入 tableStates，避免在牌桌锁里等数据库。
+	stateWriter *stateWriter
+	logger      *slog.Logger
 }
 
 type runtime struct {
@@ -80,6 +88,9 @@ const (
 	standardActionDuration = 30 * time.Second
 	headsUpActionDuration  = 60 * time.Second
 	autoReadyDelay         = 10 * time.Second
+	// 持久化牌桌状态的超时：它在牌局的关键路径上，宁可放弃这次保存也不能
+	// 让所有玩家跟着数据库一起卡住。
+	tableStatePersistTimeout = 3 * time.Second
 	// 发两次的结算在客户端分两块牌面先后展示（第一块停留 5 秒再切换），
 	// 自动准备相应延长，保证玩家能看完两块牌面的结果。
 	runoutAutoReadyDelay = 15 * time.Second
@@ -95,6 +106,10 @@ type ManagerConfig struct {
 	Ledger    ledger.Store
 	History   history.Store
 	Bankroll  *bankroll.Service
+	// TableStates 为空时不保存也不恢复牌局：崩溃后进行中的一手作废，
+	// 与 0.5.0 之前的行为相同。
+	TableStates tablestate.Store
+	Logger      *slog.Logger
 }
 
 type SeatSnapshot struct {
@@ -235,12 +250,35 @@ func NewWithConfig(rooms *room.Service, random holdem.IntnSource, config Manager
 	if config.History == nil {
 		config.History = history.NewInMemoryStore()
 	}
-	return &Manager{
+	manager := &Manager{
 		rooms: rooms, random: random, tables: make(map[string]*runtime),
 		now: config.Now, afterFunc: config.AfterFunc,
 		ledger: config.Ledger, history: config.History,
-		bankroll: config.Bankroll,
-	}, nil
+		bankroll:    config.Bankroll,
+		tableStates: config.TableStates, logger: config.Logger,
+	}
+	if config.TableStates != nil {
+		manager.stateWriter = newStateWriter(config.TableStates, config.Logger)
+	}
+	return manager, nil
+}
+
+// waitForStatePersistence 等到状态写入落盘。仅供测试：生产路径异步写入，
+// 等待会重新引入「数据库慢就卡住牌桌」的问题。
+func (manager *Manager) waitForStatePersistence() {
+	if manager.stateWriter != nil {
+		manager.stateWriter.waitIdle()
+	}
+}
+
+// Close 停止后台的状态写入并把待写的状态刷完。
+//
+// 优雅停机时必须调用：排空超时后仍在进行的那一手，靠这份状态才能在新进程
+// 里继续。没有配置状态存储时它什么也不做。
+func (manager *Manager) Close() {
+	if manager.stateWriter != nil {
+		manager.stateWriter.close()
+	}
 }
 
 func (manager *Manager) SetSnapshotListener(listener func(roomID string)) {
@@ -366,6 +404,9 @@ func (manager *Manager) startHandIfReadyLocked(
 	if err := runtime.engine.StartHand(manager.random); err != nil {
 		return room.Room{}, err
 	}
+	// 开局即落盘：此时底池已经收了盲注与看牌费，崩溃后不恢复就意味着
+	// 这些筹码要靠「作废」回滚。
+	defer manager.persistStateLocked(runtime)
 	if runtime.spectatorFees != nil {
 		runtime.spectatorFees.HandID = runtime.engine.HandID()
 	}
@@ -410,6 +451,9 @@ func (manager *Manager) SubmitAction(
 	previousRevision := runtime.engine.Revision()
 	street := runtime.engine.Phase()
 	result, err := runtime.engine.SubmitAction(request)
+	// 引擎已经推进，无论后续是否结算，状态都要落盘（结算后 persist 会自动
+	// 改为删除记录）。放在这里而不是每个返回分支，避免漏掉一条路径。
+	defer manager.persistStateLocked(runtime)
 	if err != nil {
 		return holdem.ActionResult{}, Snapshot{}, err
 	}
@@ -458,6 +502,7 @@ func (manager *Manager) SubmitRunoutChoice(
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	settled, err := runtime.engine.ChooseRunoutCount(userID, count)
+	defer manager.persistStateLocked(runtime)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -898,6 +943,11 @@ func (manager *Manager) runtimeFor(roomValue room.Room) (*runtime, error) {
 		seatSwapRequests:         make(map[string]seatSwapRequest),
 		online:                   make(map[string]bool),
 	}
+	// 进程重启后第一个回到这个房间的人触发恢复：没人回来的牌桌不必占用
+	// 内存，它的状态记录留在库里，直到有人回来或被过期清理。
+	created.mu.Lock()
+	manager.restoreLocked(created, roomValue)
+	created.mu.Unlock()
 	manager.tables[roomValue.RoomID] = created
 	return created, nil
 }
@@ -1148,6 +1198,7 @@ func (manager *Manager) handleTimeout(roomID string, generation uint64) {
 		var result holdem.ActionResult
 		street := runtime.engine.Phase()
 		result, err = runtime.engine.ApplyTimeout()
+		defer manager.persistStateLocked(runtime)
 		if err == nil {
 			runtime.actions = append(runtime.actions, history.Action{
 				ActionID: result.ActionID, UserID: actorUserID, Sequence: len(runtime.actions) + 1,
