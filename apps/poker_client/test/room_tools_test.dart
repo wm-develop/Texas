@@ -274,6 +274,54 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    testWidgets('鸿蒙手机那样的矮屏上，滚到底必须能看到并点到房间管理', (tester) async {
+      // 真机复现：鸿蒙手机横屏可用高度更小，弹窗内容按「屏幕高度 70%」限高，
+      // 没有扣掉标题、按钮和系统避让区，内容被裁在弹窗外面，怎么滚都滚不到
+      // 「房间管理」。安卓手机逻辑高度大一些，恰好没触发。
+      tester.view.physicalSize = const Size(800, 340);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      var opened = 0;
+      final settings = AppSettingsController();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: Center(
+                child: FilledButton(
+                  onPressed: () => showAppSettingsDialog(
+                    context,
+                    settings,
+                    onOpenAdmin: () {},
+                    onOpenRoomManagement: () => opened++,
+                  ),
+                  child: const Text('打开'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('打开'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull, reason: '内容不能溢出弹窗');
+
+      final entry = find.byKey(const ValueKey('settings-room-management'));
+      await tester.scrollUntilVisible(
+        entry,
+        80,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+      final rect = tester.getRect(entry);
+      expect(rect.bottom, lessThanOrEqualTo(340), reason: '条目必须完整落在屏幕内');
+      await tester.tap(entry);
+      await tester.pumpAndSettle();
+      expect(opened, 1, reason: '滚到底后必须能真的点到');
+    });
+
     testWidgets('非房主看不到房间管理入口', (tester) async {
       final settings = AppSettingsController();
       await tester.pumpWidget(

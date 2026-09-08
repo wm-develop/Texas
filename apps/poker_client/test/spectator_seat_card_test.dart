@@ -45,6 +45,11 @@ Future<void> _pump(WidgetTester tester, TableSeat seat, SeatDealState deal) =>
       ),
     );
 
+/// 小牌现在是「点数 + 花色图形」两个部件，按 label 找整张牌。
+Finder _miniCard(String label) => find.byWidgetPredicate(
+  (widget) => widget is TableMiniCard && widget.label == label,
+);
+
 void main() {
   testWidgets('观战者拿到别人的手牌时，发牌演出翻开而不是淡出牌背', (tester) async {
     // 此前只有本人的牌会翻开，别人的一律以牌背淡出；观战者的座位数据里有牌，
@@ -57,8 +62,8 @@ void main() {
     await tester.pump();
 
     expect(find.byType(TableMiniFlipCard), findsNWidgets(2));
-    expect(find.text('A♠'), findsOneWidget);
-    expect(find.text('K♦'), findsOneWidget);
+    expect(_miniCard('A♠'), findsOneWidget);
+    expect(_miniCard('K♦'), findsOneWidget);
     // 牌翻开了，但这仍是别人的座位：昵称等信息不能丢
     expect(find.text('对手'), findsOneWidget);
     expect(find.byKey(const ValueKey('seat-time-extension')), findsNothing);

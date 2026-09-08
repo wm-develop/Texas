@@ -286,9 +286,12 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                     onOpenAdmin: widget.session.user.isAdmin
                         ? _openAdmin
                         : null,
-                    // 房间管理只对房主开放
+                    // 房间管理只对房主开放。快照还没到时退回房间信息里的房主：
+                    // 页面在第一份快照前就能画出来，此时只认快照会把房主当成
+                    // 普通成员，弹窗里就没有这一项。
                     onOpenRoomManagement:
-                        _gameSocket.snapshot?.ownerUserId ==
+                        (_gameSocket.snapshot?.ownerUserId ??
+                                widget.room.ownerUserId) ==
                             widget.session.user.userId
                         ? _openRoomManagement
                         : null,

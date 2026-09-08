@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
+import 'package:poker_client/core/widgets/dialog_scroll_area.dart';
 import 'package:poker_client/core/widgets/platform_number_field.dart';
 import 'package:poker_client/features/table/domain/table_snapshot.dart';
 
@@ -28,6 +29,7 @@ class RoomManagementDialog extends StatefulWidget {
   /// 观战位当前设置；改动通过 [onUpdateSpectatorSettings] 发给服务端，
   /// 服务端立即生效并随快照广播。
   final SpectatorSettings spectatorSettings;
+
   /// 返回是否已发给服务端；未连接时返回 false，界面不得把开关拨过去。
   final bool Function(SpectatorSettings settings) onUpdateSpectatorSettings;
 
@@ -66,8 +68,12 @@ class _RoomManagementDialogState extends State<RoomManagementDialog> {
   /// 看牌费只在提交时生效，避免每敲一个数字就发一次请求。
   void _saveFee() {
     final value = int.tryParse(_fee.text.trim());
-    if (value == null || value < 0 || value > SpectatorSettings.maxFeeBigBlinds) {
-      setState(() => _feeError = '需在 0～${SpectatorSettings.maxFeeBigBlinds} 之间');
+    if (value == null ||
+        value < 0 ||
+        value > SpectatorSettings.maxFeeBigBlinds) {
+      setState(
+        () => _feeError = '需在 0～${SpectatorSettings.maxFeeBigBlinds} 之间',
+      );
       return;
     }
     setState(() => _feeError = null);
@@ -75,6 +81,7 @@ class _RoomManagementDialogState extends State<RoomManagementDialog> {
       _updateSpectator(_spectator.copyWith(feeBigBlinds: value));
     }
   }
+
   String? _error;
   final Set<String> _removed = {};
 
@@ -120,35 +127,38 @@ class _RoomManagementDialogState extends State<RoomManagementDialog> {
     // 上桌玩家和观战者都能被移出：观战者不占座位，此前只列座位，房主根本
     // 找不到把观战者请出去的入口。
     final snapshot = widget.snapshot;
-    final others = [
-      for (final seat in snapshot?.seats ?? const <TableSeatSnapshot>[])
-        _RemovableMember(
-          userId: seat.userId,
-          displayName: seat.displayName,
-          stack: seat.stack,
-          description:
-              '座位 ${seat.seat} · 筹码 ${seat.stack}'
-              '${seat.connected ? '' : ' · 已断线'}',
-        ),
-      for (final spectator
-          in snapshot?.spectators ?? const <SpectatorSnapshot>[])
-        _RemovableMember(
-          userId: spectator.userId,
-          displayName: spectator.displayName,
-          stack: spectator.stack,
-          description:
-              '观战 · 筹码 ${spectator.stack}'
-              '${spectator.connected ? '' : ' · 已断线'}',
-        ),
-    ].where((member) => member.userId != widget.currentUserId)
-        .where((member) => !_removed.contains(member.userId))
-        .toList(growable: false);
+    final others =
+        [
+              for (final seat in snapshot?.seats ?? const <TableSeatSnapshot>[])
+                _RemovableMember(
+                  userId: seat.userId,
+                  displayName: seat.displayName,
+                  stack: seat.stack,
+                  description:
+                      '座位 ${seat.seat} · 筹码 ${seat.stack}'
+                      '${seat.connected ? '' : ' · 已断线'}',
+                ),
+              for (final spectator
+                  in snapshot?.spectators ?? const <SpectatorSnapshot>[])
+                _RemovableMember(
+                  userId: spectator.userId,
+                  displayName: spectator.displayName,
+                  stack: spectator.stack,
+                  description:
+                      '观战 · 筹码 ${spectator.stack}'
+                      '${spectator.connected ? '' : ' · 已断线'}',
+                ),
+            ]
+            .where((member) => member.userId != widget.currentUserId)
+            .where((member) => !_removed.contains(member.userId))
+            .toList(growable: false);
     return AlertDialog(
       title: const Text('房间管理'),
       content: SizedBox(
         width: 380,
-        // 人多时列表会很长，手机横屏更放不下，一律可滚动
-        child: SingleChildScrollView(
+        // 人多时列表会很长，手机横屏更放不下，一律可滚动；高度按屏幕真实
+        // 可用空间算，鸿蒙上不能指望弹窗替我们裁
+        child: DialogScrollArea(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -156,9 +166,7 @@ class _RoomManagementDialogState extends State<RoomManagementDialog> {
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('允许新玩家加入'),
-                subtitle: Text(
-                  _locked ? '房间入口已关闭，房内玩家不受影响' : '其他人可以用房间码加入',
-                ),
+                subtitle: Text(_locked ? '房间入口已关闭，房内玩家不受影响' : '其他人可以用房间码加入'),
                 value: !_locked,
                 onChanged: _busy
                     ? null
@@ -170,37 +178,35 @@ class _RoomManagementDialogState extends State<RoomManagementDialog> {
               const Divider(height: 20),
               const Text('观战位', style: TextStyle(fontWeight: FontWeight.w700)),
               const SizedBox(height: 6),
+              // 与补码弹窗同一套写法：带标签的整行输入框，而不是挤在说明文字
+              // 旁边的 84 宽小格——鸿蒙的数字面板入口自带浮动标签和占位文字，
+              // 挤在小格里比例就不对了。
               Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Expanded(
-                    child: Text(
-                      '看牌费（大盲倍数，0 为免费）',
-                      style: TextStyle(fontSize: 13),
-                    ),
-                  ),
-                  SizedBox(
-                    width: 84,
-                    // 与补码、房间码同一套数字面板：HarmonyOS 横屏弹窗里系统数字
-                    // 键盘不稳定，项目约定金额类输入一律走 PlatformNumberField。
+                  Expanded(
                     child: PlatformNumberField(
                       key: const ValueKey('spectator-fee-field'),
                       controller: _fee,
                       maxLength: 3,
                       onSubmitted: (_) => _saveFee(),
                       decoration: InputDecoration(
-                        isDense: true,
-                        border: const OutlineInputBorder(),
+                        labelText: '看牌费（大盲倍数）',
+                        helperText: '0 为免费，最多 100',
                         suffixText: 'BB',
                         errorText: _feeError,
                         counterText: '',
                       ),
                     ),
                   ),
-                  const SizedBox(width: 4),
-                  TextButton(
-                    key: const ValueKey('spectator-fee-apply'),
-                    onPressed: _busy ? null : _saveFee,
-                    child: const Text('应用'),
+                  const SizedBox(width: 8),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: FilledButton.tonal(
+                      key: const ValueKey('spectator-fee-apply'),
+                      onPressed: _busy ? null : _saveFee,
+                      child: const Text('应用'),
+                    ),
                   ),
                 ],
               ),
@@ -214,8 +220,9 @@ class _RoomManagementDialogState extends State<RoomManagementDialog> {
                 value: _spectator.voiceAllowed,
                 onChanged: _busy
                     ? null
-                    : (value) =>
-                          _updateSpectator(_spectator.copyWith(voiceAllowed: value)),
+                    : (value) => _updateSpectator(
+                        _spectator.copyWith(voiceAllowed: value),
+                      ),
               ),
               SwitchListTile(
                 key: const ValueKey('spectator-chat-switch'),
@@ -225,8 +232,9 @@ class _RoomManagementDialogState extends State<RoomManagementDialog> {
                 value: _spectator.chatAllowed,
                 onChanged: _busy
                     ? null
-                    : (value) =>
-                          _updateSpectator(_spectator.copyWith(chatAllowed: value)),
+                    : (value) => _updateSpectator(
+                        _spectator.copyWith(chatAllowed: value),
+                      ),
               ),
               SwitchListTile(
                 key: const ValueKey('spectator-emote-switch'),
@@ -236,8 +244,9 @@ class _RoomManagementDialogState extends State<RoomManagementDialog> {
                 value: _spectator.emoteAllowed,
                 onChanged: _busy
                     ? null
-                    : (value) =>
-                          _updateSpectator(_spectator.copyWith(emoteAllowed: value)),
+                    : (value) => _updateSpectator(
+                        _spectator.copyWith(emoteAllowed: value),
+                      ),
               ),
               const Divider(height: 20),
               Row(
@@ -288,10 +297,7 @@ class _RoomManagementDialogState extends State<RoomManagementDialog> {
                   ),
               if (_error != null) ...[
                 const SizedBox(height: 8),
-                Text(
-                  _error!,
-                  style: const TextStyle(color: Colors.redAccent),
-                ),
+                Text(_error!, style: const TextStyle(color: Colors.redAccent)),
               ],
             ],
           ),

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:poker_client/core/widgets/dialog_scroll_area.dart';
 import 'package:poker_client/features/table/domain/table_snapshot.dart';
 
 /// 房间名单：分列上桌玩家与观战者。
@@ -43,7 +44,8 @@ class TableRosterDialog extends StatelessWidget {
       content: SizedBox(
         width: 380,
         // 人多时列表很长，手机横屏更放不下，一律可滚动
-        child: SingleChildScrollView(
+        // 高度按屏幕真实可用空间算，鸿蒙上不能指望弹窗替我们裁
+        child: DialogScrollArea(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,

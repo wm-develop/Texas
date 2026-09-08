@@ -22,7 +22,9 @@ void main() {
       expect(suitColorForLabel(''), suitColor(''));
     });
 
-    testWidgets('玩家框小牌与公共牌大牌使用同一套花色颜色', (tester) async {
+    testWidgets('小牌与大牌的点数和花色图形都用同一套花色颜色', (tester) async {
+      // 花色符号在 Android / HarmonyOS 上会被彩色 emoji 字体接管，文字颜色
+      // 对它不起作用，所以花色必须是自绘图形，颜色才能和点数一致
       await tester.pumpWidget(
         const MaterialApp(
           home: Scaffold(
@@ -35,10 +37,45 @@ void main() {
           ),
         ),
       );
-      final mini = tester.widget<Text>(find.text('7♣'));
-      final big = tester.widget<Text>(find.text('7\n♣'));
-      expect(mini.style?.color, suitColor('♣'));
-      expect(big.style?.color, suitColor('♣'));
+      final ranks = tester.widgetList<Text>(find.text('7')).toList();
+      expect(ranks, hasLength(2));
+      for (final rank in ranks) {
+        expect(rank.style?.color, suitColor('♣'));
+      }
+      final glyphs = tester.widgetList<SuitGlyph>(find.byType(SuitGlyph)).toList();
+      expect(glyphs, hasLength(2));
+      for (final glyph in glyphs) {
+        expect(glyph.suit, '♣');
+        expect(glyph.color, suitColor('♣'));
+      }
+      expect(find.text('7♣'), findsNothing, reason: '不再依赖字体渲染花色字符');
+    });
+
+    testWidgets('「10」在玩家框小牌里和别的牌一样上下居中，不溢出', (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: Row(
+              children: [
+                TableMiniCard(label: '10♦', compact: true),
+                TableMiniCard(label: '7♣', compact: true),
+              ],
+            ),
+          ),
+        ),
+      );
+      expect(find.text('10'), findsOneWidget);
+      expect(find.text('7'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      // 两张牌的点数文字都在各自牌面的水平中线上
+      for (final label in const ['10♦', '7♣']) {
+        final card = find.byWidgetPredicate(
+          (widget) => widget is TableMiniCard && widget.label == label,
+        );
+        final rank = find.descendant(of: card, matching: find.byType(Text));
+        final cardCenter = tester.getCenter(card).dx;
+        expect((tester.getCenter(rank).dx - cardCenter).abs(), lessThan(1.5));
+      }
     });
   });
 

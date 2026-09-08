@@ -19,6 +19,108 @@ Color suitColor(String suit) => switch (suit) {
 Color suitColorForLabel(String label) =>
     suitColor(label.isEmpty ? '' : label.substring(label.length - 1));
 
+/// 牌面文字的点数部分（`10♥` → `10`）。
+String rankOfLabel(String label) =>
+    label.isEmpty ? '' : label.substring(0, label.length - 1);
+
+/// 牌面文字的花色部分（`10♥` → `♥`）。
+String suitOfLabel(String label) =>
+    label.isEmpty ? '' : label.substring(label.length - 1);
+
+/// 自绘的花色图形。
+///
+/// ♠♥♦♣ 这四个字符在 Android / HarmonyOS 上会被系统的彩色 emoji 字体接管：
+/// 红桃方块固定红色、黑桃梅花固定黑色，文字颜色对它们完全不起作用——
+/// 于是「四色牌」只染到了点数，花色还是老样子。自己画，四端一致。
+class SuitGlyph extends StatelessWidget {
+  const SuitGlyph({required this.suit, required this.size, Color? color, super.key})
+    : color = color ?? Colors.black87;
+
+  final String suit;
+  final double size;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => CustomPaint(
+    size: Size(size, size),
+    painter: _SuitPainter(suit: suit, color: color),
+  );
+}
+
+class _SuitPainter extends CustomPainter {
+  const _SuitPainter({required this.suit, required this.color});
+
+  final String suit;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill;
+    final w = size.width;
+    final h = size.height;
+    switch (suit) {
+      case '♥':
+        canvas.drawPath(_heart(w, h, 0, 0), paint);
+      case '♦':
+        canvas.drawPath(
+          Path()
+            ..moveTo(w / 2, 0)
+            ..lineTo(w * 0.94, h / 2)
+            ..lineTo(w / 2, h)
+            ..lineTo(w * 0.06, h / 2)
+            ..close(),
+          paint,
+        );
+      case '♠':
+        // 倒置的心形占上面约 82%，底座只露出短短一截；此前心形 72%、底座从
+        // 58% 起画到底，柄显得太长。
+        canvas.save();
+        canvas.translate(w / 2, h * 0.41);
+        canvas.rotate(3.141592653589793);
+        canvas.drawPath(_heart(w, h * 0.82, -w / 2, -h * 0.41), paint);
+        canvas.restore();
+        canvas.drawPath(
+          Path()
+            ..moveTo(w / 2, h * 0.7)
+            ..lineTo(w * 0.66, h)
+            ..lineTo(w * 0.34, h)
+            ..close(),
+          paint,
+        );
+      case '♣':
+        final r = w * 0.24;
+        canvas.drawCircle(Offset(w / 2, r), r, paint);
+        canvas.drawCircle(Offset(r, h * 0.55), r, paint);
+        canvas.drawCircle(Offset(w - r, h * 0.55), r, paint);
+        canvas.drawCircle(Offset(w / 2, h * 0.5), r * 0.8, paint);
+        canvas.drawPath(
+          Path()
+            ..moveTo(w / 2, h * 0.5)
+            ..lineTo(w * 0.68, h)
+            ..lineTo(w * 0.32, h)
+            ..close(),
+          paint,
+        );
+      default:
+        break;
+    }
+  }
+
+  /// 心形：两个圆弧顶部、一个尖底，位于 (x, y) 起始的 w×h 矩形内。
+  static Path _heart(double w, double h, double x, double y) => Path()
+    ..moveTo(x + w / 2, y + h)
+    ..cubicTo(x + w * 0.1, y + h * 0.62, x, y + h * 0.35, x + w * 0.05, y + h * 0.22)
+    ..cubicTo(x + w * 0.15, y - h * 0.05, x + w * 0.45, y, x + w / 2, y + h * 0.22)
+    ..cubicTo(x + w * 0.55, y, x + w * 0.85, y - h * 0.05, x + w * 0.95, y + h * 0.22)
+    ..cubicTo(x + w, y + h * 0.35, x + w * 0.9, y + h * 0.62, x + w / 2, y + h)
+    ..close();
+
+  @override
+  bool shouldRepaint(_SuitPainter old) => old.suit != suit || old.color != color;
+}
+
 class TablePlayingCard extends StatelessWidget {
   const TablePlayingCard({
     required this.rank,
@@ -53,15 +155,33 @@ class TablePlayingCard extends StatelessWidget {
           borderRadius: BorderRadius.circular(8),
           border: Border.all(color: Colors.white30),
         ),
-        child: Text(
-          '$rank\n$suit',
-          style: TextStyle(
-            height: 1,
-            color: rank == '?' ? Colors.white54 : suitColor(suit),
-            fontSize: 18,
-            fontWeight: FontWeight.w700,
-          ),
-        ),
+        child: rank == '?'
+            ? const Text(
+                '?',
+                style: TextStyle(
+                  height: 1,
+                  color: Colors.white54,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                ),
+              )
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    rank,
+                    style: TextStyle(
+                      height: 1,
+                      color: suitColor(suit),
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  SuitGlyph(suit: suit, size: 16, color: suitColor(suit)),
+                ],
+              ),
       ),
     );
   }
@@ -78,6 +198,9 @@ class TableMiniCard extends StatelessWidget {
     // 玩家框里的牌此前只有 27×34、10 号字，试玩反馈看不清花色。宽度随意，
     // 高度受玩家框 116 限制：观战者看别人座位那一支（牌 + 昵称 + 状态三行）
     // 只有 1 像素余量，再高就溢出。真正解决辨识度的是四色，不是尺寸。
+    // 一律「点数在上、花色在下」居中：此前是一行文字，「10」放不下就自动折行
+    // 成靠左的两行，和别的牌不一致。
+    final color = suitColorForLabel(label);
     return Container(
       width: compact ? 30 : 38,
       height: compact ? 36 : 48,
@@ -86,14 +209,26 @@ class TableMiniCard extends StatelessWidget {
         color: const Color(0xFFF4F0E7),
         borderRadius: BorderRadius.circular(6),
       ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: suitColorForLabel(label),
-          fontWeight: FontWeight.w900,
-          fontSize: compact ? 12 : 15,
-          height: 1,
-        ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(
+            rankOfLabel(label),
+            style: TextStyle(
+              color: color,
+              fontWeight: FontWeight.w900,
+              fontSize: compact ? 12 : 15,
+              height: 1,
+            ),
+          ),
+          SizedBox(height: compact ? 2 : 3),
+          SuitGlyph(
+            suit: suitOfLabel(label),
+            size: compact ? 10 : 13,
+            color: color,
+          ),
+        ],
       ),
     );
   }
