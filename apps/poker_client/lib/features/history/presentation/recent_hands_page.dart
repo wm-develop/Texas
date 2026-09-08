@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:poker_client/features/history/domain/recent_hand.dart';
+import 'package:poker_client/features/table/presentation/table_card_widgets.dart';
+import 'package:poker_client/features/table/presentation/table_labels.dart';
 
 class RecentHandsPage extends StatefulWidget {
   const RecentHandsPage({
@@ -156,7 +158,19 @@ class _HandCard extends StatelessWidget {
                       spacing: 4,
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
-                        for (final card in player.holeCards) _PlayingCard(card),
+                        // 服务端只下发本人的牌与摊牌时亮过的牌，别人盖着结束
+                        // 的牌永远不会出现在这里；写清楚，免得看着像加载失败。
+                        if (player.holeCards.isEmpty)
+                          const Text(
+                            '未亮牌',
+                            style: TextStyle(
+                              color: Colors.white38,
+                              fontSize: 12,
+                            ),
+                          )
+                        else
+                          for (final card in player.holeCards)
+                            _PlayingCard(card),
                         Text(
                           '${player.delta >= 0 ? '+' : ''}${player.delta}',
                           style: TextStyle(
@@ -168,6 +182,27 @@ class _HandCard extends StatelessWidget {
                       ],
                     ),
                   ),
+                if (hand.actions.isNotEmpty) ...[
+                  const Divider(height: 20),
+                  const Text(
+                    '过程',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 4),
+                  for (final street in _streetsOf(hand))
+                    Padding(
+                      key: ValueKey('hand-street-$street'),
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        '${_streetLabel(street)}：'
+                        '${_actionsOfStreet(hand, street).join('，')}',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                ],
               ],
             ),
           ),
@@ -177,6 +212,45 @@ class _HandCard extends StatelessWidget {
   }
 }
 
+/// 本手出现过的街，按牌局顺序；没有动作的街不显示。
+List<String> _streetsOf(RecentHand hand) {
+  const order = ['preflop', 'flop', 'turn', 'river'];
+  final present = hand.actions.map((action) => action.street).toSet();
+  return [for (final street in order) if (present.contains(street)) street];
+}
+
+String _streetLabel(String street) => switch (street) {
+  'preflop' => '翻牌前',
+  'flop' => '翻牌',
+  'turn' => '转牌',
+  'river' => '河牌',
+  _ => street,
+};
+
+/// 把一条街上的动作写成「昵称 动作」，昵称取自本手的玩家名单。
+List<String> _actionsOfStreet(RecentHand hand, String street) {
+  final names = {
+    for (final player in hand.players) player.userId: player.displayName,
+  };
+  return [
+    for (final action in hand.actions)
+      if (action.street == street)
+        '${names[action.userId] ?? '玩家'} ${_actionLabel(action)}',
+  ];
+}
+
+String _actionLabel(RecentHandAction action) => switch (action.type) {
+  'fold' => '弃牌',
+  'check' => '过牌',
+  'call' => '跟注 ${action.committed}',
+  'bet' => '下注 ${action.raiseTo}',
+  'raise' => '加注到 ${action.raiseTo}',
+  'all_in' => '全下 ${action.raiseTo}',
+  'post_small_blind' => '小盲 ${action.committed}',
+  'post_big_blind' => '大盲 ${action.committed}',
+  _ => action.type,
+};
+
 class _PlayingCard extends StatelessWidget {
   const _PlayingCard(this.card);
 
@@ -184,15 +258,10 @@ class _PlayingCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final suit = card.length == 2 ? card[1] : '';
-    final red = suit == 'h' || suit == 'd';
-    final symbol = switch (suit) {
-      'c' => '♣',
-      'd' => '♦',
-      'h' => '♥',
-      's' => '♠',
-      _ => '',
-    };
+    // 与牌桌共用同一套四色和自绘花色：花色符号在 Android / HarmonyOS 上会被
+    // 彩色 emoji 字体接管，用文字画出来颜色不受控，两处还会不一致。
+    final symbol = cardSuit(card);
+    final color = suitColor(symbol);
     return Container(
       width: 34,
       height: 42,
@@ -201,12 +270,22 @@ class _PlayingCard extends StatelessWidget {
         color: const Color(0xFFF4F0E8),
         borderRadius: BorderRadius.circular(6),
       ),
-      child: Text(
-        card.isEmpty ? '?' : '${card[0]}$symbol',
-        style: TextStyle(
-          color: red ? const Color(0xFFC43B44) : const Color(0xFF17201E),
-          fontWeight: FontWeight.w700,
-        ),
+      // 「10」比别的点数宽，缩放而不是溢出
+      child: FittedBox(
+        fit: BoxFit.scaleDown,
+        child: card.isEmpty
+            ? const Text('?', style: TextStyle(fontWeight: FontWeight.w700))
+            : Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    cardRank(card),
+                    style: TextStyle(color: color, fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(width: 1),
+                  SuitGlyph(suit: symbol, size: 11, color: color),
+                ],
+              ),
       ),
     );
   }

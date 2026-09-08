@@ -46,6 +46,20 @@ type Hand struct {
 	RevealedHands []holdem.RevealedHand `json:"revealedHands"`
 }
 
+// Store 保存已结算的手牌。
+//
+// 存下来的记录带着**所有参与者**的底牌：复盘、对账与纠纷裁定都需要完整记录。
+// 因此两个读取方法的可见性契约完全不同，实现新的 Store 时必须分清：
+//
+//   - Hand 返回未裁剪的完整记录，只能用于服务端内部（例如判断某手是否已落库）。
+//     它的返回值绝不能直接发给客户端。
+//   - RecentForPlayer 返回**按接收者裁剪**的记录：只有 userID 自己的底牌，以及
+//     那一手真的亮出来过的底牌（RevealedHands）会保留，其余一律清空。
+//     用 forRecipient 完成裁剪，别自己写一遍。
+//
+// 漏掉裁剪就等于公开了对手从未亮过的牌——在德州扑克里，知道对手弃了什么牌
+// 就能反推他的打法范围，这是最严重的一类信息泄露。RunRecentForPlayerContract
+// 会在任何实现上验证这条契约。
 type Store interface {
 	Append(hand Hand) error
 	Hand(handID string) (Hand, bool)

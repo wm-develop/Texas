@@ -67,7 +67,7 @@ jobs:
         # 变量出问题，全量测试仍然全绿，真实库的覆盖会在无人察觉中消失。
         # 这一步显式检查它们真的跑了。
         run: |
-          output="$(go test ./internal/account/ ./internal/chat/ ./internal/postgres/ ./internal/room/             -count=1 -v -run 'Postgres|Migrator')"
+          output="$(go test ./internal/account/ ./internal/chat/ ./internal/history/ ./internal/postgres/ ./internal/room/             -count=1 -v -run 'Postgres|Migrator')"
           echo "$output"
           if echo "$output" | grep -q '^--- SKIP'; then
             echo "::error::集成测试被跳过，TEST_DATABASE_URL 没有生效"
