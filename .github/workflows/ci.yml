@@ -67,16 +67,28 @@ jobs:
         # 变量出问题，全量测试仍然全绿，真实库的覆盖会在无人察觉中消失。
         # 这一步显式检查它们真的跑了。
         run: |
-          output="$(go test ./internal/account/ ./internal/chat/ ./internal/history/ ./internal/postgres/ ./internal/room/             -count=1 -v -run 'Postgres|Migrator')"
+          # 用 if 包住命令替换：这一步跑在 bash -e 下，直接 output="$(go test ...)"
+          # 会在测试失败时立刻终止脚本，下面的诊断一句都打不出来，日志里只剩
+          # 一个 exit 1。
+          status=0
+          if ! output="$(go test ./internal/account/ ./internal/chat/ ./internal/history/             ./internal/postgres/ ./internal/room/ -count=1 -v -run 'Postgres|Migrator' 2>&1)"; then
+            status=1
+          fi
           echo "$output"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::集成测试失败，详见上面的输出"
+            exit 1
+          fi
           if echo "$output" | grep -q '^--- SKIP'; then
             echo "::error::集成测试被跳过，TEST_DATABASE_URL 没有生效"
             exit 1
           fi
-          if ! echo "$output" | grep -q 'PASS: TestPostgresPhase3PersistenceFlow'; then
-            echo "::error::没有跑到房间持久化集成测试"
-            exit 1
-          fi
+          for wanted in TestPostgresPhase3PersistenceFlow TestPostgresStoreRedactsRecentHands; do
+            if ! echo "$output" | grep -q "PASS: $wanted"; then
+              echo "::error::没有跑到 $wanted"
+              exit 1
+            fi
+          done
 
       - name: go test
         # -count=1 禁用测试缓存

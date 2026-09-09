@@ -44,6 +44,19 @@ func TestPostgresStoreRedactsRecentHands(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
+	// hand_players.user_id 与 hand_actions.user_id 都有指向 users 的外键，
+	// 契约里的三个玩家必须先在库里存在。
+	for _, userID := range contractUserIDs {
+		if _, err := database.ExecContext(
+			ctx,
+			`INSERT INTO users (user_id, username, display_name, password_hash)
+			 VALUES ($1, $1, $1, 'hash')`,
+			userID,
+		); err != nil {
+			t.Fatalf("create user %s: %v", userID, err)
+		}
+	}
+
 	store, err := NewPostgresStore(database)
 	if err != nil {
 		t.Fatalf("NewPostgresStore: %v", err)

@@ -7,6 +7,10 @@ import (
 	"texas/services/game_server/internal/game/holdem"
 )
 
+// contractUserIDs 是契约测试里出现的玩家。Postgres 的手牌表对 users 有外键，
+// 集成测试要先把他们建出来。
+var contractUserIDs = []string{"me", "shown", "folded"}
+
 // runRecentForPlayerContract 在任意 Store 实现上验证按接收者裁剪的契约。
 //
 // 这条契约此前只写在两个实现的代码里，没有任何测试盯着它：新加一个实现、
