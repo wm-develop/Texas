@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:poker_client/app/poker_app.dart';
 import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/features/profile/presentation/profile_page.dart';
@@ -31,6 +32,9 @@ Widget _profile(
 );
 
 void main() {
+  // 模拟一台没有存过登录态的设备：启动时的恢复会立刻得出「没有令牌」
+  setUp(() => SharedPreferences.setMockInitialValues({}));
+
   testWidgets('deleting the account asks for the password and confirms', (
     tester,
   ) async {
@@ -82,6 +86,9 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
 
     await tester.pumpWidget(const PokerApp());
+    // 启动时会先读设备上存的刷新令牌；空存储读完就结束，一帧即可。
+    // 不能用 pumpAndSettle：等待界面上的进度圈是无限动画，永远不静止。
+    await tester.pump();
     expect(find.text('《隐私说明》'), findsNothing);
     await tester.tap(find.text('注册'));
     await tester.pumpAndSettle();

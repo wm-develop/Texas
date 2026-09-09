@@ -1,8 +1,10 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:poker_client/core/auth/auth_session.dart';
+import 'package:poker_client/core/auth/session_store.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
 import 'package:poker_client/core/network/game_socket_client.dart';
 import 'package:poker_client/core/platform/system_ui_policy.dart';
@@ -17,7 +19,16 @@ import 'package:poker_client/features/table/presentation/table_prototype_page.da
 import 'package:poker_client/features/update/presentation/update_required_page.dart';
 
 class PokerApp extends StatefulWidget {
-  const PokerApp({super.key});
+  const PokerApp({super.key, this.apiClient, this.sessionStore});
+
+  /// 仅供测试注入：传入用 MockClient 构造的客户端，就能在不联网的情况下
+  /// 走通登录、恢复会话这些整条链路。生产不传，自己建一个。
+  @visibleForTesting
+  final GameApiClient? apiClient;
+
+  /// 仅供测试注入：默认实现在 Web 上不持久化，测试要覆盖这个行为。
+  @visibleForTesting
+  final SessionStore? sessionStore;
 
   @override
   State<PokerApp> createState() => _PokerAppState();
@@ -28,6 +39,20 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
   late final GameApiClient _api;
   late final AppSettingsController _settings;
   AuthSession? _session;
+  late final SessionStore _sessions;
+  /// 启动时正在用存下来的刷新令牌换会话。此时既不该显示登录页（会闪一下
+  /// 又跳走），也不该显示大厅（还不知道是谁）。
+  /// Web 端不持久化，没有可恢复的东西，第一帧直接显示登录页。
+  bool _restoringSession = !kIsWeb;
+  /// 上次恢复因为网络之类的临时原因失败，令牌还留着，值得再试一次。
+  bool _restoreRetryable = false;
+  bool _restoreInFlight = false;
+  /// 每次恢复的代次。超时只是放弃等待——`Future.timeout` 不会取消底层的
+  /// 网络请求，那个请求可能十几秒后才成功返回。代次让迟到的结果知道自己
+  /// 已经作废，不去动界面。
+  int _restoreGeneration = 0;
+  /// 恢复的总超时。三个串行请求各自能等 30 秒，不设上限就会把启动卡住。
+  static const _restoreTimeout = Duration(seconds: 8);
   /// 版本过旧时阻断整个应用，连登录都不放行。
   bool _clientTooOld = false;
   int _minimumClientVersion = 0;
@@ -52,17 +77,30 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
         }),
       );
     }
-    _api = GameApiClient();
+    _api = widget.apiClient ?? GameApiClient();
+    _sessions = widget.sessionStore ?? SessionStore();
     _settings = AppSettingsController()..load();
-    // 必须排在 _api 之后：版本检查要用它。
+    // 必须排在 _api 之后：版本检查与会话恢复都要用它。
     unawaited(_recheckClientVersion());
+    unawaited(_restoreSession());
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed &&
-        shouldUseCurrentPlatformDartSystemUi) {
+    if (state != AppLifecycleState.resumed) return;
+    if (shouldUseCurrentPlatformDartSystemUi) {
       unawaited(_enableImmersiveMode());
+    }
+    // 上次恢复只是因为没网之类的原因失败，令牌还在。回到前台时再试一次：
+    // 否则「不清除令牌」这个设计要等到下一次冷启动才兑现，而玩家此刻正
+    // 对着登录页，手里明明有一个能用的令牌。
+    if (_session == null && _restoreRetryable && !_restoreInFlight) {
+      _restoreRetryable = false;
+      // 静默重试：不切回等待界面。切回去会把 AuthPage 整个卸载，玩家已经
+      // 输入的用户名、密码连同输入框一起没了——而触发这条路径的前提正是
+      // 「上次因为网络失败」，也就是玩家很可能正在手动登录。恢复成功时
+      // _activateSession 自己会切到大厅。
+      unawaited(_restoreSession(showWaiting: false));
     }
   }
 
@@ -117,6 +155,13 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
     }
     final session = _session;
     if (session == null) {
+      // 恢复登录态期间先显示等待，否则会闪一下登录页再跳进大厅
+      if (_restoringSession) {
+        return const Scaffold(
+          key: ValueKey('session-restoring'),
+          body: Center(child: CircularProgressIndicator()),
+        );
+      }
       return AuthPage(onLogin: _login, onRegister: _register);
     }
     final bankroll = _bankroll;
@@ -282,17 +327,116 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
     return chips;
   }
 
-  Future<void> _activateSession(AuthSession session) async {
+  /// 用设备上存着的刷新令牌换回登录态。
+  ///
+  /// 失败一律安静地回到登录页：令牌可能已过期、被服务端吊销，或者这台设备
+  /// 根本没存过。这是启动路径，不该因此弹错误。
+  ///
+  /// 整个过程有总超时。它串了三个请求（换会话、查钱包、查房间），每个都能
+  /// 等满 30 秒；服务端挂起时，玩家会对着一个没有文字也没有出口的转圈等上
+  /// 一分半，而在这个功能之前登录页是立刻出现的。宁可放弃这次恢复。
+  Future<void> _restoreSession({bool showWaiting = true}) async {
+    if (_restoreInFlight) return;
+    _restoreInFlight = true;
+    final generation = ++_restoreGeneration;
+    try {
+      await _attemptRestore(generation).timeout(_restoreTimeout);
+    } on TimeoutException {
+      // 超时只是放弃等待，请求还在跑。递增代次让那个迟到的结果不再落地：
+      // 玩家此刻已经在登录页上，十几秒后界面突然自己跳进大厅、甚至覆盖掉
+      // 他手动登录的账号，比让他多等一次严重得多。轮换出来的新令牌仍会被
+      // 存下来，切后台回来重试时就能用上。
+      _restoreGeneration++;
+      _restoreRetryable = true;
+    } on Object {
+      // 分类处理都在 _attemptRestore 内部完成
+    } finally {
+      // 不在这里释放 _restoreInFlight：超时的时候 _attemptRestore 还在跑，
+      // 提前释放会让「回到前台重试」启动第二次恢复，两次拿着同一个令牌去
+      // 换会话。服务端刷新时会删掉旧会话，于是后一次必然 401，还会把存储
+      // 清掉——玩家的登录态就这么没了。改由 _attemptRestore 自己释放。
+      if (showWaiting && mounted) setState(() => _restoringSession = false);
+    }
+  }
+
+  Future<void> _attemptRestore(int generation) async {
+    try {
+      final token = await _sessions.loadRefreshToken();
+      if (token == null) {
+        _restoreRetryable = false;
+        return;
+      }
+      // 只有换会话这一步的失败才说明令牌本身有问题，所以 try 只包它；
+      // 后面几步的 401 不该连累一个刚刚成功轮换过的令牌。
+      final AuthSession session;
+      try {
+        session = await _api.refresh(token);
+      } on GameApiException catch (error) {
+        if (error.code == 'invalid_refresh_token' || error.statusCode == 401) {
+          await _sessions.clear();
+          _restoreRetryable = false;
+        }
+        rethrow;
+      }
+      // 服务端刷新时会删掉旧会话，所以此刻旧令牌已经作废，新的必须存下来，
+      // 否则它就丢了，下次启动照样登不回来。唯一不该存的情况是玩家已经手动
+      // 登录了（可能是另一个账号）——那时存储归他。
+      if (_session != null) return;
+      await _sessions.save(session);
+      // 这次恢复可能已经因为超时而作废，或者玩家已经手动登录。两种情况都
+      // 不能再去改会话状态。
+      if (generation != _restoreGeneration || _session != null) return;
+      await _activateSession(
+        session,
+        stale: () => generation != _restoreGeneration || _session != null,
+      );
+      _restoreRetryable = false;
+    } on ClientTooOldException catch (error) {
+      // 换会话的接口豁免版本门禁，后面的接口不豁免，于是 426 会落到这里。
+      // 不处理的话它会被当成普通失败吞掉，玩家看到的是登录页而不是阻断页。
+      _handleClientTooOld(error);
+      _restoreRetryable = false;
+      rethrow;
+    } on Object {
+      // 没网、超时、服务端 5xx 都会走到这里。这些都不代表令牌失效，清掉它
+      // 只会让玩家在信号不好的地方启动一次就得重新登录；留着并允许重试。
+      _restoreRetryable = true;
+      rethrow;
+    } finally {
+      // 真正跑完才释放，见 _restoreSession 里对并发的说明
+      _restoreInFlight = false;
+    }
+  }
+
+  /// [stale] 由恢复路径传入：它内部还有几次网络等待，等待期间这次恢复
+  /// 可能已经作废（超时）或被玩家的手动登录取代，那就不能再改会话状态。
+  /// 登录与注册路径不传，行为不变。
+  Future<void> _activateSession(
+    AuthSession session, {
+    bool Function()? stale,
+  }) async {
     final chips = await _api.bankroll(session.accessToken);
+    if (stale?.call() ?? false) return;
     FriendRoom? room;
     if (chips.tableId.isNotEmpty) {
+      // 这里不做「拿不到就进大厅」的降级。服务端说玩家还在一桌牌局里，
+      // 把他放进大厅会造成一个自相矛盾的状态：钱包里少了一笔带入，界面上
+      // 却没有座位，而大厅并不显示「你还在某桌」，唯一的回去方式是点创建
+      // 房间撞上 already_in_room——没人会想到这么做。宁可让这次失败，
+      // 玩家重试一次即可。
       room = await _api.currentRoom(session.accessToken);
     }
-    if (!mounted) return;
+    // 每次拿到会话都存一遍刷新令牌：服务端会轮换它，存着的旧令牌下次启动
+    // 时已经作废。
+    await _sessions.save(session);
+    if (!mounted || (stale?.call() ?? false)) return;
+    // 已经有会话了，回到前台时不必再去恢复
+    _restoreRetryable = false;
     setState(() {
       _session = session;
       _bankroll = chips;
       _room = room;
+      _restoringSession = false;
     });
     _startPresenceHeartbeat();
   }
@@ -320,11 +464,13 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
     );
     // 服务端已撤销全部会话，本地直接清除登录态，不再调用远端登出
     _presenceTimer?.cancel();
+    await _sessions.clear();
     if (!mounted) return;
     setState(() {
       _session = null;
       _bankroll = null;
       _room = null;
+      _restoringSession = false;
     });
   }
 
@@ -340,6 +486,9 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
       ),
     );
     if (mounted) setState(() => _session = updated);
+    // 改密码会换一份新会话。服务端目前不吊销旧会话，所以存着的旧令牌仍然
+    // 能用；但让存储与当前会话保持一致，将来若改成吊销旧会话也不会出问题。
+    await _sessions.save(updated);
     _startPresenceHeartbeat();
     return updated;
   }
@@ -431,13 +580,19 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
     }
   }
 
-  void _logout() {
+  Future<void> _logout() async {
     final token = _session?.accessToken;
     _presenceTimer?.cancel();
+    // 主动登出必须清掉存储，否则下次启动又自动登回来。这里等它写完再继续：
+    // 「发射后不管」的话，登出后立刻杀掉应用重启，理论上还能读到没清完的
+    // 令牌，表现为又自动登了回来——这对账号安全感的伤害远大于多等几毫秒。
+    await _sessions.clear();
+    if (!mounted) return;
     setState(() {
       _session = null;
       _bankroll = null;
       _room = null;
+      _restoringSession = false;
     });
     if (token != null) unawaited(_logoutRemote(token));
   }
@@ -517,6 +672,13 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
       final updated = await refresh;
       if (_session?.refreshToken == session.refreshToken && mounted) {
         setState(() => _session = updated);
+        // 等它写完再返回。服务端刷新时会删掉旧会话，此刻存储里的旧令牌已经
+        // 作废；如果进程在写入落盘之前被系统回收（这正是本功能要应对的场景），
+        // 下次启动拿到的就是一个必然被拒的令牌。多等几毫秒换掉这个窗口。
+        //
+        // 保存必须和上面的判断在一起：刷新期间玩家可能已经登出并清空了存储，
+        // 那时不能把令牌写回去，否则下次启动又自动登了回来。
+        await _sessions.save(updated);
       }
       return updated.accessToken;
     } on GameApiException catch (error) {
@@ -552,11 +714,14 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
 
   void _expireSession() {
     _presenceTimer?.cancel();
+    // 令牌已被服务端拒绝，存着也换不回会话
+    unawaited(_sessions.clear());
     if (!mounted || _session == null) return;
     setState(() {
       _session = null;
       _bankroll = null;
       _room = null;
+      _restoringSession = false;
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _navigatorKey.currentState?.popUntil((route) => route.isFirst);
