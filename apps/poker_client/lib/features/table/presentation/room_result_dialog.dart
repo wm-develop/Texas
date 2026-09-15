@@ -116,6 +116,12 @@ class _RoomResultDialogState extends State<RoomResultDialog> {
                 _line('累计带入', '${result.boughtIn}'),
                 _line('离桌返还', '${result.returnedToWallet}'),
                 _line('桌上筹码', '${result.tableChips}'),
+                if (result.foldedCommitment > 0)
+                  _line(
+                    '本手已弃牌，投入已计为输',
+                    '-${result.foldedCommitment}',
+                    key: const ValueKey('room-result-folded-commitment'),
+                  ),
                 const Divider(height: 22),
                 const Text(
                   '换算比例（仅本机参考，服务端不记录任何金额）',
@@ -183,7 +189,8 @@ class _RoomResultDialogState extends State<RoomResultDialog> {
     );
   }
 
-  Widget _line(String label, String value) => Padding(
+  Widget _line(String label, String value, {Key? key}) => Padding(
+    key: key,
     padding: const EdgeInsets.symmetric(vertical: 3),
     child: Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,

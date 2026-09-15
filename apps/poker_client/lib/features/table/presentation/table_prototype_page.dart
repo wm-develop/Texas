@@ -481,10 +481,29 @@ class _TablePrototypePageState extends State<TablePrototypePage>
     builder: (_) => RoomResultDialog(
       loadResult: () async {
         final token = await widget.accessTokenProvider();
-        return _api.roomResult(token);
+        final result = await _api.roomResult(token);
+        return result.withFoldedCommitment(_foldedCommitmentThisHand());
       },
     ),
   );
+
+  /// 本手已弃牌时已投入底池的筹码；其余情况为 0。
+  ///
+  /// 服务端的桌上筹码只在结算时更新，牌局中途仍含着已推进底池的部分。弃了牌
+  /// 那笔钱就已经输掉，战绩里还把它算成自己的会虚高。只看进行中的这一手：
+  /// 结算后成员表已经扣过，座位上残留的 totalBet 不能再扣一次。
+  int _foldedCommitmentThisHand() {
+    final snapshot = _gameSocket.snapshot;
+    if (snapshot == null) return 0;
+    if (snapshot.phase == 'WAITING' || snapshot.phase == 'WAITING_NEXT_HAND') {
+      return 0;
+    }
+    final own = snapshot.seats
+        .where((seat) => seat.userId == widget.session.user.userId)
+        .firstOrNull;
+    if (own == null || !own.participating || !own.folded) return 0;
+    return own.totalBet;
+  }
 
   /// 房间名单：上桌玩家与观战者。
   Future<void> _openRoster() async {

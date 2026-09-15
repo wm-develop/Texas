@@ -8,7 +8,27 @@ class RoomResult {
     required this.returnedToWallet,
     required this.tableChips,
     required this.net,
+    this.foldedCommitment = 0,
   });
+
+  /// 本手已弃牌时，这一手已投入底池的筹码。
+  ///
+  /// 服务端的「桌上筹码」取自成员表，只在结算时更新，牌局中途仍含着已经推进
+  /// 底池的那部分。没弃牌时那笔钱归属未定，照常算在桌上；一旦弃牌它就已经
+  /// 输掉了，再算成自己的筹码会把净胜负虚高一截。
+  final int foldedCommitment;
+
+  /// 弃牌后按已投入 [committed] 修正：桌上筹码与净胜负同时扣减。
+  RoomResult withFoldedCommitment(int committed) {
+    if (committed <= 0) return this;
+    return RoomResult(
+      boughtIn: boughtIn,
+      returnedToWallet: returnedToWallet,
+      tableChips: tableChips - committed,
+      net: net - committed,
+      foldedCommitment: committed,
+    );
+  }
 
   /// 累计从钱包投入牌桌的筹码（带入与补码）。
   final int boughtIn;

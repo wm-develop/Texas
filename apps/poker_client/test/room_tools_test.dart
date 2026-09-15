@@ -103,6 +103,58 @@ void main() {
       expect(find.text('折合 -10.00 元'), findsOneWidget);
     });
 
+    test('弃牌后本手已投入的筹码算作已输', () {
+      // 服务端的桌上筹码只在结算时更新，牌局中途仍含着推进底池的那部分；
+      // 弃了牌那笔钱就已经输掉，再算成自己的会让净胜负虚高
+      const before = RoomResult(
+        boughtIn: 2000,
+        returnedToWallet: 0,
+        tableChips: 2000,
+        net: 0,
+      );
+      final after = before.withFoldedCommitment(300);
+      expect(after.tableChips, 1700);
+      expect(after.net, -300);
+      expect(after.foldedCommitment, 300);
+      expect(after.boughtIn, 2000, reason: '带入与返还不受影响');
+      // 没投入或没弃牌时原样返回
+      expect(identical(before.withFoldedCommitment(0), before), isTrue);
+    });
+
+    testWidgets('弃牌后的战绩把本手投入计入并写明', (tester) async {
+      await pump(
+        tester,
+        const RoomResult(
+          boughtIn: 2000,
+          returnedToWallet: 0,
+          tableChips: 2000,
+          net: 0,
+        ).withFoldedCommitment(300),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('-300'), findsWidgets);
+      expect(find.text('本手已弃牌，投入已计为输'), findsOneWidget);
+      expect(find.text('折合 -1.50 元'), findsOneWidget);
+    });
+
+    testWidgets('没弃牌时不显示那一行', (tester) async {
+      await pump(
+        tester,
+        const RoomResult(
+          boughtIn: 2000,
+          returnedToWallet: 0,
+          tableChips: 2000,
+          net: 0,
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('room-result-folded-commitment')),
+        findsNothing,
+      );
+    });
+
     testWidgets('比例非法时给出提示而不是显示错误数字', (tester) async {
       await pump(
         tester,
