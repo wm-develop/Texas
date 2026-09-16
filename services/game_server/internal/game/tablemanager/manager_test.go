@@ -245,7 +245,7 @@ func TestFoldedPlayerCannotRevealMidHandButCanRequestPrivateView(t *testing.T) {
 	if err != nil || len(targetSnapshot.HoleCardRequests) != 1 {
 		t.Fatalf("target requests=%#v err=%v", targetSnapshot.HoleCardRequests, err)
 	}
-	if _, err := manager.RespondHoleCardView(ctx, targetUserID, created.RoomID, "private-view-1", true); err != nil {
+	if _, _, err := manager.RespondHoleCardView(ctx, targetUserID, created.RoomID, "private-view-1", true, ""); err != nil {
 		t.Fatal(err)
 	}
 	requesterSnapshot, err := manager.Snapshot(ctx, foldedUserID, created.RoomID)
@@ -308,7 +308,7 @@ func TestSeatChangeMovesToEmptySeatAndFullTableUsesConsent(t *testing.T) {
 	if len(guestSnapshot.SeatSwapRequests) != 1 {
 		t.Fatalf("swap requests=%#v", guestSnapshot.SeatSwapRequests)
 	}
-	accepted, err := manager.RespondSeatSwap(ctx, "guest", created.RoomID, "swap-full", true)
+	accepted, _, err := manager.RespondSeatSwap(ctx, "guest", created.RoomID, "swap-full", true, "")
 	if err != nil {
 		t.Fatal(err)
 	}

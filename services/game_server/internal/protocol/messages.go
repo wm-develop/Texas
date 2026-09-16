@@ -26,6 +26,10 @@ const (
 	TypeTableHoleCardsViewRespond  MessageType = "table.hole_cards.view.respond"
 	TypeTableSeatChangeRequest     MessageType = "table.seat.change.request"
 	TypeTableSeatSwapRespond       MessageType = "table.seat.swap.respond"
+	// TypeTableRequestPreferencesSet 设置本人在本房间内是否接受换座/看牌申请。
+	TypeTableRequestPreferencesSet MessageType = "table.request.preferences.set"
+	// TypeTableRequestDeclined 只发给申请者：他的换座或看牌申请被拒绝了。
+	TypeTableRequestDeclined       MessageType = "table.request.declined"
 	TypeTableRunoutChoose          MessageType = "table.runout.choose"
 	TypeTableTimeExtensionUse      MessageType = "table.time_extension.use"
 	TypeTableTimeExtensionAccepted MessageType = "table.time_extension.accepted"
@@ -121,6 +125,28 @@ type HoleCardsViewRequestPayload struct {
 type RequestResponsePayload struct {
 	PendingRequestID string `json:"pendingRequestId"`
 	Accept           bool   `json:"accept"`
+	// Scope 只在拒绝时有意义："once"（默认）只拒这一次；"requester" 不再接受
+	// 这名申请者（换座在本房间内有效，看牌只在本手）；"everyone" 本手不再接受
+	// 任何人的看牌申请（换座不支持）。
+	Scope string `json:"scope,omitempty"`
+}
+
+// RequestPreferencesPayload 是 table.request.preferences.set 的载荷。两个字段都必填：
+// 用指针是为了把「没传」和「传了 false」分开，漏传一个不能被当成把它关掉。
+type RequestPreferencesPayload struct {
+	AllowSeatSwapRequests     *bool `json:"allowSeatSwapRequests"`
+	AllowHoleCardViewRequests *bool `json:"allowHoleCardViewRequests"`
+}
+
+// RequestDeclinedPayload 是 table.request.declined 的载荷，只发给申请者。
+type RequestDeclinedPayload struct {
+	// Kind 为 "seat_swap" 或 "hole_card_view"。
+	Kind              string `json:"kind"`
+	RequestID         string `json:"requestId"`
+	TargetUserID      string `json:"targetUserId"`
+	TargetDisplayName string `json:"targetDisplayName"`
+	// Scope 与 RequestResponsePayload.Scope 同义，客户端据此选择提示文案。
+	Scope string `json:"scope"`
 }
 
 type SeatChangeRequestPayload struct {

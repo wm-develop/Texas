@@ -50,7 +50,7 @@
 
 以下客户端消息被视为幂等请求，**必须携带非空 `requestId`**，否则返回 `request_id_required`：
 
-`table.leave`、`table.ready.set`、`table.action.submit`、`table.hole_cards.reveal`、`table.hole_cards.view.request`、`table.hole_cards.view.respond`、`table.seat.change.request`、`table.seat.swap.respond`、`table.runout.choose`、`table.time_extension.use`、`table.rebuy`、`table.voice.state.set`、`table.chat.send`、`table.player.interact`、`table.spectate.enter`、`table.seat.take`、`table.spectator.settings.set`
+`table.leave`、`table.ready.set`、`table.action.submit`、`table.hole_cards.reveal`、`table.hole_cards.view.request`、`table.hole_cards.view.respond`、`table.seat.change.request`、`table.seat.swap.respond`、`table.request.preferences.set`、`table.runout.choose`、`table.time_extension.use`、`table.rebuy`、`table.voice.state.set`、`table.chat.send`、`table.player.interact`、`table.spectate.enter`、`table.seat.take`、`table.spectator.settings.set`
 
 服务端按账号串行处理这些请求，并缓存最近 256 条 `(userID, requestID)` 结果。重复 `requestId` 直接返回第一次的回执，不再次执行。
 
@@ -80,9 +80,10 @@
 | `table.rebuy` | 两手之间从账户钱包补充牌桌筹码 | `amount` |
 | `table.hole_cards.reveal` | 符合条件时主动公开自己的底牌 | 空对象 |
 | `table.hole_cards.view.request` | 已弃牌玩家申请私下查看另一名本手发过底牌的玩家（含已弃牌玩家）的底牌 | `targetUserId` |
-| `table.hole_cards.view.respond` | 被申请玩家同意或拒绝私下看牌 | `pendingRequestId`, `accept` |
+| `table.hole_cards.view.respond` | 被申请玩家同意或拒绝私下看牌 | `pendingRequestId`, `accept`, `scope`（可选，仅拒绝时：`once` 默认只拒这一次；`requester` 本手不再接受该申请者；`everyone` 本手不再接受任何人） |
 | `table.seat.change.request` | 两手之间向目标座位的玩家发起换位申请（目标座位为空时直接移动，当前客户端 UI 只提供换位申请） | `targetSeat` |
-| `table.seat.swap.respond` | 被申请玩家同意或拒绝换位 | `pendingRequestId`, `accept` |
+| `table.seat.swap.respond` | 被申请玩家同意或拒绝换位 | `pendingRequestId`, `accept`, `scope`（可选，仅拒绝时：`once` 默认；`requester` 在本人离开房间前不再接受该申请者，申请者进出房间不影响；不支持 `everyone`） |
+| `table.request.preferences.set` | 设置本人在本房间内是否接受换位 / 私下看牌申请；关掉后对应申请在服务端直接被拒，已排队的申请一并撤掉。离开房间即恢复默认（全部允许） | `allowSeatSwapRequests`, `allowHoleCardViewRequests`（两个都必填，漏传返回 `invalid_request`） |
 | `table.runout.choose` | 进入发牌次数选择阶段后选择发一次或发两次 | `count`（1 或 2） |
 | `table.snapshot.request` | 补发事件或请求完整快照 | `lastSequence?`, `reason?` |
 | `table.action.submit` | 提交牌局动作 | `actionId`, `action`, `raiseTo?` |
@@ -171,6 +172,7 @@
 | `table.hole_cards.view.respond` | `table.hole_cards.view.respond` | `{"accepted": bool}` | `system.error` |
 | `table.seat.change.request` | `table.seat.change.request` | `{"requested": true}` | `system.error` |
 | `table.seat.swap.respond` | `table.seat.swap.respond` | `{"accepted": bool}` | `system.error` |
+| `table.request.preferences.set` | `table.request.preferences.set` | `{"allowSeatSwapRequests": bool, "allowHoleCardViewRequests": bool}` | `system.error` |
 | `table.runout.choose` | `table.runout.choose` | `{"count": int}` | `system.error` |
 | `table.voice.state.set` | `table.voice.state.set` | `{"joined": bool, "microphoneEnabled": bool}` | `system.error` |
 | `table.chat.send` | `table.chat.accepted` | 已接受的消息对象 | `table.chat.rejected` |
@@ -195,6 +197,7 @@
 | `table.snapshot` | 对当前接收者裁剪后的完整牌桌状态。所有牌局状态变化都通过它下发 | 否（个性化，仅占位记录序号） |
 | `table.chat.message` | 向牌桌成员广播最终聊天消息 | 是 |
 | `table.player.interaction` | 广播赞赏或嘲讽动画、音效所需的数据 | 是 |
+| `table.request.declined` | **只发给申请者本人**：他的换位或私下看牌申请被对方在弹窗里拒绝。载荷 `{"kind": "seat_swap" \| "hole_card_view", "requestId", "targetUserId", "targetDisplayName", "scope": "once" \| "requester" \| "everyone"}`。不进房间事件缓冲、`sequence` 为 0（客户端把 0 当带外消息接受），因此断线补发不会把它送给别人；申请者不在线则直接丢弃 | 否 |
 | `table.voice.state` | 广播当前牌桌语音成员及其开麦状态 | 是 |
 
 最终聊天消息包含：`messageId`、`clientMessageId`、`userId`、`displayName`、`kind`、`content`、`sentAt`。
@@ -309,6 +312,7 @@
 | `privateReveals[]` | 仅获准的申请者，`category` 固定为 `private_view` |
 | `holeCardViewRequests[]` | 仅被申请的目标玩家 |
 | `seatSwapRequests[]` | 仅被申请的目标玩家 |
+| `requestPreferences` | 仅接收者本人：`{"allowSeatSwapRequests": bool, "allowHoleCardViewRequests": bool}`，默认均为 `true` |
 | `voluntaryReveals[]` | 全体（已主动公开的底牌） |
 | `runoutChoice` | 全体，含 `eligiblePlayerIds`、`choices`、`deadline` |
 | `autoReadyDeadline` | 全体 |
@@ -394,8 +398,15 @@
 | `hole_cards_not_revealable` | 当前玩家、手牌或阶段不允许主动公开底牌 |
 | `hole_card_view_not_available` | 不满足弃牌后私下看牌申请条件 |
 | `hole_card_view_request_not_found` | 私下看牌申请已处理或失效 |
+| `hole_card_view_requests_disabled` | 目标在设置里关闭了「允许其他玩家申请私下看我的牌」 |
+| `hole_card_view_requester_blocked` | 目标本手已选择不再接受这名申请者的看牌申请 |
+| `hole_card_view_blocked_this_hand` | 目标本手已选择不再接受任何人的看牌申请 |
+| `hole_card_view_already_granted` | 目标本手已经同意给申请者看过牌，不能重复申请 |
 | `invalid_seat_swap` | 换位目标不合法（目标是自己或请求缺少 `requestId`） |
 | `seat_swap_request_not_found` | 换位申请已处理或失效 |
+| `seat_swap_requests_disabled` | 目标在设置里关闭了「允许其他玩家向我申请换座」 |
+| `seat_swap_requester_blocked` | 目标在本房间内已选择不再接受这名申请者的换位申请 |
+| `invalid_decline_scope` | `scope` 不是 `once` / `requester` / `everyone`，或换位回应使用了 `everyone` |
 
 ### 7.5 钱包与带入
 

@@ -19,6 +19,8 @@ import 'package:poker_client/features/table/audio/table_sound_clip_files.dart';
 import 'package:poker_client/features/table/audio/table_sound_effects.dart';
 import 'package:poker_client/features/table/domain/table_seat.dart';
 import 'package:poker_client/features/table/presentation/table_labels.dart';
+import 'package:poker_client/features/table/presentation/request_preferences_dialog.dart';
+import 'package:poker_client/features/table/presentation/table_request_dialog.dart';
 import 'package:poker_client/features/table/presentation/table_action_bar.dart';
 import 'package:poker_client/features/table/presentation/table_automation_coordinator.dart';
 import 'package:poker_client/features/table/presentation/room_management_dialog.dart';
@@ -49,6 +51,7 @@ class TablePrototypePage extends StatefulWidget {
   final FriendRoom room;
   final AppSettingsController settings;
   final Future<void> Function() onLeave;
+
   /// 玩家已不在房间里，参数为原因（`removed_by_owner` 等），可能为空。
   final Future<void> Function(String reason) onRemoved;
   final Future<String> Function({bool forceRefresh}) accessTokenProvider;
@@ -75,6 +78,10 @@ class _TablePrototypePageState extends State<TablePrototypePage>
   late final TableVoiceController _voice;
   Timer? _tableClock;
   int _lastShownErrorSequence = 0;
+  int _lastShownDeclinedSequence = 0;
+  // 最近一次申请的对象昵称：服务端当场拒绝时只回错误码，提示里要带上对方是谁。
+  String? _lastSwapTargetName;
+  String? _lastViewTargetName;
   GameSocketStatus? _lastGameSocketStatus;
   final TableActionSoundTracker _actionSoundTracker = TableActionSoundTracker();
   final TableSoundClipFiles _soundClipFiles = TableSoundClipFiles();
@@ -82,11 +89,8 @@ class _TablePrototypePageState extends State<TablePrototypePage>
     voiceSessionActive: () => _voice.joined,
     // 鸿蒙语音进行中改由 RTC 引擎出声，避免普通音频插件压制通话流
     clipFilePath: _soundClipFiles.pathFor,
-    playInVoiceSession: (id, filePath, volume) => _voice.playLocalEffect(
-      id: id,
-      filePath: filePath,
-      volume: volume,
-    ),
+    playInVoiceSession: (id, filePath, volume) =>
+        _voice.playLocalEffect(id: id, filePath: filePath, volume: volume),
   );
   late final TableAutomationCoordinator _automation;
   late final TableDealController _deal;
@@ -295,6 +299,13 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                             widget.session.user.userId
                         ? _openRoomManagement
                         : null,
+                    // 观战者没有座位、也不参与牌局，别人申请不到他头上，
+                    // 这一项对他没有意义。
+                    onOpenRequestPreferences:
+                        _gameSocket.snapshot != null &&
+                            !_gameSocket.snapshot!.spectating
+                        ? _openRequestPreferences
+                        : null,
                   ),
                   onShowResult: _openRoomResult,
                   // 手机端的聊天入口是右栏里那个独立的大按钮，不放进信息栏；
@@ -323,9 +334,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                     child: const Icon(Icons.chat_bubble_outline),
                   ),
                   label: Text(
-                    _unreadChatCount > 0
-                        ? '文字聊天 · $_unreadChatCount'
-                        : '文字聊天',
+                    _unreadChatCount > 0 ? '文字聊天 · $_unreadChatCount' : '文字聊天',
                   ),
                 );
                 final voiceControls = TableVoiceControls(
@@ -430,8 +439,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                             bottom: viewport.isCompactLandscape ? 8 : 18,
                             width:
                                 (viewport.isCompactLandscape
-                                    ? TableViewportLayout
-                                          .compactRightRailWidth
+                                    ? TableViewportLayout.compactRightRailWidth
                                     : TableViewportLayout.betRailWidth) -
                                 (viewport.isCompactLandscape ? 16 : 32),
                             child: Column(
@@ -665,12 +673,30 @@ class _TablePrototypePageState extends State<TablePrototypePage>
     // 按序号而不是按文本去重：同一个错误连续出现两次也要提示两次
     if (error != null && errorSequence != _lastShownErrorSequence) {
       _lastShownErrorSequence = errorSequence;
+      // 申请被服务端当场拒绝时，服务端只给错误码；对方昵称是自己发申请时记下的。
+      final targetName = error.startsWith('seat_swap')
+          ? _lastSwapTargetName
+          : _lastViewTargetName;
+      final text =
+          (targetName == null ? null : requestErrorLabel(error, targetName)) ??
+          gameErrorLabel(error);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         ScaffoldMessenger.of(context)
           ..hideCurrentSnackBar()
-          ..showSnackBar(SnackBar(content: Text(gameErrorLabel(error))));
+          ..showSnackBar(SnackBar(content: Text(text)));
       });
+    }
+    final declined = _gameSocket.latestDeclinedRequest;
+    final declinedSequence = _gameSocket.declinedRequestSequence;
+    if (declined != null && declinedSequence != _lastShownDeclinedSequence) {
+      _lastShownDeclinedSequence = declinedSequence;
+      final text = requestDeclinedLabel(
+        kind: declined.kind,
+        scope: declined.scope,
+        targetName: declined.targetDisplayName,
+      );
+      WidgetsBinding.instance.addPostFrameCallback((_) => _showNotice(text));
     }
   }
 
@@ -728,33 +754,50 @@ class _TablePrototypePageState extends State<TablePrototypePage>
   }
 
   void _offerPendingTableRequest() {
-    final prompt = _automation.takeNextRequest(_gameSocket.snapshot);
+    final prompt = _automation.takeNextRequest(
+      _gameSocket.snapshot,
+      socketJoined: _gameSocket.status == GameSocketStatus.joined,
+    );
     if (prompt == null) return;
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
-      final accepted = await showDialog<bool>(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => AlertDialog(
-          title: Text(prompt.title),
-          content: Text(prompt.description),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('拒绝'),
+      final decision =
+          await showDialog<RequestDecision>(
+            context: context,
+            barrierDismissible: false,
+            builder: (context) => TableRequestDialog(
+              title: prompt.title,
+              description: prompt.description,
+              holeCards: prompt.holeCards,
             ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('同意'),
-            ),
-          ],
-        ),
-      );
+          ) ??
+          RequestDecision.declineOnce;
       final requestId = prompt.request.requestId;
-      if (prompt.holeCards) {
-        _gameSocket.respondHoleCardsView(requestId, accepted == true);
-      } else {
-        _gameSocket.respondSeatSwap(requestId, accepted == true);
+      final sent = prompt.holeCards
+          ? _gameSocket.respondHoleCardsView(
+              requestId,
+              decision.accepted,
+              scope: decision.scope,
+            )
+          : _gameSocket.respondSeatSwap(
+              requestId,
+              decision.accepted,
+              scope: decision.scope,
+            );
+      if (!sent) {
+        // 断线重连中答复被丢掉：把这条放回去，重连后的快照会再弹一次，
+        // 否则它已被记成「已处理」，在服务端却一直挂着。
+        _automation.forgetRequest(requestId);
+        _showNotice('还没连上牌桌，稍后会再次提示这条申请');
+      } else if (!decision.accepted) {
+        // 服务端会顺手撤掉同一目标下其余排队的申请，本地先把它们标成已处理，
+        // 否则紧接着到达的回执会用旧快照再弹出一条已经不存在的申请。
+        _automation.withdrawAfterDecline(
+          snapshot: _gameSocket.snapshot,
+          declined: prompt.request,
+          holeCards: prompt.holeCards,
+          scope: decision.scope,
+        );
       }
       _automation.requestDialogOpen = false;
       if (mounted) _offerPendingTableRequest();
@@ -777,7 +820,10 @@ class _TablePrototypePageState extends State<TablePrototypePage>
         '申请换位',
         '向 ${seat.displayName} 发出交换座位申请？',
       );
-      if (confirmed) _gameSocket.requestSeatChange(seat.number);
+      if (confirmed) {
+        _lastSwapTargetName = seat.displayName;
+        _gameSocket.requestSeatChange(seat.number);
+      }
       return;
     }
     if (seat.isCurrentUser) return;
@@ -788,11 +834,41 @@ class _TablePrototypePageState extends State<TablePrototypePage>
         .where((value) => value.userId == seat.userId)
         .firstOrNull;
     if (ownSeat?.folded != true || target?.participating != true) return;
+    // 对方本手已经给看过了：牌就在自己的玩家框里，再申请只会被服务端拒绝。
+    if (snapshot.privateReveals.any((hand) => hand.userId == seat.userId)) {
+      _showNotice('你本手已经看过${seat.displayName}的牌');
+      return;
+    }
     final confirmed = await _confirmTableAction(
       '申请查看手牌',
       '向 ${seat.displayName} 申请私下查看对方的手牌？只有对方同意后你才能看到。',
     );
-    if (confirmed) _gameSocket.requestHoleCardsView(seat.userId);
+    if (confirmed) {
+      _lastViewTargetName = seat.displayName;
+      _gameSocket.requestHoleCardsView(seat.userId);
+    }
+  }
+
+  void _showNotice(String text) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  /// 「换座与看牌申请」偏好。开关即时生效并只在本房间内有效。
+  Future<void> _openRequestPreferences() {
+    final snapshot = _gameSocket.snapshot;
+    if (snapshot == null) return Future.value();
+    return showDialog<void>(
+      context: context,
+      builder: (_) => RequestPreferencesDialog(
+        initial: snapshot.requestPreferences,
+        onChanged: _gameSocket.setRequestPreferences,
+        updates: _gameSocket,
+        current: () => _gameSocket.snapshot?.requestPreferences,
+      ),
+    );
   }
 
   Future<void> _handleAvatarTap(TableSeat seat) async {

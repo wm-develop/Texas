@@ -53,6 +53,9 @@ type managerHandState struct {
 	PendingSeat              map[string]bool                           `json:"pendingSeat,omitempty"`
 	SpectatorAccess          map[string]bool                           `json:"spectatorAccess,omitempty"`
 	SpectatorFees            *SpectatorFeeSnapshot                     `json:"spectatorFees,omitempty"`
+	RequestPreferences       map[string]RequestPreferences             `json:"requestPreferences,omitempty"`
+	SeatSwapBlocks           map[string]map[string]bool                `json:"seatSwapBlocks,omitempty"`
+	HoleCardViewBlocks       map[string]*holeCardViewBlock             `json:"holeCardViewBlocks,omitempty"`
 }
 
 // persistStateLocked 保存或清除牌桌状态。调用方必须持有 runtime.mu。
@@ -89,6 +92,9 @@ func (manager *Manager) persistStateLocked(runtime *runtime) {
 			PendingSeat:              runtime.pendingSeat,
 			SpectatorAccess:          runtime.spectatorAccess,
 			SpectatorFees:            runtime.spectatorFees,
+			RequestPreferences:       runtime.requestPreferences,
+			SeatSwapBlocks:           runtime.seatSwapBlocks,
+			HoleCardViewBlocks:       runtime.holeCardViewBlocks,
 		},
 	}
 	encoded, err := json.Marshal(state)
@@ -169,6 +175,9 @@ func (manager *Manager) restoreLocked(created *runtime, roomValue room.Room) boo
 	adoptMap(&created.pendingSeat, state.Manager.PendingSeat)
 	adoptMap(&created.spectatorAccess, state.Manager.SpectatorAccess)
 	created.spectatorFees = state.Manager.SpectatorFees
+	adoptMap(&created.requestPreferences, state.Manager.RequestPreferences)
+	adoptMap(&created.seatSwapBlocks, state.Manager.SeatSwapBlocks)
+	adoptMap(&created.holeCardViewBlocks, state.Manager.HoleCardViewBlocks)
 
 	// 行动倒计时必须重新安排：崩溃时那个定时器随进程一起没了，不重建的话
 	// 这手牌会永远等一个不会到来的动作，整桌人都动不了。

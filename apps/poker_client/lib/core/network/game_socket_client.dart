@@ -47,6 +47,12 @@ class GameSocketClient extends ChangeNotifier {
   /// 只比较文本就会把第二次吞掉——观战者连点两次「上桌」只提示一次。
   int _errorSequence = 0;
   int get errorSequence => _errorSequence;
+  TableRequestDeclined? _latestDeclinedRequest;
+  int _declinedRequestSequence = 0;
+
+  /// 最近一条「我的申请被拒」通知；按 [declinedRequestSequence] 去重。
+  TableRequestDeclined? get latestDeclinedRequest => _latestDeclinedRequest;
+  int get declinedRequestSequence => _declinedRequestSequence;
   TableSnapshot? _snapshot;
   final List<TableChatMessage> _chatMessages = [];
   final List<TablePlayerInteraction> _playerInteractions = [];
@@ -239,11 +245,24 @@ class GameSocketClient extends ChangeNotifier {
     );
   }
 
-  void respondHoleCardsView(String pendingRequestId, bool accept) {
+  /// [scope] 只在拒绝时有意义：'once' 只拒这一次，'requester' 本手不再接受
+  /// 这名申请者，'everyone' 本手不再接受任何人。
+  /// 返回 false 表示没连上牌桌、命令没有发出去。
+  bool respondHoleCardsView(
+    String pendingRequestId,
+    bool accept, {
+    String scope = 'once',
+  }) {
+    if (_status != GameSocketStatus.joined) return false;
     _send(
       'table.hole_cards.view.respond',
-      payload: {'pendingRequestId': pendingRequestId, 'accept': accept},
+      payload: {
+        'pendingRequestId': pendingRequestId,
+        'accept': accept,
+        if (!accept) 'scope': scope,
+      },
     );
+    return true;
   }
 
   void requestSeatChange(int targetSeat) {
@@ -251,11 +270,32 @@ class GameSocketClient extends ChangeNotifier {
     _send('table.seat.change.request', payload: {'targetSeat': targetSeat});
   }
 
-  void respondSeatSwap(String pendingRequestId, bool accept) {
+  /// [scope] 只在拒绝时有意义：'once' 只拒这一次，'requester' 在本房间内
+  /// 不再接受这名申请者的换座申请。
+  /// 返回 false 表示没连上牌桌、命令没有发出去。
+  bool respondSeatSwap(
+    String pendingRequestId,
+    bool accept, {
+    String scope = 'once',
+  }) {
+    if (_status != GameSocketStatus.joined) return false;
     _send(
       'table.seat.swap.respond',
-      payload: {'pendingRequestId': pendingRequestId, 'accept': accept},
+      payload: {
+        'pendingRequestId': pendingRequestId,
+        'accept': accept,
+        if (!accept) 'scope': scope,
+      },
     );
+    return true;
+  }
+
+  /// 设置本人在本房间内是否接受别人的换座/看牌申请。
+  /// 没连上牌桌时返回 false 且不发送，调用方不要把开关拨到新位置。
+  bool setRequestPreferences(RequestPreferences preferences) {
+    if (_status != GameSocketStatus.joined) return false;
+    _send('table.request.preferences.set', payload: preferences.toJson());
+    return true;
   }
 
   void chooseRunoutCount(int count) {
@@ -438,6 +478,11 @@ class GameSocketClient extends ChangeNotifier {
               _recoveringSequenceGap = false;
               if (_errorMessage == 'sequence_gap') _errorMessage = null;
             }
+          }
+        case 'table.request.declined':
+          if (payload is Map<String, dynamic>) {
+            _latestDeclinedRequest = TableRequestDeclined.fromJson(payload);
+            _declinedRequestSequence++;
           }
         case 'table.action.accepted':
           _clearPendingAction();
@@ -639,6 +684,35 @@ class GameSocketClient extends ChangeNotifier {
     unawaited(_channel?.sink.close());
     super.dispose();
   }
+}
+
+/// 服务端只发给申请者本人的「申请被拒」通知。
+class TableRequestDeclined {
+  const TableRequestDeclined({
+    required this.kind,
+    required this.requestId,
+    required this.targetUserId,
+    required this.targetDisplayName,
+    required this.scope,
+  });
+
+  /// 'seat_swap' 或 'hole_card_view'。
+  final String kind;
+  final String requestId;
+  final String targetUserId;
+  final String targetDisplayName;
+
+  /// 'once' / 'requester' / 'everyone'，与发送时的 scope 同义。
+  final String scope;
+
+  factory TableRequestDeclined.fromJson(Map<String, dynamic> json) =>
+      TableRequestDeclined(
+        kind: json['kind'] as String? ?? '',
+        requestId: json['requestId'] as String? ?? '',
+        targetUserId: json['targetUserId'] as String? ?? '',
+        targetDisplayName: json['targetDisplayName'] as String? ?? '',
+        scope: json['scope'] as String? ?? 'once',
+      );
 }
 
 class TableVoiceMember {

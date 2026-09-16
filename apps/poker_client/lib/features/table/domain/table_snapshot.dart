@@ -424,6 +424,48 @@ class RunoutChoiceSnapshot {
       );
 }
 
+/// 本人在本房间内对别人申请的偏好，离开房间即恢复默认（全部允许）。
+class RequestPreferences {
+  const RequestPreferences({
+    this.allowSeatSwapRequests = true,
+    this.allowHoleCardViewRequests = true,
+  });
+
+  final bool allowSeatSwapRequests;
+  final bool allowHoleCardViewRequests;
+
+  factory RequestPreferences.fromJson(Map<String, dynamic>? json) =>
+      RequestPreferences(
+        allowSeatSwapRequests: json?['allowSeatSwapRequests'] as bool? ?? true,
+        allowHoleCardViewRequests:
+            json?['allowHoleCardViewRequests'] as bool? ?? true,
+      );
+
+  Map<String, Object?> toJson() => {
+    'allowSeatSwapRequests': allowSeatSwapRequests,
+    'allowHoleCardViewRequests': allowHoleCardViewRequests,
+  };
+
+  RequestPreferences copyWith({
+    bool? allowSeatSwapRequests,
+    bool? allowHoleCardViewRequests,
+  }) => RequestPreferences(
+    allowSeatSwapRequests: allowSeatSwapRequests ?? this.allowSeatSwapRequests,
+    allowHoleCardViewRequests:
+        allowHoleCardViewRequests ?? this.allowHoleCardViewRequests,
+  );
+
+  @override
+  bool operator ==(Object other) =>
+      other is RequestPreferences &&
+      other.allowSeatSwapRequests == allowSeatSwapRequests &&
+      other.allowHoleCardViewRequests == allowHoleCardViewRequests;
+
+  @override
+  int get hashCode =>
+      Object.hash(allowSeatSwapRequests, allowHoleCardViewRequests);
+}
+
 class PendingTableRequest {
   const PendingTableRequest({
     required this.requestId,
@@ -473,6 +515,7 @@ class TableSnapshot {
     this.joinLocked = false,
     this.spectators = const [],
     this.spectatorSettings = const SpectatorSettings(),
+    this.requestPreferences = const RequestPreferences(),
     this.spectatorFee = 0,
     this.spectatorFees,
     this.spectating = false,
@@ -516,6 +559,9 @@ class TableSnapshot {
 
   /// 房主对观战位的设置。
   final SpectatorSettings spectatorSettings;
+
+  /// 本人的申请偏好，服务端只发给本人。
+  final RequestPreferences requestPreferences;
 
   /// 每手看牌费的筹码数（= feeBigBlinds × 大盲）。0 表示免费。
   final int spectatorFee;
@@ -617,6 +663,9 @@ class TableSnapshot {
         : SpectatorFees.fromJson(json['spectatorFees'] as Map<String, dynamic>),
     spectating: json['spectating'] as bool? ?? false,
     spectatorFee: json['spectatorFee'] as int? ?? 0,
+    requestPreferences: RequestPreferences.fromJson(
+      json['requestPreferences'] as Map<String, dynamic>?,
+    ),
   );
 }
 

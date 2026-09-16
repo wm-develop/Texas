@@ -293,7 +293,7 @@ func TestFoldedPlayerCanRequestViewOfAnotherFoldedPlayer(t *testing.T) {
 	if _, err := manager.RequestHoleCardView(ctx, firstFolder, created.RoomID, secondFolder, "view-folded"); err != nil {
 		t.Fatalf("folded requester should be able to ask a folded target: %v", err)
 	}
-	accepted, err := manager.RespondHoleCardView(ctx, secondFolder, created.RoomID, "view-folded", true)
+	accepted, _, err := manager.RespondHoleCardView(ctx, secondFolder, created.RoomID, "view-folded", true, "")
 	if err != nil {
 		t.Fatalf("folded target should be able to accept: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestSeatSwapRequestWorksWithoutFullTable(t *testing.T) {
 	if _, err := manager.RequestSeatChange(ctx, "owner", created.RoomID, guestSeat, "swap-sparse"); err != nil {
 		t.Fatalf("swap request on a non-full table should work: %v", err)
 	}
-	accepted, err := manager.RespondSeatSwap(ctx, "guest", created.RoomID, "swap-sparse", true)
+	accepted, _, err := manager.RespondSeatSwap(ctx, "guest", created.RoomID, "swap-sparse", true, "")
 	if err != nil {
 		t.Fatal(err)
 	}

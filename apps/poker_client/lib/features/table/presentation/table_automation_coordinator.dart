@@ -24,9 +24,8 @@ class TableAutomationCoordinator {
   String? _rebuyOfferedHandId;
   final Set<String> _handledRequestIds = {};
 
-  TableSeatSnapshot? _ownSeat(TableSnapshot snapshot) => snapshot.seats
-      .where((seat) => seat.userId == currentUserId)
-      .firstOrNull;
+  TableSeatSnapshot? _ownSeat(TableSnapshot snapshot) =>
+      snapshot.seats.where((seat) => seat.userId == currentUserId).firstOrNull;
 
   /// 自动准备倒计时结束后是否应替本人提交准备。
   ///
@@ -74,11 +73,44 @@ class TableAutomationCoordinator {
     return true;
   }
 
+  /// 被申请者选了「不再接受此人 / 任何人」后，服务端会顺手撤掉同一目标下其余
+  /// 排队的申请。本地快照要等广播才更新，而答复的回执先到并触发一次刷新，
+  /// 不在这里把那些申请标成已处理，就会弹出一条服务端已经不存在的申请。
+  void withdrawAfterDecline({
+    required TableSnapshot? snapshot,
+    required PendingTableRequest declined,
+    required bool holeCards,
+    required String scope,
+  }) {
+    if (snapshot == null || scope == 'once') return;
+    final candidates = holeCards
+        ? snapshot.holeCardViewRequests
+        : snapshot.seatSwapRequests;
+    // 答复的那条已经不在快照里（弹窗跨过了开局或结算），服务端会回「申请已失效」
+    // 且不会撤回任何申请；这时快照里剩下的可能是下一手的新申请，不能替它们作答。
+    if (!candidates.any((c) => c.requestId == declined.requestId)) return;
+    for (final candidate in candidates) {
+      if (scope == 'everyone' ||
+          candidate.requesterUserId == declined.requesterUserId) {
+        _handledRequestIds.add(candidate.requestId);
+      }
+    }
+  }
+
+  /// 答复没能发出去（断线重连中）时把这条申请放回去，下一份快照会再弹一次。
+  void forgetRequest(String requestId) => _handledRequestIds.remove(requestId);
+
   /// 取下一条待本人答复的牌桌请求，取出即视为已处理。
   ///
   /// 看手牌申请优先于换位申请：前者只在本手有效，晚一步答复就失去意义。
-  TableRequestPrompt? takeNextRequest(TableSnapshot? snapshot) {
-    if (snapshot == null || requestDialogOpen) return null;
+  ///
+  /// [socketJoined] 为 false（断线重连中）时不弹：答复发不出去，弹了只会让玩家
+  /// 对着一个怎么点都关不掉的弹窗；重连后的快照会再来触发。
+  TableRequestPrompt? takeNextRequest(
+    TableSnapshot? snapshot, {
+    bool socketJoined = true,
+  }) {
+    if (snapshot == null || requestDialogOpen || !socketJoined) return null;
     for (final holeCards in [true, false]) {
       final candidates = holeCards
           ? snapshot.holeCardViewRequests

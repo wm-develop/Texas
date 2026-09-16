@@ -256,6 +256,8 @@ func (client *webSocketClient) route(ctx context.Context, message protocol.Envel
 		return client.requestSeatChange(ctx, message)
 	case protocol.TypeTableSeatSwapRespond:
 		return client.respondSeatSwap(ctx, message)
+	case protocol.TypeTableRequestPreferencesSet:
+		return client.setRequestPreferences(ctx, message)
 	case protocol.TypeTableRunoutChoose:
 		return client.chooseRunout(ctx, message)
 	case protocol.TypeTableTimeExtensionUse:
@@ -531,8 +533,8 @@ func (client *webSocketClient) respondHoleCardsView(ctx context.Context, message
 	if !decodePayload(message.Payload, &payload) {
 		return client.sendError(message, protocol.TypeSystemError, "invalid_request")
 	}
-	snapshot, err := client.server.tables.RespondHoleCardView(
-		ctx, client.user.UserID, client.roomID, payload.PendingRequestID, payload.Accept,
+	snapshot, declined, err := client.server.tables.RespondHoleCardView(
+		ctx, client.user.UserID, client.roomID, payload.PendingRequestID, payload.Accept, payload.Scope,
 	)
 	if err != nil {
 		return client.sendError(message, protocol.TypeSystemError, errorCode(err))
@@ -540,6 +542,45 @@ func (client *webSocketClient) respondHoleCardsView(ctx context.Context, message
 	if err := client.respond(message, protocol.TypeTableHoleCardsViewRespond, map[string]bool{"accepted": payload.Accept}); err != nil {
 		return err
 	}
+	client.notifyDeclined("hole_card_view", payload.PendingRequestID, declined)
+	return client.server.hub.broadcastSnapshots(ctx, client.server.tables, client.roomID, &snapshot)
+}
+
+// notifyDeclined 把「申请被拒」只告诉申请者本人。走单发而不进房间事件缓冲：
+// 缓冲里的事件会在别人断线补发时一并送出，谁拒绝了谁不该让整桌人知道。
+func (client *webSocketClient) notifyDeclined(kind, requestID string, declined *tablemanager.DeclinedRequest) {
+	if declined == nil {
+		return
+	}
+	client.server.hub.sendTo(client.roomID, declined.RequesterUserID, protocol.TypeTableRequestDeclined,
+		protocol.RequestDeclinedPayload{
+			Kind: kind, RequestID: requestID, TargetUserID: client.user.UserID,
+			TargetDisplayName: declined.TargetDisplayName, Scope: declined.Scope,
+		})
+}
+
+func (client *webSocketClient) setRequestPreferences(ctx context.Context, message protocol.Envelope) error {
+	if client.roomID == "" {
+		return client.sendError(message, protocol.TypeSystemError, "table_not_joined")
+	}
+	var payload protocol.RequestPreferencesPayload
+	if !decodePayload(message.Payload, &payload) ||
+		payload.AllowSeatSwapRequests == nil || payload.AllowHoleCardViewRequests == nil {
+		return client.sendError(message, protocol.TypeSystemError, "invalid_request")
+	}
+	snapshot, err := client.server.tables.SetRequestPreferences(
+		ctx, client.user.UserID, client.roomID, tablemanager.RequestPreferences{
+			AllowSeatSwapRequests:     *payload.AllowSeatSwapRequests,
+			AllowHoleCardViewRequests: *payload.AllowHoleCardViewRequests,
+		},
+	)
+	if err != nil {
+		return client.sendError(message, protocol.TypeSystemError, errorCode(err))
+	}
+	if err := client.respond(message, protocol.TypeTableRequestPreferencesSet, payload); err != nil {
+		return err
+	}
+	// 关掉偏好会撤掉别人已排队的申请，申请者那边的待处理列表也要跟着更新，所以整桌重发。
 	return client.server.hub.broadcastSnapshots(ctx, client.server.tables, client.roomID, &snapshot)
 }
 
@@ -571,8 +612,8 @@ func (client *webSocketClient) respondSeatSwap(ctx context.Context, message prot
 	if !decodePayload(message.Payload, &payload) {
 		return client.sendError(message, protocol.TypeSystemError, "invalid_request")
 	}
-	snapshot, err := client.server.tables.RespondSeatSwap(
-		ctx, client.user.UserID, client.roomID, payload.PendingRequestID, payload.Accept,
+	snapshot, declined, err := client.server.tables.RespondSeatSwap(
+		ctx, client.user.UserID, client.roomID, payload.PendingRequestID, payload.Accept, payload.Scope,
 	)
 	if err != nil {
 		return client.sendError(message, protocol.TypeSystemError, errorCode(err))
@@ -580,6 +621,7 @@ func (client *webSocketClient) respondSeatSwap(ctx context.Context, message prot
 	if err := client.respond(message, protocol.TypeTableSeatSwapRespond, map[string]bool{"accepted": payload.Accept}); err != nil {
 		return err
 	}
+	client.notifyDeclined("seat_swap", payload.PendingRequestID, declined)
 	return client.server.hub.broadcastSnapshots(ctx, client.server.tables, client.roomID, &snapshot)
 }
 
@@ -839,6 +881,31 @@ func (hub *tableHub) latestSequence(roomID string) uint64 {
 	return hub.bufferFor(roomID).LatestSequence()
 }
 
+// currentClient 返回某位用户在房间里当前生效的连接；不在线时为 nil。
+func (hub *tableHub) currentClient(roomID, userID string) *webSocketClient {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	return hub.current[roomID][userID]
+}
+
+// sendTo 只向一位用户发送事件。不进房间事件缓冲、不占序号（客户端把序号 0
+// 当作带外消息接受），因此断线补发不会把它送给别人；用户不在线就直接丢弃，
+// 这类提示本来就只在当下有意义。
+func (hub *tableHub) sendTo(roomID, userID string, messageType protocol.MessageType, payload any) {
+	client := hub.currentClient(roomID, userID)
+	if client == nil {
+		return
+	}
+	message := response(protocol.Envelope{}, messageType, payload)
+	message.TableID = roomID
+	if err := client.write(message); err != nil {
+		hub.logError(
+			"direct event delivery failed", err,
+			"room_id", roomID, "user_id", userID, "type", string(messageType),
+		)
+	}
+}
+
 func (hub *tableHub) clientsFor(roomID string) []*webSocketClient {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
@@ -1078,6 +1145,7 @@ func isIdempotentRequest(messageType protocol.MessageType) bool {
 		protocol.TypeTableHoleCardsViewRespond,
 		protocol.TypeTableSeatChangeRequest,
 		protocol.TypeTableSeatSwapRespond,
+		protocol.TypeTableRequestPreferencesSet,
 		protocol.TypeTableRunoutChoose,
 		protocol.TypeTableTimeExtensionUse,
 		protocol.TypeTableRebuy,

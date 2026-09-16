@@ -57,11 +57,19 @@ type runtime struct {
 	holeCardViewRequests     map[string]holeCardViewRequest
 	privateHoleCardViews     map[string]map[string]holdem.RevealedHand
 	seatSwapRequests         map[string]seatSwapRequest
-	timeExtensions           map[string]int
-	handStartedAt            time.Time
-	persistedHandID          string
-	actions                  []history.Action
-	lastAction               *ConfirmedActionSnapshot
+	// requestPreferences 是每位玩家在本房间内「是否接受别人的换座/看牌申请」。
+	// 不在表里等于全部允许；离开房间即清除。
+	requestPreferences map[string]RequestPreferences
+	// seatSwapBlocks[目标][申请者] 记录目标在本房间内不再接受该申请者的换座申请。
+	// 由目标在弹窗里选「不再接受此人」写入，目标离开房间才清除；申请者进出房间不影响。
+	seatSwapBlocks map[string]map[string]bool
+	// holeCardViewBlocks[目标] 记录目标本手不再接受的看牌申请，本手结束即清空。
+	holeCardViewBlocks map[string]*holeCardViewBlock
+	timeExtensions     map[string]int
+	handStartedAt      time.Time
+	persistedHandID    string
+	actions            []history.Action
+	lastAction         *ConfirmedActionSnapshot
 	// online 记录当前保持 WebSocket 连接的用户，独立于引擎座位。
 	// 牌局进行中加入的玩家在结算前没有引擎座位，Join 时的 SetConnected 落空；
 	// 若入座时一律写成断线，他会一直显示「已断线」，服务端自动准备也会跳过他。
@@ -184,32 +192,34 @@ type seatSwapRequest struct {
 }
 
 type Snapshot struct {
-	RoomID             string                        `json:"roomId"`
-	RoomCode           string                        `json:"roomCode"`
-	OwnerUserID        string                        `json:"ownerUserId"`
-	RoomRevision       uint64                        `json:"roomRevision"`
-	TableRevision      uint64                        `json:"tableRevision"`
-	Phase              holdem.Phase                  `json:"phase"`
-	HandID             string                        `json:"handId,omitempty"`
-	DealerSeat         int                           `json:"dealerSeat,omitempty"`
-	SmallBlindSeat     int                           `json:"smallBlindSeat,omitempty"`
-	BigBlindSeat       int                           `json:"bigBlindSeat,omitempty"`
-	Board              []string                      `json:"board"`
-	HoleCards          []string                      `json:"holeCards,omitempty"`
-	Seats              []SeatSnapshot                `json:"seats"`
-	CurrentAction      *ActionSnapshot               `json:"currentAction,omitempty"`
-	LastAction         *ConfirmedActionSnapshot      `json:"lastAction,omitempty"`
-	TotalPot           int64                         `json:"totalPot"`
-	Settlement         *holdem.Settlement            `json:"settlement,omitempty"`
-	VoluntaryReveals   []holdem.RevealedHand         `json:"voluntaryReveals,omitempty"`
-	PrivateReveals     []holdem.RevealedHand         `json:"privateReveals,omitempty"`
-	HoleCardRequests   []HoleCardViewRequestSnapshot `json:"holeCardViewRequests,omitempty"`
-	SeatSwapRequests   []SeatSwapRequestSnapshot     `json:"seatSwapRequests,omitempty"`
-	RunoutChoice       *RunoutChoiceSnapshot         `json:"runoutChoice,omitempty"`
-	CanShowHoleCards   bool                          `json:"canShowHoleCards"`
-	AutoReadyDeadline  int64                         `json:"autoReadyDeadline,omitempty"`
-	AutoReadyCancelled bool                          `json:"autoReadyCancelled"`
-	MaxBuyIn           int64                         `json:"maxBuyIn"`
+	RoomID           string                        `json:"roomId"`
+	RoomCode         string                        `json:"roomCode"`
+	OwnerUserID      string                        `json:"ownerUserId"`
+	RoomRevision     uint64                        `json:"roomRevision"`
+	TableRevision    uint64                        `json:"tableRevision"`
+	Phase            holdem.Phase                  `json:"phase"`
+	HandID           string                        `json:"handId,omitempty"`
+	DealerSeat       int                           `json:"dealerSeat,omitempty"`
+	SmallBlindSeat   int                           `json:"smallBlindSeat,omitempty"`
+	BigBlindSeat     int                           `json:"bigBlindSeat,omitempty"`
+	Board            []string                      `json:"board"`
+	HoleCards        []string                      `json:"holeCards,omitempty"`
+	Seats            []SeatSnapshot                `json:"seats"`
+	CurrentAction    *ActionSnapshot               `json:"currentAction,omitempty"`
+	LastAction       *ConfirmedActionSnapshot      `json:"lastAction,omitempty"`
+	TotalPot         int64                         `json:"totalPot"`
+	Settlement       *holdem.Settlement            `json:"settlement,omitempty"`
+	VoluntaryReveals []holdem.RevealedHand         `json:"voluntaryReveals,omitempty"`
+	PrivateReveals   []holdem.RevealedHand         `json:"privateReveals,omitempty"`
+	HoleCardRequests []HoleCardViewRequestSnapshot `json:"holeCardViewRequests,omitempty"`
+	SeatSwapRequests []SeatSwapRequestSnapshot     `json:"seatSwapRequests,omitempty"`
+	// RequestPreferences 是接收者本人的申请偏好，只发给本人。
+	RequestPreferences RequestPreferences    `json:"requestPreferences"`
+	RunoutChoice       *RunoutChoiceSnapshot `json:"runoutChoice,omitempty"`
+	CanShowHoleCards   bool                  `json:"canShowHoleCards"`
+	AutoReadyDeadline  int64                 `json:"autoReadyDeadline,omitempty"`
+	AutoReadyCancelled bool                  `json:"autoReadyCancelled"`
+	MaxBuyIn           int64                 `json:"maxBuyIn"`
 	// Draining 为 true 表示服务端正在优雅停机：本手结束后不再开新局。
 	Draining bool `json:"draining,omitempty"`
 	// JoinLocked 为 true 表示房主已关闭房间入口。
@@ -390,6 +400,7 @@ func (manager *Manager) startHandIfReadyLocked(
 	runtime.voluntarilyRevealedHands = make(map[string]holdem.RevealedHand)
 	runtime.holeCardViewRequests = make(map[string]holeCardViewRequest)
 	runtime.privateHoleCardViews = make(map[string]map[string]holdem.RevealedHand)
+	runtime.holeCardViewBlocks = make(map[string]*holeCardViewBlock)
 	runtime.seatSwapRequests = make(map[string]seatSwapRequest)
 	runtime.handStartedAt = manager.now()
 	runtime.actions = nil
@@ -469,8 +480,7 @@ func (manager *Manager) SubmitAction(
 		}
 	}
 	if result.HandEnded {
-		runtime.holeCardViewRequests = make(map[string]holeCardViewRequest)
-		runtime.privateHoleCardViews = make(map[string]map[string]holdem.RevealedHand)
+		clearHandScopedRequestsLocked(runtime)
 		if err := manager.persistSettlementLocked(runtime, roomValue); err != nil {
 			return holdem.ActionResult{}, Snapshot{}, err
 		}
@@ -507,6 +517,7 @@ func (manager *Manager) SubmitRunoutChoice(
 		return Snapshot{}, err
 	}
 	if settled {
+		clearHandScopedRequestsLocked(runtime)
 		if err := manager.persistSettlementLocked(runtime, roomValue); err != nil {
 			return Snapshot{}, err
 		}
@@ -597,6 +608,21 @@ func (manager *Manager) RequestHoleCardView(
 		!target.Participating || target.HoleCards[0].Rank == 0 || target.HoleCards[1].Rank == 0 {
 		return Snapshot{}, holdem.RuleError{Code: "hole_card_view_not_available"}
 	}
+	if !runtime.preferencesFor(targetUserID).AllowHoleCardViewRequests {
+		return Snapshot{}, holdem.RuleError{Code: "hole_card_view_requests_disabled"}
+	}
+	// 对方已经给看过了：本手再申请没有意义，也省得对方再被弹一次窗。
+	if _, granted := runtime.privateHoleCardViews[requesterUserID][targetUserID]; granted {
+		return Snapshot{}, holdem.RuleError{Code: "hole_card_view_already_granted"}
+	}
+	if block := runtime.holeCardViewBlocks[targetUserID]; block != nil && block.HandID == runtime.engine.HandID() {
+		if block.Everyone {
+			return Snapshot{}, holdem.RuleError{Code: "hole_card_view_blocked_this_hand"}
+		}
+		if block.Requesters[requesterUserID] {
+			return Snapshot{}, holdem.RuleError{Code: "hole_card_view_requester_blocked"}
+		}
+	}
 	for _, pending := range runtime.holeCardViewRequests {
 		if pending.RequesterUserID == requesterUserID && pending.TargetUserID == targetUserID {
 			return snapshotForRuntime(runtime, roomValue, requesterUserID)
@@ -609,24 +635,65 @@ func (manager *Manager) RequestHoleCardView(
 	return snapshotForRuntime(runtime, roomValue, requesterUserID)
 }
 
+// RespondHoleCardView 处理被申请者对看牌申请的答复。拒绝时 scope 决定屏蔽范围：
+// DeclineOnce 只拒这一次；DeclineRequester 本手不再接受该申请者；DeclineEveryone
+// 本手不再接受任何人。屏蔽随下一手开始清空。拒绝时返回 DeclinedRequest 供传输层
+// 通知申请者；同意时为 nil。
 func (manager *Manager) RespondHoleCardView(
-	ctx context.Context, targetUserID, roomID, requestID string, accept bool,
-) (Snapshot, error) {
+	ctx context.Context, targetUserID, roomID, requestID string, accept bool, scope string,
+) (Snapshot, *DeclinedRequest, error) {
+	scope, err := normalizeDeclineScope(scope, true)
+	if err != nil {
+		return Snapshot{}, nil, err
+	}
 	roomValue, err := manager.rooms.GetForMember(ctx, targetUserID, roomID)
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, nil, err
 	}
 	runtime := manager.existingRuntime(roomID)
 	if runtime == nil {
-		return Snapshot{}, room.Error{Code: "table_not_started"}
+		return Snapshot{}, nil, room.Error{Code: "table_not_started"}
 	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	pending, exists := runtime.holeCardViewRequests[requestID]
 	if !exists || pending.TargetUserID != targetUserID || pending.HandID != runtime.engine.HandID() {
-		return Snapshot{}, holdem.RuleError{Code: "hole_card_view_request_not_found"}
+		return Snapshot{}, nil, holdem.RuleError{Code: "hole_card_view_request_not_found"}
 	}
+	// 同意写入的私下看牌与拒绝写入的屏蔽都是本手状态：不落盘的话，崩溃恢复后
+	// 申请者会丢掉已经看到的牌，被屏蔽的人却能再申请一次。
+	defer manager.persistStateLocked(runtime)
 	delete(runtime.holeCardViewRequests, requestID)
+	var declined *DeclinedRequest
+	if !accept {
+		declined = &DeclinedRequest{
+			RequesterUserID:   pending.RequesterUserID,
+			TargetDisplayName: displayNameOf(roomValue, targetUserID), Scope: scope,
+		}
+		if scope != DeclineOnce {
+			block := runtime.holeCardViewBlocks[targetUserID]
+			if block == nil || block.HandID != runtime.engine.HandID() {
+				block = &holeCardViewBlock{HandID: runtime.engine.HandID(), Requesters: make(map[string]bool)}
+				runtime.holeCardViewBlocks[targetUserID] = block
+			}
+			if scope == DeclineEveryone {
+				block.Everyone = true
+			} else {
+				// 从库里恢复的屏蔽记录 Requesters 可能是 nil（JSON 里省略了空表）。
+				if block.Requesters == nil {
+					block.Requesters = make(map[string]bool)
+				}
+				block.Requesters[pending.RequesterUserID] = true
+			}
+			// 顺手撤掉同一手里其他被屏蔽者已经排队的申请，免得对方接着被弹窗。
+			for id, other := range runtime.holeCardViewRequests {
+				if other.TargetUserID == targetUserID &&
+					(scope == DeclineEveryone || other.RequesterUserID == pending.RequesterUserID) {
+					delete(runtime.holeCardViewRequests, id)
+				}
+			}
+		}
+	}
 	if accept {
 		for _, player := range runtime.engine.Players() {
 			if player.PlayerID != targetUserID || !player.Participating {
@@ -643,7 +710,8 @@ func (manager *Manager) RespondHoleCardView(
 			break
 		}
 	}
-	return snapshotForRuntime(runtime, roomValue, targetUserID)
+	snapshot, err := snapshotForRuntime(runtime, roomValue, targetUserID)
+	return snapshot, declined, err
 }
 
 func (manager *Manager) RequestSeatChange(
@@ -692,16 +760,87 @@ func (manager *Manager) RequestSeatChange(
 	if targetUserID == requesterUserID || requestID == "" {
 		return Snapshot{}, holdem.RuleError{Code: "invalid_seat_swap"}
 	}
+	if !runtime.preferencesFor(targetUserID).AllowSeatSwapRequests {
+		return Snapshot{}, holdem.RuleError{Code: "seat_swap_requests_disabled"}
+	}
+	if runtime.seatSwapBlocks[targetUserID][requesterUserID] {
+		return Snapshot{}, holdem.RuleError{Code: "seat_swap_requester_blocked"}
+	}
 	runtime.seatSwapRequests[requestID] = seatSwapRequest{
 		RequestID: requestID, RequesterUserID: requesterUserID, TargetUserID: targetUserID,
 	}
 	return snapshotForRuntime(runtime, roomValue, requesterUserID)
 }
 
+// RespondSeatSwap 处理被申请者对换座申请的答复。拒绝时 scope 为 DeclineOnce 只拒
+// 这一次，DeclineRequester 则在被申请者离开房间前不再接受该申请者的换座申请
+// （申请者进出房间不影响）。拒绝时返回 DeclinedRequest 供传输层通知申请者。
 func (manager *Manager) RespondSeatSwap(
-	ctx context.Context, targetUserID, roomID, requestID string, accept bool,
-) (Snapshot, error) {
+	ctx context.Context, targetUserID, roomID, requestID string, accept bool, scope string,
+) (Snapshot, *DeclinedRequest, error) {
+	scope, err := normalizeDeclineScope(scope, false)
+	if err != nil {
+		return Snapshot{}, nil, err
+	}
 	roomValue, err := manager.rooms.GetForMember(ctx, targetUserID, roomID)
+	if err != nil {
+		return Snapshot{}, nil, err
+	}
+	runtime := manager.existingRuntime(roomID)
+	if runtime == nil {
+		return Snapshot{}, nil, room.Error{Code: "table_not_started"}
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	pending, exists := runtime.seatSwapRequests[requestID]
+	if !exists || pending.TargetUserID != targetUserID {
+		return Snapshot{}, nil, holdem.RuleError{Code: "seat_swap_request_not_found"}
+	}
+	// 这里不落盘：换座申请只存在于手间（开局时清空），而手间没有牌桌状态行。
+	// 写入的屏蔽会随下一手开局的落盘一起保存；手间重启（含正常发版）会丢掉它，
+	// 这是已知限制，见 PROJECT_STATUS。
+	delete(runtime.seatSwapRequests, requestID)
+	var declined *DeclinedRequest
+	if !accept {
+		declined = &DeclinedRequest{
+			RequesterUserID:   pending.RequesterUserID,
+			TargetDisplayName: displayNameOf(roomValue, targetUserID), Scope: scope,
+		}
+		if scope == DeclineRequester {
+			if runtime.seatSwapBlocks[targetUserID] == nil {
+				runtime.seatSwapBlocks[targetUserID] = make(map[string]bool)
+			}
+			runtime.seatSwapBlocks[targetUserID][pending.RequesterUserID] = true
+			for id, other := range runtime.seatSwapRequests {
+				if other.TargetUserID == targetUserID && other.RequesterUserID == pending.RequesterUserID {
+					delete(runtime.seatSwapRequests, id)
+				}
+			}
+		}
+	}
+	if accept {
+		if runtime.engine.Phase() != holdem.PhaseWaiting && runtime.engine.Phase() != holdem.PhaseWaitingNextHand {
+			return Snapshot{}, nil, holdem.RuleError{Code: "hand_in_progress"}
+		}
+		roomValue, err = manager.rooms.SwapSeats(ctx, pending.RequesterUserID, targetUserID)
+		if err != nil {
+			return Snapshot{}, nil, err
+		}
+		if err := runtime.engine.SwapPlayers(pending.RequesterUserID, targetUserID); err != nil {
+			return Snapshot{}, nil, err
+		}
+	}
+	snapshot, err := snapshotForRuntime(runtime, roomValue, targetUserID)
+	return snapshot, declined, err
+}
+
+// SetRequestPreferences 设置本人在本房间内是否接受别人的换座/看牌申请。
+// 关掉后对应申请在服务端直接被拒，本人不会再看到弹窗；已排队的申请一并撤掉。
+// 偏好只在本房间内有效，离开房间即恢复默认（全部允许）。
+func (manager *Manager) SetRequestPreferences(
+	ctx context.Context, userID, roomID string, preferences RequestPreferences,
+) (Snapshot, error) {
+	roomValue, err := manager.rooms.GetForMember(ctx, userID, roomID)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -711,24 +850,68 @@ func (manager *Manager) RespondSeatSwap(
 	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
-	pending, exists := runtime.seatSwapRequests[requestID]
-	if !exists || pending.TargetUserID != targetUserID {
-		return Snapshot{}, holdem.RuleError{Code: "seat_swap_request_not_found"}
+	defer manager.persistStateLocked(runtime)
+	if preferences == DefaultRequestPreferences() {
+		delete(runtime.requestPreferences, userID)
+	} else {
+		runtime.requestPreferences[userID] = preferences
 	}
-	delete(runtime.seatSwapRequests, requestID)
-	if accept {
-		if runtime.engine.Phase() != holdem.PhaseWaiting && runtime.engine.Phase() != holdem.PhaseWaitingNextHand {
-			return Snapshot{}, holdem.RuleError{Code: "hand_in_progress"}
-		}
-		roomValue, err = manager.rooms.SwapSeats(ctx, pending.RequesterUserID, targetUserID)
-		if err != nil {
-			return Snapshot{}, err
-		}
-		if err := runtime.engine.SwapPlayers(pending.RequesterUserID, targetUserID); err != nil {
-			return Snapshot{}, err
+	if !preferences.AllowSeatSwapRequests {
+		for id, pending := range runtime.seatSwapRequests {
+			if pending.TargetUserID == userID {
+				delete(runtime.seatSwapRequests, id)
+			}
 		}
 	}
-	return snapshotForRuntime(runtime, roomValue, targetUserID)
+	if !preferences.AllowHoleCardViewRequests {
+		for id, pending := range runtime.holeCardViewRequests {
+			if pending.TargetUserID == userID {
+				delete(runtime.holeCardViewRequests, id)
+			}
+		}
+	}
+	return snapshotForRuntime(runtime, roomValue, userID)
+}
+
+// clearHandScopedRequestsLocked 清掉只在一手之内有效的看牌申请、私下看牌授权与
+// 本手屏蔽。四条结束一手的路径（行动、行动超时、发牌次数选择、选择超时）都要
+// 调用，否则结算展示期里还挂着上一手的私下看牌，而屏蔽虽有 HandID 守卫也会一直
+// 留在内存里。
+func clearHandScopedRequestsLocked(runtime *runtime) {
+	runtime.holeCardViewRequests = make(map[string]holeCardViewRequest)
+	runtime.privateHoleCardViews = make(map[string]map[string]holdem.RevealedHand)
+	runtime.holeCardViewBlocks = make(map[string]*holeCardViewBlock)
+}
+
+// preferencesFor 返回某位玩家的申请偏好；没设置过等于全部允许。
+func (runtime *runtime) preferencesFor(userID string) RequestPreferences {
+	if preferences, ok := runtime.requestPreferences[userID]; ok {
+		return preferences
+	}
+	return DefaultRequestPreferences()
+}
+
+func normalizeDeclineScope(scope string, allowEveryone bool) (string, error) {
+	switch scope {
+	case "", DeclineOnce:
+		return DeclineOnce, nil
+	case DeclineRequester:
+		return scope, nil
+	case DeclineEveryone:
+		if allowEveryone {
+			return scope, nil
+		}
+	}
+	return "", holdem.RuleError{Code: "invalid_decline_scope"}
+}
+
+func displayNameOf(roomValue room.Room, userID string) string {
+	for _, member := range roomValue.Members {
+		if member.UserID == userID {
+			return member.DisplayName
+		}
+	}
+	return ""
 }
 
 func (manager *Manager) UseTimeExtension(ctx context.Context, userID string, roomID string) (Snapshot, error) {
@@ -884,6 +1067,9 @@ func (manager *Manager) Leave(ctx context.Context, userID string) (bool, error) 
 	if runtime != nil {
 		delete(runtime.pendingSpectate, userID)
 		delete(runtime.pendingSeat, userID)
+		delete(runtime.requestPreferences, userID)
+		delete(runtime.seatSwapBlocks, userID)
+		delete(runtime.holeCardViewBlocks, userID)
 		_ = runtime.engine.RequestLeave(userID)
 		if deferCashOut && !closed {
 			displayName := ""
@@ -897,6 +1083,12 @@ func (manager *Manager) Leave(ctx context.Context, userID string) (bool, error) 
 				runtime.pendingCashOuts = make(map[string]string)
 			}
 			runtime.pendingCashOuts[userID] = displayName
+		}
+		// 牌局进行中离开要落盘：否则崩溃恢复后他的偏好和屏蔽会跟着旧状态行回来，
+		// 「离开即重置」就不成立；放在 RequestLeave 与待返还登记之后，恢复出来的
+		// 状态才和内存里一致。房间已关闭就不再写行，免得留下孤儿记录。
+		if !closed {
+			manager.persistStateLocked(runtime)
 		}
 		if closed && runtime.timer != nil {
 			runtime.timer.Stop()
@@ -941,6 +1133,9 @@ func (manager *Manager) runtimeFor(roomValue room.Room) (*runtime, error) {
 		holeCardViewRequests:     make(map[string]holeCardViewRequest),
 		privateHoleCardViews:     make(map[string]map[string]holdem.RevealedHand),
 		seatSwapRequests:         make(map[string]seatSwapRequest),
+		requestPreferences:       make(map[string]RequestPreferences),
+		seatSwapBlocks:           make(map[string]map[string]bool),
+		holeCardViewBlocks:       make(map[string]*holeCardViewBlock),
 		online:                   make(map[string]bool),
 	}
 	// 进程重启后第一个回到这个房间的人触发恢复：没人回来的牌桌不必占用
@@ -1161,6 +1356,10 @@ func (manager *Manager) handleTimeout(roomID string, generation uint64) {
 			err = runtime.engine.ResolveRunoutChoiceTimeout()
 		}
 		if err == nil {
+			// 这也是一条结束一手的路径：清掉本手的看牌状态，并把已结算的
+			// 牌桌状态行删掉，否则它会一直留到下一手开局。
+			clearHandScopedRequestsLocked(runtime)
+			manager.persistStateLocked(runtime)
 			err = manager.persistSettlementLocked(runtime, roomValue)
 		}
 		if err == nil {
@@ -1198,7 +1397,6 @@ func (manager *Manager) handleTimeout(roomID string, generation uint64) {
 		var result holdem.ActionResult
 		street := runtime.engine.Phase()
 		result, err = runtime.engine.ApplyTimeout()
-		defer manager.persistStateLocked(runtime)
 		if err == nil {
 			runtime.actions = append(runtime.actions, history.Action{
 				ActionID: result.ActionID, UserID: actorUserID, Sequence: len(runtime.actions) + 1,
@@ -1211,6 +1409,7 @@ func (manager *Manager) handleTimeout(roomID string, generation uint64) {
 			}
 		}
 		if err == nil && result.HandEnded {
+			clearHandScopedRequestsLocked(runtime)
 			err = manager.persistSettlementLocked(runtime, roomValue)
 			if err == nil {
 				roomValue, err = manager.resetReadyLocked(context.Background(), runtime, roomValue)
@@ -1226,6 +1425,9 @@ func (manager *Manager) handleTimeout(roomID string, generation uint64) {
 		runtime.deadline = time.Time{}
 		runtime.timer = nil
 	}
+	// 必须在解锁前落盘：此前这里用 defer，函数返回时锁已经放开，序列化牌桌状态
+	// 会与其他协程对同一批表的写入并发。
+	manager.persistStateLocked(runtime)
 	runtime.mu.Unlock()
 	if err == nil {
 		manager.notifySnapshot(roomID)
@@ -1449,6 +1651,7 @@ func snapshotForRuntime(runtime *runtime, roomValue room.Room, recipientUserID s
 			})
 		}
 	}
+	result.RequestPreferences = runtime.preferencesFor(recipientUserID)
 	sort.Slice(result.HoleCardRequests, func(left, right int) bool {
 		return result.HoleCardRequests[left].RequestID < result.HoleCardRequests[right].RequestID
 	})
@@ -2167,4 +2370,40 @@ func annotateSpectators(runtime *runtime, roomValue room.Room, recipientUserID s
 			result.Seats[index].HoleCards = hole
 		}
 	}
+}
+
+// RequestPreferences 是玩家在本房间内对别人申请的偏好。零值不是默认值：
+// 默认全部允许，见 DefaultRequestPreferences。
+type RequestPreferences struct {
+	AllowSeatSwapRequests     bool `json:"allowSeatSwapRequests"`
+	AllowHoleCardViewRequests bool `json:"allowHoleCardViewRequests"`
+}
+
+// DefaultRequestPreferences 返回默认偏好：接受换座申请，也接受看牌申请。
+func DefaultRequestPreferences() RequestPreferences {
+	return RequestPreferences{AllowSeatSwapRequests: true, AllowHoleCardViewRequests: true}
+}
+
+// 拒绝申请时的屏蔽范围。
+const (
+	// DeclineOnce 只拒绝这一次。
+	DeclineOnce = "once"
+	// DeclineRequester 不再接受这名申请者：换座在本房间内有效，看牌只在本手有效。
+	DeclineRequester = "requester"
+	// DeclineEveryone 本手不再接受任何人的看牌申请；换座不支持。
+	DeclineEveryone = "everyone"
+)
+
+// DeclinedRequest 描述一次被拒绝的申请，供传输层只通知申请者本人。
+type DeclinedRequest struct {
+	RequesterUserID   string
+	TargetDisplayName string
+	Scope             string
+}
+
+// holeCardViewBlock 是某位玩家本手不再接受的看牌申请。字段导出是为了随牌桌状态持久化。
+type holeCardViewBlock struct {
+	HandID     string          `json:"handId"`
+	Everyone   bool            `json:"everyone"`
+	Requesters map[string]bool `json:"requesters,omitempty"`
 }

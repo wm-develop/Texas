@@ -7,6 +7,7 @@ Future<void> showAppSettingsDialog(
   AppSettingsController settings, {
   VoidCallback? onOpenAdmin,
   VoidCallback? onOpenRoomManagement,
+  VoidCallback? onOpenRequestPreferences,
 }) => showDialog<void>(
   context: context,
   builder: (context) {
@@ -51,6 +52,21 @@ Future<void> showAppSettingsDialog(
                   value: settings.autoJoinVoice,
                   onChanged: settings.setAutoJoinVoice,
                 ),
+                if (onOpenRequestPreferences != null) ...[
+                  const Divider(),
+                  ListTile(
+                    key: const ValueKey('settings-request-preferences'),
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.how_to_reg_outlined),
+                    title: const Text('换座与看牌申请'),
+                    subtitle: const Text('是否允许其他玩家向你申请换座、私下看牌'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      onOpenRequestPreferences();
+                    },
+                  ),
+                ],
                 if (onOpenRoomManagement != null) ...[
                   const Divider(),
                   ListTile(

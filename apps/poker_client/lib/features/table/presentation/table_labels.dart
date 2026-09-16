@@ -111,6 +111,13 @@ String gameErrorLabel(String code) => switch (code) {
   'hole_card_view_request_not_found' => '这条看牌申请已经失效',
   'invalid_seat_swap' => '不能与该目标交换座位',
   'seat_swap_request_not_found' => '这条换位申请已经失效',
+  'seat_swap_requests_disabled' => '对方不接受换座申请',
+  'seat_swap_requester_blocked' => '对方不再接受你的换座申请',
+  'hole_card_view_requests_disabled' => '对方不接受看牌申请',
+  'hole_card_view_requester_blocked' => '对方本手不再接受你的看牌申请',
+  'hole_card_view_blocked_this_hand' => '对方本手不接受任何看牌申请',
+  'hole_card_view_already_granted' => '你本手已经看过对方的牌',
+  'invalid_decline_scope' => '这种拒绝方式不可用',
   'runout_choice_not_available' => '当前不在发牌次数选择阶段',
   'invalid_player_interaction' => '请选择同桌的其他玩家进行互动',
   'player_not_at_table' => '该玩家已经离开牌桌',
@@ -129,6 +136,42 @@ String gameErrorLabel(String code) => switch (code) {
   _ when code.startsWith('invalid_server_message') => '收到的牌桌数据无法解析',
   _ => '牌桌操作失败（$code）',
 };
+
+/// 申请被服务端当场拒绝时带上对方昵称的提示；不是申请类错误码时返回 null，
+/// 调用方退回 [gameErrorLabel]。
+String? requestErrorLabel(String code, String targetName) {
+  final name = targetName.isEmpty ? '对方' : targetName;
+  return switch (code) {
+    'seat_swap_requests_disabled' => '$name不接受换座申请',
+    'seat_swap_requester_blocked' => '$name不再接受你的换座申请',
+    'hole_card_view_requests_disabled' => '$name不接受看牌申请',
+    'hole_card_view_requester_blocked' => '$name本手不再接受你的看牌申请',
+    'hole_card_view_blocked_this_hand' => '$name本手不接受任何看牌申请',
+    'hole_card_view_already_granted' => '你本手已经看过$name的牌',
+    _ => null,
+  };
+}
+
+/// 对方在弹窗里拒绝后，申请者收到的提示。[kind] 为 'seat_swap' 或
+/// 'hole_card_view'，[scope] 为 'once' / 'requester' / 'everyone'。
+String requestDeclinedLabel({
+  required String kind,
+  required String scope,
+  required String targetName,
+}) {
+  final name = targetName.isEmpty ? '对方' : targetName;
+  if (kind == 'seat_swap') {
+    return switch (scope) {
+      'requester' => '$name不再接受你的换座申请',
+      _ => '$name拒绝了这次换座',
+    };
+  }
+  return switch (scope) {
+    'requester' => '$name本手不再接受你的看牌申请',
+    'everyone' => '$name本手不接受任何看牌申请',
+    _ => '$name拒绝了这次看牌',
+  };
+}
 
 String cardSuit(String card) {
   if (card.length != 2) return '';
