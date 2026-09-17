@@ -204,8 +204,13 @@ func TestFoldedPlayerLeavesMidHandWithDeferredConservedCashOut(t *testing.T) {
 	if closed {
 		t.Fatal("room must stay open")
 	}
-	if _, err := rooms.Current(ctx, actor); err == nil {
-		t.Fatal("leaver should no longer be in a room")
+	// 成员记录必须留到结算：PostgreSQL 把桌上筹码记在这一行上，提前删掉筹码就没了。
+	// 对他本人则已经算离开（LeavePending），HTTP 层据此隐藏房间。
+	if _, err := rooms.Current(ctx, actor); err != nil {
+		t.Fatalf("the member row must survive until settlement: %v", err)
+	}
+	if !manager.LeavePending(actor, created.RoomID) {
+		t.Fatal("a folded mid-hand leaver must be reported as leave-pending")
 	}
 	// Cash-out must not have happened yet: the wallet is unchanged until the
 	// settlement writes post-hand stacks.
@@ -241,6 +246,18 @@ func TestFoldedPlayerLeavesMidHandWithDeferredConservedCashOut(t *testing.T) {
 	}
 	if walletAfter.TableChips != 0 {
 		t.Fatalf("leaver table balance should be zero, got %d", walletAfter.TableChips)
+	}
+	// 结算之后才真正移出房间
+	if _, err := rooms.Current(ctx, actor); err == nil {
+		t.Fatal("leaver should no longer be in a room after settlement")
+	}
+	if manager.LeavePending(actor, created.RoomID) {
+		t.Fatal("leave must not stay pending after settlement")
+	}
+	for _, seat := range settled.Seats {
+		if seat.UserID == actor {
+			t.Fatalf("leaver still seated after settlement: %#v", seat)
+		}
 	}
 	// Chip conservation across all three accounts: only the top-ups created
 	// chips.

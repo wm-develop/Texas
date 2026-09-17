@@ -124,8 +124,14 @@ func TestWebSocketFriendTableFlowAndHoleCardPrivacy(t *testing.T) {
 		TableID: created.RoomID, Payload: json.RawMessage(`{}`),
 	})
 	readUntilType(t, ctx, actorConnection, protocol.TypeTableTimeExtensionAccepted)
-	ownerSnapshot = readSnapshotInPhase(t, ctx, ownerConnection, "PREFLOP")
-	guestSnapshot = readSnapshotInPhase(t, ctx, guestConnection, "PREFLOP")
+	// 等到「反映了这次加时」的那条快照，而不是下一条 PREFLOP 快照：两人先后准备
+	// 各广播过一次，缓冲里可能还躺着一条开局时的旧快照，机器一慢就会读到它，
+	// 加时卡数量自然还是 2。
+	extended := func(snapshot tablemanager.Snapshot) bool {
+		return snapshot.CurrentAction != nil && snapshot.CurrentAction.Deadline > originalDeadline
+	}
+	ownerSnapshot = readSnapshotUntil(t, ctx, ownerConnection, "the time extension is visible", extended)
+	guestSnapshot = readSnapshotUntil(t, ctx, guestConnection, "the time extension is visible", extended)
 	actorSnapshot = ownerSnapshot
 	if ownerSnapshot.CurrentAction != nil && ownerSnapshot.CurrentAction.UserID == guest.User.UserID {
 		actorSnapshot = guestSnapshot

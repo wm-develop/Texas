@@ -853,6 +853,7 @@ String _roomError(String code) => switch (code) {
   'invalid_room_password' => '房间密码不正确',
   'room_full' => '这个房间已经满员',
   'already_in_room' => '你已经在另一个房间中',
+  'leave_pending' => '你刚离开的那一手还没打完，结束后才能创建或加入其他房间',
   'insufficient_wallet_chips' => '账户筹码不足，请先充值或减少带入',
   'maximum_buy_in_exceeded' => '带入量超过房间上限',
   'invalid_room_rules' => '最低盲注为 10/20，大盲必须是小盲的整数倍，并请检查带入设置',

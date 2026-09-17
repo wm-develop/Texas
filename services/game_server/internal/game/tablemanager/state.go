@@ -48,6 +48,7 @@ type managerHandState struct {
 	VoluntarilyRevealedHands map[string]holdem.RevealedHand            `json:"voluntarilyRevealedHands,omitempty"`
 	PrivateHoleCardViews     map[string]map[string]holdem.RevealedHand `json:"privateHoleCardViews,omitempty"`
 	PendingCashOuts          map[string]string                         `json:"pendingCashOuts,omitempty"`
+	DepartedSeats            map[string]departedSeat                   `json:"departedSeats,omitempty"`
 	KnownDisplayNames        map[string]string                         `json:"knownDisplayNames,omitempty"`
 	PendingSpectate          map[string]bool                           `json:"pendingSpectate,omitempty"`
 	PendingSeat              map[string]bool                           `json:"pendingSeat,omitempty"`
@@ -87,6 +88,7 @@ func (manager *Manager) persistStateLocked(runtime *runtime) {
 			VoluntarilyRevealedHands: runtime.voluntarilyRevealedHands,
 			PrivateHoleCardViews:     runtime.privateHoleCardViews,
 			PendingCashOuts:          runtime.pendingCashOuts,
+			DepartedSeats:            runtime.departedSeats,
 			KnownDisplayNames:        runtime.knownDisplayNames,
 			PendingSpectate:          runtime.pendingSpectate,
 			PendingSeat:              runtime.pendingSeat,
@@ -170,6 +172,7 @@ func (manager *Manager) restoreLocked(created *runtime, roomValue room.Room) boo
 	adoptMap(&created.voluntarilyRevealedHands, state.Manager.VoluntarilyRevealedHands)
 	adoptMap(&created.privateHoleCardViews, state.Manager.PrivateHoleCardViews)
 	adoptMap(&created.pendingCashOuts, state.Manager.PendingCashOuts)
+	adoptMap(&created.departedSeats, state.Manager.DepartedSeats)
 	adoptMap(&created.knownDisplayNames, state.Manager.KnownDisplayNames)
 	adoptMap(&created.pendingSpectate, state.Manager.PendingSpectate)
 	adoptMap(&created.pendingSeat, state.Manager.PendingSeat)

@@ -339,3 +339,272 @@ func TestPostgresPhase3PersistenceFlow(t *testing.T) {
 type postgresZeroRandom struct{}
 
 func (postgresZeroRandom) Intn(int) (int, error) { return 0, nil }
+
+// 线上事故的回归用例，只有真实库能复现。
+//
+// 房主弃牌后中途离开，桌上筹码没有退回钱包；重新进入再离开，又丢了一次。根因之一
+// 是弃牌中途离开时成员记录被立刻删除，而 PostgreSQL 的桌上筹码就记在
+// room_members.table_chips 上：那一行一删，筹码连同记录一起消失且不留流水，本手
+// 结算又因为找不到这一行而整手回滚。内存仓储把余额另存一处，所以单元测试全绿。
+// 根因之二是离桌退还的幂等编号按「房间 + 用户」固定，同一房间第二次离开被当成
+// 重复请求跳过。这里两条都走一遍，并且特意让离开者在这一手里下过注（小盲）。
+func TestPostgresFoldedMidHandLeaveKeepsChipsAndSecondLeaveCashesOut(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_DATABASE_URL is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	database, err := postgres.Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	database.SetMaxOpenConns(1)
+	schema := fmt.Sprintf("leave_rejoin_test_%d", time.Now().UnixNano())
+	if _, err := database.ExecContext(ctx, `CREATE SCHEMA `+schema); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = database.ExecContext(context.Background(), `DROP SCHEMA IF EXISTS `+schema+` CASCADE`)
+		_ = database.Close()
+	})
+	if _, err := database.ExecContext(ctx, `SET search_path TO `+schema); err != nil {
+		t.Fatalf("set search path: %v", err)
+	}
+	migrator, err := postgres.NewMigrator(migrations.Files)
+	if err != nil {
+		t.Fatalf("NewMigrator: %v", err)
+	}
+	if _, err := migrator.Up(ctx, database); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	now := time.Unix(20_000, 0).UTC()
+	accounts, err := account.NewPostgresRepository(database)
+	if err != nil {
+		t.Fatalf("account repository: %v", err)
+	}
+	users := []string{"owner", "guest", "third"}
+	for index, userID := range users {
+		if err := accounts.CreateUser(ctx, account.User{
+			UserID: userID, Username: userID, DisplayName: "玩家" + userID,
+			PasswordHash: "hash", CreatedAt: now.Add(time.Duration(index) * time.Second),
+		}); err != nil {
+			t.Fatalf("CreateUser(%s): %v", userID, err)
+		}
+	}
+	bankrollRepository, err := bankroll.NewPostgresRepository(database)
+	if err != nil {
+		t.Fatalf("bankroll repository: %v", err)
+	}
+	chips, err := bankroll.NewService(bankrollRepository, func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("bankroll service: %v", err)
+	}
+	for _, userID := range users {
+		if _, err := chips.TopUp(ctx, userID, "topup:"+userID, 5_000); err != nil {
+			t.Fatalf("TopUp(%s): %v", userID, err)
+		}
+	}
+	roomsRepository, err := room.NewPostgresRepository(database)
+	if err != nil {
+		t.Fatalf("room repository: %v", err)
+	}
+	hasher, err := security.NewPasswordHasher(1_000, cryptorand.Reader)
+	if err != nil {
+		t.Fatalf("password hasher: %v", err)
+	}
+	// 入座时间逐次递增：离桌退还的编号按入座时间区分两次入座。
+	tick := now
+	rooms, err := room.NewService(roomsRepository, hasher, room.ServiceConfig{
+		Now: func() time.Time {
+			tick = tick.Add(time.Second)
+			return tick
+		},
+		Bankroll: chips,
+	})
+	if err != nil {
+		t.Fatalf("room service: %v", err)
+	}
+	created, err := rooms.CreateConfigured(ctx, room.Participant{UserID: "owner", DisplayName: "玩家owner"}, room.CreateOptions{
+		Preset: room.PresetCasual, SmallBlind: 10, BigBlind: 20,
+		MaxBuyIn: 2_000, BuyIn: 1_000, RequestID: "create-room",
+	})
+	if err != nil {
+		t.Fatalf("CreateConfigured: %v", err)
+	}
+	for _, userID := range []string{"guest", "third"} {
+		if _, err := rooms.JoinWithBuyIn(ctx, room.Participant{UserID: userID, DisplayName: "玩家" + userID}, room.JoinOptions{
+			Code: created.Code, BuyIn: 1_000, RequestID: "join-" + userID,
+		}); err != nil {
+			t.Fatalf("JoinWithBuyIn(%s): %v", userID, err)
+		}
+	}
+	ledgerStore, err := ledger.NewPostgresStore(database)
+	if err != nil {
+		t.Fatalf("ledger store: %v", err)
+	}
+	historyStore, err := history.NewPostgresStore(database)
+	if err != nil {
+		t.Fatalf("history store: %v", err)
+	}
+	tables, err := tablemanager.NewWithConfig(rooms, postgresZeroRandom{}, tablemanager.ManagerConfig{
+		Now: func() time.Time { return now }, Ledger: ledgerStore, History: historyStore, Bankroll: chips,
+	})
+	if err != nil {
+		t.Fatalf("table manager: %v", err)
+	}
+	for _, userID := range users {
+		if _, err := tables.Join(ctx, userID, created.RoomID); err != nil {
+			t.Fatalf("table join %s: %v", userID, err)
+		}
+	}
+	var started tablemanager.Snapshot
+	for _, userID := range users {
+		if started, err = tables.SetReady(ctx, userID, true); err != nil {
+			t.Fatalf("ready %s: %v", userID, err)
+		}
+	}
+	if started.CurrentAction == nil || started.Phase != holdem.PhasePreflop {
+		t.Fatalf("hand did not start: %#v", started)
+	}
+	handID := started.HandID
+
+	// 枪口位跟注留在局里；下一位是小盲，已经下了注，让他弃牌后离开。
+	first := started.CurrentAction.UserID
+	_, afterCall, err := tables.SubmitAction(ctx, first, created.RoomID, holdem.ActionRequest{
+		ActionID: "call-first", HandID: handID, TableRevision: started.TableRevision, Action: holdem.ActionCall,
+	})
+	if err != nil || afterCall.CurrentAction == nil {
+		t.Fatalf("call: %#v err=%v", afterCall.Phase, err)
+	}
+	leaver := afterCall.CurrentAction.UserID
+	var committed int64
+	for _, seat := range afterCall.Seats {
+		if seat.UserID == leaver {
+			committed = seat.TotalBet
+		}
+	}
+	if committed <= 0 {
+		t.Fatalf("the leaver should have posted a blind: %#v", afterCall.Seats)
+	}
+	_, afterFold, err := tables.SubmitAction(ctx, leaver, created.RoomID, holdem.ActionRequest{
+		ActionID: "fold-leaver", HandID: handID, TableRevision: afterCall.TableRevision, Action: holdem.ActionFold,
+	})
+	if err != nil || afterFold.Phase == holdem.PhaseWaitingNextHand {
+		t.Fatalf("fold: phase=%s err=%v", afterFold.Phase, err)
+	}
+	if closed, err := tables.Leave(ctx, leaver); err != nil || closed {
+		t.Fatalf("folded player must be able to leave mid-hand: closed=%v err=%v", closed, err)
+	}
+
+	// 成员记录与桌上筹码必须还在：这正是事故里被提前删掉的那一行。
+	var heldChips int64
+	if err := database.QueryRowContext(ctx,
+		`SELECT table_chips FROM room_members WHERE room_id = $1 AND user_id = $2`,
+		created.RoomID, leaver,
+	).Scan(&heldChips); err != nil {
+		t.Fatalf("the member row must survive until settlement: %v", err)
+	}
+	if heldChips != 1_000 {
+		t.Fatalf("table chips before settlement=%d", heldChips)
+	}
+	if !tables.LeavePending(leaver, created.RoomID) {
+		t.Fatal("leave should be pending")
+	}
+
+	// 剩下两人把这一手打完。结算必须成功——事故里它因为找不到离开者那一行而回滚。
+	snapshot, err := tables.Snapshot(ctx, first, created.RoomID)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	for steps := 0; snapshot.Phase != holdem.PhaseWaitingNextHand; steps++ {
+		if steps > 20 || snapshot.CurrentAction == nil {
+			t.Fatalf("hand did not finish: phase=%s", snapshot.Phase)
+		}
+		action := holdem.ActionFold
+		if snapshot.CurrentAction.Options.CanCheck {
+			action = holdem.ActionCheck
+		}
+		_, snapshot, err = tables.SubmitAction(ctx, snapshot.CurrentAction.UserID, created.RoomID, holdem.ActionRequest{
+			ActionID: fmt.Sprintf("finish-%d", steps), HandID: snapshot.HandID,
+			TableRevision: snapshot.TableRevision, Action: action,
+		})
+		if err != nil {
+			t.Fatalf("settlement must succeed with a departed player in the hand: %v", err)
+		}
+	}
+
+	wallet, err := chips.Snapshot(ctx, leaver)
+	if err != nil {
+		t.Fatalf("leaver snapshot: %v", err)
+	}
+	if wallet.WalletChips != 5_000-committed || wallet.TableChips != 0 {
+		t.Fatalf("leaver must get back exactly the post-fold stack: committed=%d snapshot=%#v", committed, wallet)
+	}
+	var memberRows int
+	if err := database.QueryRowContext(ctx,
+		`SELECT count(*) FROM room_members WHERE room_id = $1 AND user_id = $2`, created.RoomID, leaver,
+	).Scan(&memberRows); err != nil || memberRows != 0 {
+		t.Fatalf("leaver must be removed after settlement: rows=%d err=%v", memberRows, err)
+	}
+	persisted, found := historyStore.Hand(handID)
+	if !found {
+		t.Fatal("the hand must be written to history")
+	}
+	var historyTotal int64
+	leaverInHistory := false
+	for _, player := range persisted.Players {
+		historyTotal += player.Delta
+		if player.UserID == leaver && player.Delta == -committed {
+			leaverInHistory = true
+		}
+	}
+	if !leaverInHistory || historyTotal != 0 || len(persisted.Players) != 3 {
+		t.Fatalf("history players=%#v", persisted.Players)
+	}
+
+	// 同一房间重新进入再离开：第二次离开也必须退还。
+	if _, err := rooms.JoinWithBuyIn(ctx, room.Participant{UserID: leaver, DisplayName: "玩家" + leaver}, room.JoinOptions{
+		Code: created.Code, BuyIn: 1_500, RequestID: "rejoin-" + leaver,
+	}); err != nil {
+		t.Fatalf("rejoin: %v", err)
+	}
+	if _, err := tables.Join(ctx, leaver, created.RoomID); err != nil {
+		t.Fatalf("rejoin table: %v", err)
+	}
+	if closed, err := tables.Leave(ctx, leaver); err != nil || closed {
+		t.Fatalf("second leave: closed=%v err=%v", closed, err)
+	}
+	wallet, err = chips.Snapshot(ctx, leaver)
+	if err != nil {
+		t.Fatalf("leaver snapshot after second leave: %v", err)
+	}
+	if wallet.WalletChips != 5_000-committed || wallet.TableChips != 0 {
+		t.Fatalf("second leave must cash out too: %#v", wallet)
+	}
+	var cashOuts int
+	if err := database.QueryRowContext(ctx,
+		`SELECT count(*) FROM bankroll_entries WHERE user_id = $1 AND room_id = $2 AND reason = 'cash_out'`,
+		leaver, created.RoomID,
+	).Scan(&cashOuts); err != nil || cashOuts != 2 {
+		t.Fatalf("expected one cash-out per stay, got %d err=%v", cashOuts, err)
+	}
+	result, err := chips.RoomResult(ctx, leaver, created.RoomID)
+	if err != nil || result.BoughtIn != 2_500 || result.ReturnedToWallet != 2_500-committed || result.Net != -committed {
+		t.Fatalf("room result must continue across stays: %#v err=%v", result, err)
+	}
+
+	// 全体筹码守恒：只有充值创造过筹码。
+	var total int64
+	for _, userID := range users {
+		position, err := chips.Snapshot(ctx, userID)
+		if err != nil {
+			t.Fatalf("snapshot %s: %v", userID, err)
+		}
+		total += position.WalletChips + position.TableChips
+	}
+	if total != 15_000 {
+		t.Fatalf("total chips=%d, expected 15000", total)
+	}
+}

@@ -78,6 +78,14 @@ type runtime struct {
 	// the room mid-hand. Their wallet refund runs after the settlement writes
 	// the post-hand stacks; the display name keeps hand history readable.
 	pendingCashOuts map[string]string
+	// departedSeats 记下弃牌中途离开者在这一手里的座位与底牌。引擎在结算的同时就把
+	// 他移除了，而牌谱仍要写他这一行：他若下过注（比如盲注）而牌谱里没有他，整手的
+	// 输赢就对不上账，牌谱写入失败，结算跟着报错。
+	departedSeats map[string]departedSeat
+	// stacksAppliedHandID 记下哪一手的结算筹码已经写进账户与成员记录。落盘中途失败后
+	// 会整段重做，而这一步不能重做：两次之间可能有人补码或重新带入，拿旧结算再写
+	// 一遍会把这些变化盖掉。只在手间有意义，那时本来就没有牌桌状态行，不必持久化。
+	stacksAppliedHandID string
 	// knownDisplayNames 记住本房间见过的昵称。赢家常常赢完这手就离开房间，
 	// 届时房间成员表里已经没有他，结算文案会退化成显示用户 ID。
 	knownDisplayNames map[string]string
@@ -309,6 +317,14 @@ func (manager *Manager) Join(ctx context.Context, userID string, roomID string) 
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	runtime.online[userID] = true
+	if _, leaving := runtime.pendingCashOuts[userID]; leaving {
+		// 弃牌中途离开、本手还没打完又回来了：他仍是成员、筹码原样在桌上，
+		// 撤销离开即可，不再重新带入。
+		delete(runtime.pendingCashOuts, userID)
+		delete(runtime.departedSeats, userID)
+		_ = runtime.engine.CancelLeave(userID)
+		defer manager.persistStateLocked(runtime)
+	}
 	if err := syncMembers(runtime.engine, roomValue, runtime.online); err != nil {
 		return Snapshot{}, err
 	}
@@ -391,8 +407,24 @@ func (manager *Manager) startHandIfReadyLocked(
 	runtime *runtime,
 	roomValue room.Room,
 ) (room.Room, error) {
-	if !allReady(roomValue.Members) ||
-		(runtime.engine.Phase() != holdem.PhaseWaiting && runtime.engine.Phase() != holdem.PhaseWaitingNextHand) {
+	betweenHands := runtime.engine.Phase() == holdem.PhaseWaiting || runtime.engine.Phase() == holdem.PhaseWaitingNextHand
+	if betweenHands && len(runtime.pendingCashOuts) > 0 {
+		// 手间还有「待离开」的人，说明上一手的落盘没走完（多半是数据库一时出错）。
+		// 他还占着成员位却永远不会准备，不补做的话下一手永远开不了。整段落盘是
+		// 幂等的，重做一遍；成功后照常重置准备，这一次调用不开局。
+		var err error
+		roomValue, err = manager.persistSettlementLocked(runtime, roomValue)
+		if err != nil {
+			return room.Room{}, err
+		}
+		roomValue, err = manager.resetReadyLocked(ctx, runtime, roomValue)
+		if err != nil {
+			return room.Room{}, err
+		}
+		manager.scheduleAutoReadyLocked(runtime)
+		return roomValue, nil
+	}
+	if !allReady(roomValue.Members) || !betweenHands {
 		return roomValue, nil
 	}
 	var err error
@@ -428,7 +460,8 @@ func (manager *Manager) startHandIfReadyLocked(
 		}
 	}
 	if runtime.engine.Phase() == holdem.PhaseWaitingNextHand {
-		if err := manager.persistSettlementLocked(runtime, roomValue); err != nil {
+		roomValue, err = manager.persistSettlementLocked(runtime, roomValue)
+		if err != nil {
 			return room.Room{}, err
 		}
 		roomValue, err = manager.resetReadyLocked(ctx, runtime, roomValue)
@@ -481,7 +514,8 @@ func (manager *Manager) SubmitAction(
 	}
 	if result.HandEnded {
 		clearHandScopedRequestsLocked(runtime)
-		if err := manager.persistSettlementLocked(runtime, roomValue); err != nil {
+		roomValue, err = manager.persistSettlementLocked(runtime, roomValue)
+		if err != nil {
 			return holdem.ActionResult{}, Snapshot{}, err
 		}
 		roomValue, err = manager.resetReadyLocked(ctx, runtime, roomValue)
@@ -518,7 +552,8 @@ func (manager *Manager) SubmitRunoutChoice(
 	}
 	if settled {
 		clearHandScopedRequestsLocked(runtime)
-		if err := manager.persistSettlementLocked(runtime, roomValue); err != nil {
+		roomValue, err = manager.persistSettlementLocked(runtime, roomValue)
+		if err != nil {
 			return Snapshot{}, err
 		}
 		roomValue, err = manager.resetReadyLocked(ctx, runtime, roomValue)
@@ -1054,10 +1089,45 @@ func (manager *Manager) Leave(ctx context.Context, userID string) (bool, error) 
 			}
 		}
 	}
-	if manager.bankroll != nil && !deferCashOut {
-		requestID := "cashout:" + roomValue.RoomID + ":" + userID
-		if _, err := manager.bankroll.CashOut(ctx, userID, roomValue.RoomID, requestID); err != nil {
-			return false, err
+	if deferCashOut {
+		// 弃牌后中途离开：退还要等本手结算，而在那之前**成员记录必须留着**。
+		// 桌上筹码就记在成员记录上（PostgreSQL 的 room_members.table_chips）：
+		// 提前删掉它，这笔筹码就连同记录一起消失且不留流水；本手结算时又因为
+		// 找不到这一行而整手回滚，其他人的输赢也记不上账。内存仓储把余额另存
+		// 一处，测不出这个问题——线上因此真的丢过筹码。
+		// 这里只登记「待离开」，结算后由 finishPendingLeavesLocked 退还并移出。
+		if runtime.pendingCashOuts == nil {
+			runtime.pendingCashOuts = make(map[string]string)
+		}
+		runtime.pendingCashOuts[userID] = displayNameOf(roomValue, userID)
+		if runtime.departedSeats == nil {
+			runtime.departedSeats = make(map[string]departedSeat)
+		}
+		for _, player := range runtime.engine.Players() {
+			if player.PlayerID == userID {
+				runtime.departedSeats[userID] = departedSeat{
+					Seat:      player.Seat,
+					HoleCards: []string{player.HoleCards[0].String(), player.HoleCards[1].String()},
+				}
+				break
+			}
+		}
+		delete(runtime.pendingSpectate, userID)
+		delete(runtime.pendingSeat, userID)
+		delete(runtime.requestPreferences, userID)
+		delete(runtime.seatSwapBlocks, userID)
+		delete(runtime.holeCardViewBlocks, userID)
+		_ = runtime.engine.RequestLeave(userID)
+		// 落盘：崩溃恢复后要还记得他已经要走，否则他会被留在桌上。
+		manager.persistStateLocked(runtime)
+		return false, nil
+	}
+	if manager.bankroll != nil {
+		if member, isMember := memberOf(roomValue, userID); isMember {
+			requestID := cashOutRequestID(roomValue.RoomID, member)
+			if _, err := manager.bankroll.CashOut(ctx, userID, roomValue.RoomID, requestID); err != nil {
+				return false, err
+			}
 		}
 	}
 	closed, err := manager.rooms.Leave(ctx, userID)
@@ -1067,26 +1137,14 @@ func (manager *Manager) Leave(ctx context.Context, userID string) (bool, error) 
 	if runtime != nil {
 		delete(runtime.pendingSpectate, userID)
 		delete(runtime.pendingSeat, userID)
+		delete(runtime.pendingCashOuts, userID)
+		delete(runtime.departedSeats, userID)
 		delete(runtime.requestPreferences, userID)
 		delete(runtime.seatSwapBlocks, userID)
 		delete(runtime.holeCardViewBlocks, userID)
 		_ = runtime.engine.RequestLeave(userID)
-		if deferCashOut && !closed {
-			displayName := ""
-			for _, member := range roomValue.Members {
-				if member.UserID == userID {
-					displayName = member.DisplayName
-					break
-				}
-			}
-			if runtime.pendingCashOuts == nil {
-				runtime.pendingCashOuts = make(map[string]string)
-			}
-			runtime.pendingCashOuts[userID] = displayName
-		}
 		// 牌局进行中离开要落盘：否则崩溃恢复后他的偏好和屏蔽会跟着旧状态行回来，
-		// 「离开即重置」就不成立；放在 RequestLeave 与待返还登记之后，恢复出来的
-		// 状态才和内存里一致。房间已关闭就不再写行，免得留下孤儿记录。
+		// 「离开即重置」就不成立。房间已关闭就不再写行，免得留下孤儿记录。
 		if !closed {
 			manager.persistStateLocked(runtime)
 		}
@@ -1095,13 +1153,6 @@ func (manager *Manager) Leave(ctx context.Context, userID string) (bool, error) 
 		}
 	}
 	if closed {
-		if deferCashOut && manager.bankroll != nil {
-			// The room can only close mid-hand in degenerate cases; without an
-			// upcoming settlement the deferred cash-out must run now so the
-			// table balance is not stranded.
-			requestID := "cashout:" + roomValue.RoomID + ":" + userID
-			_, _ = manager.bankroll.CashOut(ctx, userID, roomValue.RoomID, requestID)
-		}
 		if runtime != nil && runtime.readyTimer != nil {
 			runtime.readyTimer.Stop()
 		}
@@ -1360,7 +1411,7 @@ func (manager *Manager) handleTimeout(roomID string, generation uint64) {
 			// 牌桌状态行删掉，否则它会一直留到下一手开局。
 			clearHandScopedRequestsLocked(runtime)
 			manager.persistStateLocked(runtime)
-			err = manager.persistSettlementLocked(runtime, roomValue)
+			roomValue, err = manager.persistSettlementLocked(runtime, roomValue)
 		}
 		if err == nil {
 			roomValue, err = manager.resetReadyLocked(context.Background(), runtime, roomValue)
@@ -1410,7 +1461,7 @@ func (manager *Manager) handleTimeout(roomID string, generation uint64) {
 		}
 		if err == nil && result.HandEnded {
 			clearHandScopedRequestsLocked(runtime)
-			err = manager.persistSettlementLocked(runtime, roomValue)
+			roomValue, err = manager.persistSettlementLocked(runtime, roomValue)
 			if err == nil {
 				roomValue, err = manager.resetReadyLocked(context.Background(), runtime, roomValue)
 				if err == nil {
@@ -1455,34 +1506,32 @@ func (manager *Manager) resetReadyLocked(
 	return roomValue, nil
 }
 
-func (manager *Manager) persistSettlementLocked(runtime *runtime, roomValue room.Room) error {
+// persistSettlementLocked 把刚结束的一手落盘，并让弃牌中途离开的人真正离开。
+// 返回刷新后的房间：待离开者在这里被移出，调用方随后的 resetReadyLocked 与快照
+// 必须用这份成员列表，否则会对一个已经不在房间里的人操作。
+func (manager *Manager) persistSettlementLocked(runtime *runtime, roomValue room.Room) (room.Room, error) {
 	settlement := runtime.engine.LastSettlement()
 	if settlement.HandID == "" || runtime.persistedHandID == settlement.HandID {
-		return nil
+		return roomValue, nil
 	}
 	if len(manager.ledger.EntriesForHand(settlement.HandID)) == 0 {
 		if err := manager.ledger.Append(settlement.LedgerEntries); err != nil {
-			return err
+			return roomValue, err
 		}
 	}
-	if manager.bankroll != nil {
+	if manager.bankroll != nil && runtime.stacksAppliedHandID != settlement.HandID {
 		if err := manager.bankroll.ApplySettlement(
 			context.Background(), roomValue.RoomID, settlement.HandID,
 			settlement.StacksByPlayer, roomValue.Rules.MaxBuyIn,
 		); err != nil {
-			return err
+			return roomValue, err
 		}
-		if _, err := manager.rooms.UpdateStacks(context.Background(), roomValue.RoomID, settlement.StacksByPlayer); err != nil {
-			return err
+		updated, err := manager.rooms.UpdateStacks(context.Background(), roomValue.RoomID, settlement.StacksByPlayer)
+		if err != nil {
+			return roomValue, err
 		}
-		// Folded players who left mid-hand now have their post-hand stack in
-		// the table balance; move it back to their wallet idempotently.
-		for userID := range runtime.pendingCashOuts {
-			requestID := "cashout:" + roomValue.RoomID + ":" + userID
-			if _, err := manager.bankroll.CashOut(context.Background(), userID, roomValue.RoomID, requestID); err != nil {
-				return err
-			}
-		}
+		roomValue = updated
+		runtime.stacksAppliedHandID = settlement.HandID
 	}
 	if _, exists := manager.history.Hand(settlement.HandID); !exists {
 		displayNames := make(map[string]string, len(roomValue.Members)+len(runtime.pendingCashOuts))
@@ -1514,11 +1563,13 @@ func (manager *Manager) persistSettlementLocked(runtime *runtime, roomValue room
 		for _, card := range runtime.engine.Board() {
 			record.Board = append(record.Board, card.String())
 		}
+		recorded := make(map[string]bool, len(players))
 		for _, player := range players {
 			entry, participating := ledgerByPlayer[player.PlayerID]
 			if !participating {
 				continue
 			}
+			recorded[player.PlayerID] = true
 			record.Players = append(record.Players, history.PlayerResult{
 				UserID: player.PlayerID, DisplayName: displayNames[player.PlayerID], Seat: player.Seat,
 				StartingStack: entry.BalanceAfter - entry.Delta, EndingStack: entry.BalanceAfter,
@@ -1526,13 +1577,127 @@ func (manager *Manager) persistSettlementLocked(runtime *runtime, roomValue room
 				HoleCards: []string{player.HoleCards[0].String(), player.HoleCards[1].String()},
 			})
 		}
+		// 弃牌中途离开的人已被引擎移除，用离开时记下的座位与底牌补上他这一行。
+		for _, entry := range settlement.LedgerEntries {
+			departed, left := runtime.departedSeats[entry.PlayerID]
+			if recorded[entry.PlayerID] || !left {
+				continue
+			}
+			record.Players = append(record.Players, history.PlayerResult{
+				UserID: entry.PlayerID, DisplayName: displayNames[entry.PlayerID], Seat: departed.Seat,
+				StartingStack: entry.BalanceAfter - entry.Delta, EndingStack: entry.BalanceAfter,
+				Delta: entry.Delta, HoleCards: append([]string(nil), departed.HoleCards...),
+			})
+		}
 		if err := manager.history.Append(record); err != nil {
-			return err
+			return roomValue, err
 		}
 	}
-	runtime.pendingCashOuts = nil
+	// 放在牌谱之后：退还失败时这一手的账和牌谱都已经落盘，只剩退还留待重试
+	// （下一手开局前会再来一次）。此前退还排在牌谱前面，一失败整手牌谱就丢了。
+	roomValue, err := manager.finishPendingLeavesLocked(runtime, roomValue)
+	if err != nil {
+		return roomValue, err
+	}
 	runtime.persistedHandID = settlement.HandID
-	return nil
+	return roomValue, nil
+}
+
+// finishPendingLeavesLocked 让弃牌中途离开的人真正离开：此时结算已经把他这一手
+// 之后的筹码写进了成员记录，先退回钱包，再移出房间。按用户 ID 排序处理，房主
+// 移交的结果才是确定的。每完成一个就从待办里划掉，中途失败后重试不会重复处理。
+func (manager *Manager) finishPendingLeavesLocked(runtime *runtime, roomValue room.Room) (room.Room, error) {
+	if len(runtime.pendingCashOuts) == 0 {
+		return roomValue, nil
+	}
+	ctx := context.Background()
+	userIDs := make([]string, 0, len(runtime.pendingCashOuts))
+	for userID := range runtime.pendingCashOuts {
+		userIDs = append(userIDs, userID)
+	}
+	sort.Strings(userIDs)
+	for _, userID := range userIDs {
+		// 已经不是成员（例如被管理员直接移出）就没有可退的了。
+		if member, isMember := memberOf(roomValue, userID); isMember {
+			if manager.bankroll != nil {
+				requestID := cashOutRequestID(roomValue.RoomID, member)
+				if _, err := manager.bankroll.CashOut(ctx, userID, roomValue.RoomID, requestID); err != nil {
+					return roomValue, err
+				}
+			}
+			if _, err := manager.rooms.Leave(ctx, userID); err != nil {
+				// 房间服务会把仓储的任何读取错误都报成 room_not_found，单看错误码
+				// 分不清「他已经不在了」和「数据库一时出错」。再查一次：还查得到
+				// 他在这个房间里，就是没移出成功，留着待办下次重做。
+				if current, currentErr := manager.rooms.Current(ctx, userID); currentErr == nil && current.RoomID == roomValue.RoomID {
+					return roomValue, err
+				}
+			}
+			roomValue.Members = withoutMember(roomValue.Members, userID)
+		}
+		// 引擎在结算时已经移除了待离开的玩家；这里兜底清一次，防止中途失败的
+		// 那次重试之间有人触发成员同步，把他当成新玩家又加了回去。
+		_ = runtime.engine.RequestLeave(userID)
+		delete(runtime.pendingCashOuts, userID)
+		delete(runtime.departedSeats, userID)
+	}
+	// 移出可能伴随房主移交，取一份最新的房间。
+	for _, member := range roomValue.Members {
+		refreshed, err := manager.rooms.GetForMember(ctx, member.UserID, roomValue.RoomID)
+		if err == nil {
+			return refreshed, nil
+		}
+	}
+	return roomValue, nil
+}
+
+// departedSeat 是弃牌中途离开者在这一手里的座位与底牌，见 runtime.departedSeats。
+type departedSeat struct {
+	Seat      int      `json:"seat"`
+	HoleCards []string `json:"holeCards"`
+}
+
+// LeavePending 报告某人是否已经点了离开、只是要等本手结算才真正移出。
+// 这段时间他在数据上仍是房间成员，但对他本人应当表现为「已经不在房间里」。
+func (manager *Manager) LeavePending(userID, roomID string) bool {
+	runtime := manager.existingRuntime(roomID)
+	if runtime == nil {
+		return false
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	_, pending := runtime.pendingCashOuts[userID]
+	return pending
+}
+
+// cashOutRequestID 是离桌退还的幂等编号，按「这一次入座」区分。
+//
+// 此前只用「房间 + 用户」：同一个人在同一房间第二次离开时，编号与第一次相同，
+// 退还被当成重复请求直接跳过，随后成员记录一删，桌上筹码就没了。入座时间在
+// 成员记录里持久保存，同一次入座内重试得到同一个编号，重新入座则一定不同。
+// 取微秒是因为 PostgreSQL 的 timestamptz 只到微秒，纳秒读回来会变。入座时间本身由
+// 房间服务保证严格递增（room.Service.joinTimeLocked），不依赖时钟的粒度。
+func cashOutRequestID(roomID string, member room.Member) string {
+	return "cashout:" + roomID + ":" + member.UserID + ":" + strconv.FormatInt(member.JoinedAt.UnixMicro(), 10)
+}
+
+func memberOf(roomValue room.Room, userID string) (room.Member, bool) {
+	for _, member := range roomValue.Members {
+		if member.UserID == userID {
+			return member, true
+		}
+	}
+	return room.Member{}, false
+}
+
+func withoutMember(members []room.Member, userID string) []room.Member {
+	result := make([]room.Member, 0, len(members))
+	for _, member := range members {
+		if member.UserID != userID {
+			result = append(result, member)
+		}
+	}
+	return result
 }
 
 func (manager *Manager) notifySnapshot(roomID string) {

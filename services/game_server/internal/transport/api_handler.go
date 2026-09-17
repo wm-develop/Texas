@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -661,6 +662,13 @@ func registerRoomRoutes(
 			return
 		}
 		participant := room.Participant{UserID: user.UserID, DisplayName: user.DisplayName}
+		// 弃牌中途离开、上一手还没结算：此时他在数据上仍是原房间的成员。房主会被
+		// Create 当成「重复创建」原样送回旧房间，其他人则撞上 already_in_room，
+		// 两种都不是他想要的，直接说明原因。
+		if _, pending := pendingLeaveRoom(request.Context(), rooms, tables, user.UserID); pending {
+			writeJSONError(writer, http.StatusConflict, "leave_pending")
+			return
+		}
 		var value room.Room
 		var err error
 		if body.RequestID == "" {
@@ -701,6 +709,13 @@ func registerRoomRoutes(
 			return
 		}
 		participant := room.Participant{UserID: user.UserID, DisplayName: user.DisplayName}
+		// 待离开期间加入**别的**房间要等上一手结算；回到原房间则放行——那等于
+		// 撤销离开，筹码原样延续（见 tablemanager.Manager.Join）。
+		if leaving, pending := pendingLeaveRoom(request.Context(), rooms, tables, user.UserID); pending &&
+			leaving.Code != strings.TrimSpace(body.Code) {
+			writeJSONError(writer, http.StatusConflict, "leave_pending")
+			return
+		}
 		var value room.Room
 		var err error
 		if body.RequestID == "" {
@@ -729,6 +744,12 @@ func registerRoomRoutes(
 		value, err := rooms.Current(request.Context(), user.UserID)
 		if err != nil {
 			writeRoomError(writer, err)
+			return
+		}
+		// 弃牌后中途离开的人，成员记录要留到本手结算（桌上筹码记在上面）。
+		// 对他本人来说已经离开了：不隐藏的话，重启应用会被直接送回牌桌。
+		if tables != nil && tables.LeavePending(user.UserID, value.RoomID) {
+			writeJSONError(writer, http.StatusNotFound, "room_not_found")
 			return
 		}
 		writeJSON(writer, http.StatusOK, value)
@@ -863,6 +884,20 @@ func writeAccountError(writer http.ResponseWriter, err error) {
 	default:
 		writeJSONError(writer, http.StatusBadRequest, accountError.Code)
 	}
+}
+
+// pendingLeaveRoom 返回此人「已经点了离开、但要等本手结算才真正移出」的那个房间。
+func pendingLeaveRoom(
+	ctx context.Context, rooms *room.Service, tables *tablemanager.Manager, userID string,
+) (room.Room, bool) {
+	if rooms == nil || tables == nil {
+		return room.Room{}, false
+	}
+	current, err := rooms.Current(ctx, userID)
+	if err != nil || !tables.LeavePending(userID, current.RoomID) {
+		return room.Room{}, false
+	}
+	return current, true
 }
 
 func writeRoomError(writer http.ResponseWriter, err error) {

@@ -246,6 +246,11 @@ func (harness *churnHarness) perform(source *rand.Rand, operation string) bool {
 			return false // 未弃牌的参局玩家不能中途离桌，属正常拒绝
 		}
 		harness.inRoom[userID] = false
+		// 弃牌后中途离开：成员记录要留到本手结算才移出（线上在这条路径上丢过筹码）。
+		// 对测试来说他已经「在房间外」，之后可能被随机到再次加入——那等于撤销离开。
+		if harness.manager.LeavePending(userID, harness.roomID) {
+			harness.operations["leave_midhand"]++
+		}
 
 	case "ready":
 		userID, ok := harness.pick(source, harness.membersInRoom())
@@ -253,6 +258,13 @@ func (harness *churnHarness) perform(source *rand.Rand, operation string) bool {
 			return false
 		}
 		_, _ = harness.manager.SetReady(harness.ctx, userID, source.Intn(4) != 0)
+
+	case "ready_all":
+		// 单靠逐个随机准备，五六个人同时就绪的概率很低，牌局几乎开不起来，
+		// 「牌局进行中」的那些路径（尤其是弃牌后中途离开）就测不到。
+		for _, userID := range harness.membersInRoom() {
+			_, _ = harness.manager.SetReady(harness.ctx, userID, true)
+		}
 
 	case "action":
 		return harness.submitRandomAction(source)
@@ -363,9 +375,17 @@ func (harness *churnHarness) submitRandomAction(source *rand.Rand) bool {
 // 随机成员进出 + 牌局推进，验证快照始终可生成且筹码始终守恒。
 func TestRandomMemberChurnKeepsSnapshotsAndChipsConsistent(t *testing.T) {
 	operations := []string{
-		"join", "join", "ready", "ready", "ready", "action", "action", "action", "action",
-		"leave", "disconnect", "reconnect", "rebuy", "seat_change", "reveal",
+		"join", "join", "ready", "ready", "ready_all", "action", "action", "action", "action",
+		"leave", "leave", "disconnect", "reconnect", "rebuy", "seat_change", "reveal",
 	}
+	midHandLeaves := 0
+	t.Cleanup(func() {
+		// 逐个种子不强求，但整体必须走到过「弃牌后中途离开」，否则这条最容易
+		// 出事的路径等于没测。
+		if !t.Failed() && midHandLeaves == 0 {
+			t.Errorf("所有种子都没有覆盖到弃牌后中途离开，随机序列需要调整")
+		}
+	})
 	for _, seed := range []int64{1, 7, 20260901, 42, 99991} {
 		t.Run(fmt.Sprintf("seed_%d", seed), func(t *testing.T) {
 			source := rand.New(rand.NewSource(seed))
@@ -379,6 +399,8 @@ func TestRandomMemberChurnKeepsSnapshotsAndChipsConsistent(t *testing.T) {
 					t.Errorf("seed=%d 未覆盖操作 %s，随机序列可能失效", seed, required)
 				}
 			}
+			midHandLeaves += harness.operations["leave_midhand"]
+			t.Logf("seed=%d 操作计数 %v", seed, harness.operations)
 		})
 	}
 }

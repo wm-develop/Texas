@@ -212,6 +212,20 @@ func (table *Table) RequestLeave(playerID string) error {
 	return nil
 }
 
+// CancelLeave 撤销「本手结束后离开」。玩家弃牌中途离开后、本手还没打完又回到同一
+// 房间时调用：他仍是这一手的参与者，筹码原样延续。没有待离开标记时是空操作。
+func (table *Table) CancelLeave(playerID string) error {
+	player := table.playerByID(playerID)
+	if player == nil {
+		return RuleError{Code: "not_seated"}
+	}
+	if player.LeaveAfterHand {
+		player.LeaveAfterHand = false
+		table.revision++
+	}
+	return nil
+}
+
 func (table *Table) SetReady(playerID string, ready bool) error {
 	if table.phase != PhaseWaiting && table.phase != PhaseWaitingNextHand {
 		return RuleError{Code: "hand_in_progress"}

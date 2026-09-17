@@ -29,6 +29,25 @@ type Service struct {
 	passwords  *security.PasswordHasher
 	config     ServiceConfig
 	bankroll   *bankroll.Service
+	// lastJoinedAt 保证入座时间在本进程内严格递增，见 joinTimeLocked。
+	lastJoinedAt time.Time
+}
+
+// joinTimeLocked 返回这一次入座的时间，精确到微秒且在本进程内严格递增。调用方必须
+// 持有 service.mu。
+//
+// 离桌退还的幂等编号按入座时间区分「同一个人在同一房间的每一次入座」。只取时钟
+// 不够：Windows 上 time.Now 大约半毫秒才跳一次，测试时钟甚至是固定的，离开后立刻
+// 重新入座会拿到相同的时间，第二次退还就被当成重复请求跳过——那正是线上丢过
+// 筹码的缺陷。取微秒是因为 PostgreSQL 的 timestamptz 只存到微秒，多出来的纳秒
+// 读回来会变，编号也就跟着变了。
+func (service *Service) joinTimeLocked() time.Time {
+	now := service.config.Now().UTC().Truncate(time.Microsecond)
+	if !now.After(service.lastJoinedAt) {
+		now = service.lastJoinedAt.Add(time.Microsecond)
+	}
+	service.lastJoinedAt = now
+	return now
 }
 
 func NewService(repository Repository, passwords *security.PasswordHasher, config ServiceConfig) (*Service, error) {
@@ -112,7 +131,7 @@ func (service *Service) CreateConfigured(ctx context.Context, owner Participant,
 			Rules: rules, MaxPlayers: options.MaxPlayers, Revision: 1, CreatedAt: now,
 			PasswordHash: passwordHash,
 			Spectator:    DefaultSpectatorSettings(),
-			Members:      []Member{{UserID: owner.UserID, DisplayName: owner.DisplayName, Seat: 1, Stack: options.BuyIn, JoinedAt: now}},
+			Members:      []Member{{UserID: owner.UserID, DisplayName: owner.DisplayName, Seat: 1, Stack: options.BuyIn, JoinedAt: service.joinTimeLocked()}},
 		}
 		if atomic, ok := service.repository.(BuyInRepository); ok {
 			err := atomic.CreateWithBuyIn(ctx, value, buyInRequestID, options.BuyIn, now)
@@ -178,7 +197,7 @@ func (service *Service) JoinWithBuyIn(ctx context.Context, participant Participa
 	}
 	member := Member{
 		UserID: participant.UserID, DisplayName: participant.DisplayName,
-		Stack: options.BuyIn, JoinedAt: service.config.Now(),
+		Stack: options.BuyIn, JoinedAt: service.joinTimeLocked(),
 	}
 	if atomic, ok := service.repository.(BuyInRepository); ok {
 		joined, err := atomic.JoinWithBuyIn(ctx, value.RoomID, member, options.RequestID, options.BuyIn, member.JoinedAt)
@@ -338,7 +357,7 @@ func (service *Service) Create(
 			PasswordHash: passwordHash,
 			Spectator:    DefaultSpectatorSettings(),
 			Members: []Member{{
-				UserID: owner.UserID, DisplayName: owner.DisplayName, Seat: 1, Stack: rules.StartingChips, JoinedAt: now,
+				UserID: owner.UserID, DisplayName: owner.DisplayName, Seat: 1, Stack: rules.StartingChips, JoinedAt: service.joinTimeLocked(),
 			}},
 		}
 		if err := service.repository.Create(ctx, value); err == nil {
@@ -380,7 +399,7 @@ func (service *Service) Join(
 	}
 	seat := firstAvailableSeat(value.Members, value.MaxPlayers)
 	value.Members = append(value.Members, Member{
-		UserID: participant.UserID, DisplayName: participant.DisplayName, Seat: seat, Stack: value.Rules.StartingChips, JoinedAt: service.config.Now(),
+		UserID: participant.UserID, DisplayName: participant.DisplayName, Seat: seat, Stack: value.Rules.StartingChips, JoinedAt: service.joinTimeLocked(),
 	})
 	sort.Slice(value.Members, func(left, right int) bool { return value.Members[left].Seat < value.Members[right].Seat })
 	value.Revision++
