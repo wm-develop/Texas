@@ -58,10 +58,11 @@ func (store *PostgresStore) Append(hand Hand) error {
 		ctx,
 		`INSERT INTO hands (
 		 hand_id, room_id, room_code, dealer_seat, board_cards, pot_awards,
-		 revealed_hands, runout_boards, showdown, started_at, ended_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		 revealed_hands, runout_boards, showdown, started_at, ended_at, rake
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 		hand.HandID, hand.RoomID, hand.RoomCode, persistentDealerSeat(hand), board,
 		string(potAwards), string(revealedHands), string(runoutBoards), hand.Showdown, hand.StartedAt, hand.EndedAt,
+		hand.Rake,
 	)
 	if err != nil {
 		_ = transaction.Rollback()
@@ -159,12 +160,13 @@ func (store *PostgresStore) loadHand(ctx context.Context, handID string) (Hand, 
 	err := store.database.QueryRowContext(
 		ctx,
 		`SELECT hand_id, room_id, trim(room_code), dealer_seat, to_json(board_cards), pot_awards,
-		 revealed_hands, runout_boards, showdown, started_at, ended_at
+		 revealed_hands, runout_boards, showdown, started_at, ended_at, rake
 		 FROM hands WHERE hand_id = $1`,
 		handID,
 	).Scan(
 		&value.HandID, &value.RoomID, &value.RoomCode, &value.DealerSeat, &boardCards,
 		&potAwards, &revealedHands, &runoutBoards, &value.Showdown, &value.StartedAt, &value.EndedAt,
+		&value.Rake,
 	)
 	if err != nil {
 		return Hand{}, err

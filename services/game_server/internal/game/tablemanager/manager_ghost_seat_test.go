@@ -117,12 +117,12 @@ type flakySettlementRepository struct {
 }
 
 func (repository *flakySettlementRepository) ApplySettlement(
-	ctx context.Context, tableID, handID string, balances map[string]int64, maximum int64, now time.Time,
+	ctx context.Context, tableID, handID string, balances map[string]int64, maximum int64, rake bankroll.Rake, now time.Time,
 ) error {
 	if repository.failApplySettlement {
 		return errors.New("database unavailable")
 	}
-	return repository.Repository.ApplySettlement(ctx, tableID, handID, balances, maximum, now)
+	return repository.Repository.ApplySettlement(ctx, tableID, handID, balances, maximum, rake, now)
 }
 
 // 上一手没入账时不开下一手；数据库恢复后补做入账，再照常开局。

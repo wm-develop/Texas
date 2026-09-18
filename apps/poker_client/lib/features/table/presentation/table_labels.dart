@@ -200,6 +200,9 @@ String phaseLabel(String? phase) => switch (phase) {
   _ => phase,
 };
 
+/// 结算区里说明本手抽水的一行。
+String rakeLabel(int rake) => '本手抽水 $rake（已从底池扣除）';
+
 /// 结算区里看牌费的一行说明：谁付了多少、每名上桌玩家分到多少。
 String spectatorFeeLabel(SpectatorFees fees) {
   if (fees.payers.isEmpty) return '';

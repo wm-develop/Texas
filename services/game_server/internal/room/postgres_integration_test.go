@@ -608,3 +608,253 @@ func TestPostgresFoldedMidHandLeaveKeepsChipsAndSecondLeaveCashesOut(t *testing.
 		t.Fatalf("total chips=%d, expected 15000", total)
 	}
 }
+
+// 抽水在真实库上的全链路：迁移 000012 加的列能往返，结算与抽水入账在同一事务里完成，
+// 管理员多一条 rake 流水，牌谱记下每手抽水，按房间能汇总（房间关闭后房间码仍取得到），
+// 聊天表接受 system 类型的公告。内存仓储测不出列名、约束与 SUM 的类型这些问题。
+func TestPostgresRakeFlow(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_DATABASE_URL is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	database, err := postgres.Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	database.SetMaxOpenConns(1)
+	schema := fmt.Sprintf("rake_flow_test_%d", time.Now().UnixNano())
+	if _, err := database.ExecContext(ctx, `CREATE SCHEMA `+schema); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = database.ExecContext(context.Background(), `DROP SCHEMA IF EXISTS `+schema+` CASCADE`)
+		_ = database.Close()
+	})
+	if _, err := database.ExecContext(ctx, `SET search_path TO `+schema); err != nil {
+		t.Fatalf("set search path: %v", err)
+	}
+	migrator, err := postgres.NewMigrator(migrations.Files)
+	if err != nil {
+		t.Fatalf("NewMigrator: %v", err)
+	}
+	if _, err := migrator.Up(ctx, database); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	now := time.Unix(30_000, 0).UTC()
+	accounts, err := account.NewPostgresRepository(database)
+	if err != nil {
+		t.Fatalf("account repository: %v", err)
+	}
+	players := []string{"owner", "guest", "third"}
+	for index, userID := range append([]string{"admin"}, players...) {
+		if err := accounts.CreateUser(ctx, account.User{
+			UserID: userID, Username: userID, DisplayName: "玩家" + userID,
+			PasswordHash: "hash", CreatedAt: now.Add(time.Duration(index) * time.Second),
+		}); err != nil {
+			t.Fatalf("CreateUser(%s): %v", userID, err)
+		}
+	}
+	bankrollRepository, err := bankroll.NewPostgresRepository(database)
+	if err != nil {
+		t.Fatalf("bankroll repository: %v", err)
+	}
+	chips, err := bankroll.NewService(bankrollRepository, func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("bankroll service: %v", err)
+	}
+	for _, userID := range players {
+		if _, err := chips.TopUp(ctx, userID, "topup:"+userID, 5_000); err != nil {
+			t.Fatalf("TopUp(%s): %v", userID, err)
+		}
+	}
+	roomsRepository, err := room.NewPostgresRepository(database)
+	if err != nil {
+		t.Fatalf("room repository: %v", err)
+	}
+	hasher, err := security.NewPasswordHasher(1_000, cryptorand.Reader)
+	if err != nil {
+		t.Fatalf("password hasher: %v", err)
+	}
+	rooms, err := room.NewService(roomsRepository, hasher, room.ServiceConfig{
+		Now: func() time.Time { return now }, Bankroll: chips,
+	})
+	if err != nil {
+		t.Fatalf("room service: %v", err)
+	}
+	created, err := rooms.CreateConfigured(ctx, room.Participant{UserID: "owner", DisplayName: "玩家owner"}, room.CreateOptions{
+		Preset: room.PresetCasual, SmallBlind: 10, BigBlind: 20,
+		MaxBuyIn: 2_000, BuyIn: 1_000, RequestID: "create-room",
+	})
+	if err != nil {
+		t.Fatalf("CreateConfigured: %v", err)
+	}
+	if created.Rake != (room.RakeSettings{}) {
+		t.Fatalf("new rooms must not rake: %#v", created.Rake)
+	}
+	for _, userID := range []string{"guest", "third"} {
+		if _, err := rooms.JoinWithBuyIn(ctx, room.Participant{UserID: userID, DisplayName: "玩家" + userID}, room.JoinOptions{
+			Code: created.Code, BuyIn: 1_000, RequestID: "join-" + userID,
+		}); err != nil {
+			t.Fatalf("JoinWithBuyIn(%s): %v", userID, err)
+		}
+	}
+
+	// 规则写进五个新列并原样读回；库里的约束拦住越界值
+	settings := room.RakeSettings{Enabled: true, BasisPoints: 250, Cap: 100, PostflopEnabled: true, PostflopAmount: 20}
+	if _, changed, err := rooms.UpdateRakeSettings(ctx, created.RoomID, settings); err != nil || !changed {
+		t.Fatalf("UpdateRakeSettings changed=%v err=%v", changed, err)
+	}
+	reloaded, err := rooms.Current(ctx, "owner")
+	if err != nil || reloaded.Rake != settings {
+		t.Fatalf("rake settings did not round-trip: %#v err=%v", reloaded.Rake, err)
+	}
+	if _, err := database.ExecContext(ctx,
+		`UPDATE rooms SET rake_basis_points = 1001 WHERE room_id = $1`, created.RoomID); err == nil {
+		t.Fatal("the database must reject a rake above 10%")
+	}
+	if _, _, err := rooms.UpdateRakeSettings(ctx, created.RoomID, room.RakeSettings{
+		Enabled: true, PostflopEnabled: true, PostflopAmount: 21,
+	}); err == nil {
+		t.Fatal("a postflop charge above one big blind must be rejected")
+	}
+	open, err := rooms.ListOpen(ctx)
+	if err != nil || len(open) != 1 || open[0].RoomID != created.RoomID || len(open[0].Members) != 3 {
+		t.Fatalf("ListOpen=%#v err=%v", open, err)
+	}
+
+	// 系统公告：聊天表的 kind 约束要接受 system
+	chatStore, err := chat.NewPostgresStore(database)
+	if err != nil {
+		t.Fatalf("chat store: %v", err)
+	}
+	nextMessage := 0
+	chatService, err := chat.NewServiceWithStore(chat.Policy{
+		MaximumRunes: 200, MaximumPerWindow: 5, RateWindow: time.Second, HistoryLimit: 50,
+	}, func() time.Time { return now }, func() string {
+		nextMessage++
+		return fmt.Sprintf("rake_flow_message_%d", nextMessage)
+	}, chatStore)
+	if err != nil {
+		t.Fatalf("chat service: %v", err)
+	}
+	announced, err := chatService.Announce("admin", "系统公告", created.RoomID, "管理员已调整本房间的抽水")
+	if err != nil || announced.Kind != chat.KindSystem {
+		t.Fatalf("Announce=%#v err=%v", announced, err)
+	}
+	if history := chatService.History(created.RoomID, 10); len(history) != 1 || history[0].Kind != chat.KindSystem {
+		t.Fatalf("chat history=%#v", history)
+	}
+
+	// 打一手到摊牌
+	ledgerStore, err := ledger.NewPostgresStore(database)
+	if err != nil {
+		t.Fatalf("ledger store: %v", err)
+	}
+	historyStore, err := history.NewPostgresStore(database)
+	if err != nil {
+		t.Fatalf("history store: %v", err)
+	}
+	tables, err := tablemanager.NewWithConfig(rooms, postgresZeroRandom{}, tablemanager.ManagerConfig{
+		Now: func() time.Time { return now }, Ledger: ledgerStore, History: historyStore, Bankroll: chips,
+		RakeRecipient: func(context.Context) (string, error) { return "admin", nil },
+	})
+	if err != nil {
+		t.Fatalf("table manager: %v", err)
+	}
+	for _, userID := range players {
+		if _, err := tables.Join(ctx, userID, created.RoomID); err != nil {
+			t.Fatalf("table join %s: %v", userID, err)
+		}
+	}
+	var snapshot tablemanager.Snapshot
+	for _, userID := range players {
+		if snapshot, err = tables.SetReady(ctx, userID, true); err != nil {
+			t.Fatalf("ready %s: %v", userID, err)
+		}
+	}
+	handID := snapshot.HandID
+	for steps := 0; snapshot.Phase != holdem.PhaseWaitingNextHand; steps++ {
+		if steps > 30 || snapshot.CurrentAction == nil {
+			t.Fatalf("hand did not finish: phase=%s", snapshot.Phase)
+		}
+		action := holdem.ActionCall
+		if snapshot.CurrentAction.Options.CanCheck {
+			action = holdem.ActionCheck
+		}
+		_, snapshot, err = tables.SubmitAction(ctx, snapshot.CurrentAction.UserID, created.RoomID, holdem.ActionRequest{
+			ActionID: fmt.Sprintf("rake-step-%d", steps), HandID: snapshot.HandID,
+			TableRevision: snapshot.TableRevision, Action: action,
+		})
+		if err != nil {
+			t.Fatalf("settlement with rake must succeed: %v", err)
+		}
+	}
+	// 三人各投 20，底池 60：2.5% 向下取整是 1，发过翻牌再加 20
+	if snapshot.Settlement == nil || snapshot.Settlement.Rake != 21 {
+		t.Fatalf("settlement=%#v", snapshot.Settlement)
+	}
+	admin, err := chips.Snapshot(ctx, "admin")
+	if err != nil || admin.WalletChips != 21 {
+		t.Fatalf("admin wallet=%#v err=%v", admin, err)
+	}
+	var rakeRows int
+	var rakeAmount int64
+	if err := database.QueryRowContext(ctx,
+		`SELECT count(*), COALESCE(sum(wallet_delta), 0) FROM bankroll_entries
+		 WHERE reason = 'rake' AND user_id = 'admin' AND room_id = $1 AND reference_id = $2`,
+		created.RoomID, handID,
+	).Scan(&rakeRows, &rakeAmount); err != nil || rakeRows != 1 || rakeAmount != 21 {
+		t.Fatalf("rake entries rows=%d amount=%d err=%v", rakeRows, rakeAmount, err)
+	}
+	// 生产对账脚本（deploy/backup/texas-verify.sql 的 settlement_per_hand）按这个口径判平衡：
+	// 同一手的结算流水 table_delta 之和加上抽水流水 wallet_delta 必须为 0
+	var unbalanced int
+	if err := database.QueryRowContext(ctx,
+		`SELECT count(*) FROM (
+			SELECT reference_id FROM bankroll_entries
+			WHERE reason IN ('hand_settlement', 'rake')
+			GROUP BY reference_id
+			HAVING COALESCE(sum(table_delta) FILTER (WHERE reason = 'hand_settlement'), 0)
+				+ COALESCE(sum(wallet_delta) FILTER (WHERE reason = 'rake'), 0) <> 0
+		) AS per_hand`,
+	).Scan(&unbalanced); err != nil || unbalanced != 0 {
+		t.Fatalf("reconciliation would flag %d hands, err=%v", unbalanced, err)
+	}
+	persisted, found := historyStore.Hand(handID)
+	if !found || persisted.Rake != 21 {
+		t.Fatalf("history rake=%d found=%v", persisted.Rake, found)
+	}
+	var total int64
+	for _, userID := range players {
+		position, err := chips.Snapshot(ctx, userID)
+		if err != nil {
+			t.Fatalf("snapshot %s: %v", userID, err)
+		}
+		total += position.WalletChips + position.TableChips
+	}
+	if total+admin.WalletChips != 15_000 {
+		t.Fatalf("players hold %d and the admin %d, expected 15000 in total", total, admin.WalletChips)
+	}
+
+	summary, err := chips.RakeByRoom(ctx)
+	if err != nil || len(summary) != 1 || summary[0].RoomID != created.RoomID || summary[0].RoomCode != created.Code ||
+		summary[0].Closed || summary[0].Hands != 1 || summary[0].Total != 21 {
+		t.Fatalf("rake summary=%#v err=%v", summary, err)
+	}
+	// 房间关闭后仍能按房间码查到累计
+	for _, userID := range players {
+		if _, err := tables.Leave(ctx, userID); err != nil {
+			t.Fatalf("Leave(%s): %v", userID, err)
+		}
+	}
+	summary, err = chips.RakeByRoom(ctx)
+	if err != nil || len(summary) != 1 || summary[0].RoomCode != created.Code || !summary[0].Closed || summary[0].Total != 21 {
+		t.Fatalf("rake summary after the room closed=%#v err=%v", summary, err)
+	}
+	if open, err = rooms.ListOpen(ctx); err != nil || len(open) != 0 {
+		t.Fatalf("closed rooms must not be listed: %#v err=%v", open, err)
+	}
+}

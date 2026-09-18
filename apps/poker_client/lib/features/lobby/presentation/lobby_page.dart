@@ -399,6 +399,10 @@ class _LobbyPageState extends State<LobbyPage> {
   );
 
   Future<void> _join() async {
+    if (widget.session.user.isAdmin) {
+      setState(() => _error = _roomError('admin_cannot_play'));
+      return;
+    }
     if (_roomCode.text.trim().length != 6) {
       setState(() => _error = '请输入完整的 6 位房间码');
       return;
@@ -434,6 +438,10 @@ class _LobbyPageState extends State<LobbyPage> {
   }
 
   Future<void> _create() async {
+    if (widget.session.user.isAdmin) {
+      setState(() => _error = _roomError('admin_cannot_play'));
+      return;
+    }
     final password = _createPassword.text;
     if (password.isNotEmpty && password.length < 4) {
       setState(() => _error = '房间密码至少需要 4 位');
@@ -557,7 +565,8 @@ class _LobbyPageState extends State<LobbyPage> {
         title: '选择带入量',
         description:
             '盲注 ${preview.rules.smallBlind}/${preview.rules.bigBlind} · 最大带入 ${preview.rules.maxBuyIn}\n'
-            '账户可用 ${widget.bankroll.walletChips} · 房间 ${preview.currentPlayers}/${preview.maxPlayers} 人',
+            '账户可用 ${widget.bankroll.walletChips} · 房间 ${preview.currentPlayers}/${preview.maxPlayers} 人'
+            '${preview.rake.takesChips ? '\n本房间抽水：${preview.rake.summary}' : ''}',
         fieldLabel: '本次带入',
         confirmLabel: '带入并加入',
         initialAmount: suggested,
@@ -825,6 +834,7 @@ String _bankrollReasonLabel(String reason) => switch (reason) {
   'rebuy' => '牌桌补码',
   'hand_settlement' => '牌局结算',
   'cash_out' => '离桌返还',
+  'rake' => '牌桌抽水',
   'admin_adjustment' => '管理员调整',
   'account_deletion' => '账号注销转移',
   _ => reason,
@@ -836,6 +846,7 @@ IconData _bankrollReasonIcon(String reason) => switch (reason) {
   'rebuy' => Icons.add_circle_outline,
   'hand_settlement' => Icons.style_outlined,
   'cash_out' => Icons.logout,
+  'rake' => Icons.percent,
   'admin_adjustment' => Icons.admin_panel_settings_outlined,
   'account_deletion' => Icons.person_remove_outlined,
   _ => Icons.toll,
@@ -853,6 +864,7 @@ String _roomError(String code) => switch (code) {
   'invalid_room_password' => '房间密码不正确',
   'room_full' => '这个房间已经满员',
   'already_in_room' => '你已经在另一个房间中',
+  'admin_cannot_play' => '管理员账号负责管理与收取抽水，不能创建或加入牌桌，请使用普通账号',
   'leave_pending' => '你刚离开的那一手还没打完，结束后才能创建或加入其他房间',
   'insufficient_wallet_chips' => '账户筹码不足，请先充值或减少带入',
   'maximum_buy_in_exceeded' => '带入量超过房间上限',

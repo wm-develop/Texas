@@ -6,6 +6,7 @@ import 'package:poker_client/core/app_version.dart';
 import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/features/admin/domain/audit_event.dart';
 import 'package:poker_client/features/admin/domain/managed_user.dart';
+import 'package:poker_client/features/admin/domain/rake.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_entry.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
@@ -196,6 +197,33 @@ class GameApiClient {
           ))['closed']
           as bool? ??
       false;
+
+  /// 开着的房间及各自的抽水规则、累计抽水。
+  Future<List<AdminRoom>> adminRooms(String accessToken) async {
+    final payload = await _get('v1/admin/rooms', token: accessToken);
+    return (payload['rooms'] as List<dynamic>? ?? const [])
+        .map((value) => AdminRoom.fromJson(value as Map<String, dynamic>))
+        .toList(growable: false);
+  }
+
+  /// 设置某个房间的抽水规则，下一手起生效；服务端会在房间聊天里公告。
+  Future<RakeSettings> adminSetRoomRake({
+    required String accessToken,
+    required String roomId,
+    required RakeSettings settings,
+  }) async => RakeSettings.fromJson(
+    (await _request(
+              'v1/admin/rooms/${Uri.encodeComponent(roomId)}/rake',
+              token: accessToken,
+              body: settings.toJson(),
+            ))['rake']
+            as Map<String, dynamic>? ??
+        const {},
+  );
+
+  /// 按房间汇总的累计抽水，含已关闭的房间。
+  Future<RakeSummary> adminRakeSummary(String accessToken) async =>
+      RakeSummary.fromJson(await _get('v1/admin/rake', token: accessToken));
 
   /// 当前生效的最低客户端版本；0 表示未启用门禁。
   Future<int> adminMinimumClientVersion(String accessToken) async =>

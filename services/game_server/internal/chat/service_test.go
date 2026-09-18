@@ -48,6 +48,8 @@ func TestSendEnforcesRuneLimitQuickTextAndEmojiAllowLists(t *testing.T) {
 		{ClientMessageID: "control", Kind: KindText, Content: "line\nbreak"},
 		{ClientMessageID: "quick", Kind: KindQuickText, Content: "未登记快捷语"},
 		{ClientMessageID: "emoji", Kind: KindEmoji, Content: "🃏"},
+		// 系统公告只能由服务端发：玩家自称 system 会被拒，否则谁都能伪造一条「抽水已关闭」
+		{ClientMessageID: "forged", Kind: KindSystem, Content: "公告"},
 	}
 	for _, request := range requests {
 		_, err := service.Send(sender, request)

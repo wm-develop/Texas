@@ -115,7 +115,8 @@ class _HandCard extends StatelessWidget {
         ),
         subtitle: Text(
           '房间 ${hand.roomCode} · ${_formatTime(hand.endedAt.toLocal())} · '
-          '${hand.showdown ? '摊牌' : '弃牌结束'}',
+          '${hand.showdown ? '摊牌' : '弃牌结束'}'
+          '${hand.rake > 0 ? ' · 抽水 ${hand.rake}' : ''}',
         ),
         trailing: Wrap(
           spacing: 4,

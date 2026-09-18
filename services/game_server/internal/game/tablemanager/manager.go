@@ -36,8 +36,9 @@ type Manager struct {
 	// 行为与从前一致：崩溃后进行中的一手作废。
 	tableStates tablestate.Store
 	// stateWriter 在后台把状态写入 tableStates，避免在牌桌锁里等数据库。
-	stateWriter *stateWriter
-	logger      *slog.Logger
+	stateWriter   *stateWriter
+	logger        *slog.Logger
+	rakeRecipient func(ctx context.Context) (string, error)
 	// beforeLockForTest 在 Join / SetReady 取完房间、拿牌桌锁之前调用，只供测试
 	// 制造「取房间与上锁之间有人离开」的交错。生产环境为 nil。
 	beforeLockForTest func()
@@ -85,6 +86,9 @@ type runtime struct {
 	// 他移除了，而牌谱仍要写他这一行：他若下过注（比如盲注）而牌谱里没有他，整手的
 	// 输赢就对不上账，牌谱写入失败，结算跟着报错。
 	departedSeats map[string]departedSeat
+	// rakeRecipientID 是当前这一手抽水的收款账户，开局时确定。结算时不再重新查：
+	// 这一手按什么规则抽、抽给谁，在发牌那一刻就定了。
+	rakeRecipientID string
 	// stacksAppliedHandID 记下哪一手的结算筹码已经写进账户与成员记录。落盘中途失败后
 	// 会整段重做，而这一步不能重做：两次之间可能有人补码或重新带入，拿旧结算再写
 	// 一遍会把这些变化盖掉。只在手间有意义，那时本来就没有牌桌状态行，不必持久化。
@@ -129,6 +133,9 @@ type ManagerConfig struct {
 	// 与 0.5.0 之前的行为相同。
 	TableStates tablestate.Store
 	Logger      *slog.Logger
+	// RakeRecipient 返回抽水的收款账户（管理员）的用户 ID。为空或返回错误时，
+	// 即使房间开了抽水也不抽：宁可少收，也不能让筹码流向一个不存在的账户。
+	RakeRecipient func(ctx context.Context) (string, error)
 }
 
 type SeatSnapshot struct {
@@ -237,6 +244,9 @@ type Snapshot struct {
 	JoinLocked bool `json:"joinLocked,omitempty"`
 	// Spectators 是观战位上的成员；Seats 仍只含上桌玩家。
 	Spectators []SpectatorSnapshot `json:"spectators,omitempty"`
+	// Rake 是房间当前的抽水规则（下一手起适用），牌桌信息栏据此显示：聊天公告会被
+	// 刷走，后来才进房间的人得有个地方随时看得到。
+	Rake room.RakeSettings `json:"rake"`
 	// SpectatorSettings 是房主对观战位的设置，客户端据此显示或隐藏入口。
 	SpectatorSettings room.SpectatorSettings `json:"spectatorSettings"`
 	// SpectatorFee 是每手看牌费的筹码数（FeeBigBlinds × 大盲），0 为免费。
@@ -277,6 +287,7 @@ func NewWithConfig(rooms *room.Service, random holdem.IntnSource, config Manager
 		ledger: config.Ledger, history: config.History,
 		bankroll:    config.Bankroll,
 		tableStates: config.TableStates, logger: config.Logger,
+		rakeRecipient: config.RakeRecipient,
 	}
 	if config.TableStates != nil {
 		manager.stateWriter = newStateWriter(config.TableStates, config.Logger)
@@ -476,6 +487,7 @@ func (manager *Manager) startHandIfReadyLocked(
 	if err != nil {
 		return room.Room{}, err
 	}
+	manager.applyRakeForNextHandLocked(ctx, runtime, roomValue)
 	if err := runtime.engine.StartHand(manager.random); err != nil {
 		return room.Room{}, err
 	}
@@ -951,6 +963,43 @@ func (manager *Manager) SetRequestPreferences(
 		}
 	}
 	return snapshotForRuntime(runtime, roomValue, userID)
+}
+
+// applyRakeForNextHandLocked 在开局前把房间当前的抽水规则交给引擎。管理员的修改
+// 因此从下一手开始生效，进行中的一手不受影响。
+//
+// 以下情况一律不抽：房间没开抽水、没接账户服务（筹码无处入账）、找不到收款的
+// 管理员账户、或规则对这个房间的盲注不合法。少抽一手无伤大雅，把筹码抽进一个
+// 不存在的账户则是凭空销毁。
+func (manager *Manager) applyRakeForNextHandLocked(ctx context.Context, runtime *runtime, roomValue room.Room) {
+	runtime.rakeRecipientID = ""
+	config := holdem.RakeConfig{}
+	if roomValue.Rake.Enabled && manager.bankroll != nil && manager.rakeRecipient != nil {
+		recipient, err := manager.rakeRecipient(ctx)
+		// 收款人自己在这个房间里（升级前就坐着的管理员）时不抽：收抽水的人不能同时
+		// 在这张桌上打牌。创建与加入接口已经拦住管理员，这里兜住存量。
+		for _, member := range roomValue.Members {
+			if err == nil && member.UserID == recipient {
+				err = errors.New("the rake recipient is a member of this room")
+			}
+		}
+		if err == nil && recipient != "" {
+			config = holdem.RakeConfig{
+				Enabled: true, BasisPoints: roomValue.Rake.BasisPoints, Cap: roomValue.Rake.Cap,
+				PostflopEnabled: roomValue.Rake.PostflopEnabled, PostflopAmount: roomValue.Rake.PostflopAmount,
+			}
+			runtime.rakeRecipientID = recipient
+		} else if manager.logger != nil {
+			manager.logger.Warn("rake is enabled but no recipient is available", "roomId", roomValue.RoomID, "error", err)
+		}
+	}
+	if err := runtime.engine.SetRake(config); err != nil {
+		if manager.logger != nil {
+			manager.logger.Warn("rake settings rejected by the engine", "roomId", roomValue.RoomID, "error", err)
+		}
+		runtime.rakeRecipientID = ""
+		_ = runtime.engine.SetRake(holdem.RakeConfig{})
+	}
 }
 
 // clearHandScopedRequestsLocked 清掉只在一手之内有效的看牌申请、私下看牌授权与
@@ -1577,9 +1626,11 @@ func (manager *Manager) persistSettlementLocked(runtime *runtime, roomValue room
 		}
 	}
 	if manager.bankroll != nil && runtime.stacksAppliedHandID != settlement.HandID {
-		if err := manager.bankroll.ApplySettlement(
+		// 抽水在同一事务里从牌桌转进管理员钱包：结算与入账要么都成，要么都不成。
+		if err := manager.bankroll.ApplySettlementWithRake(
 			context.Background(), roomValue.RoomID, settlement.HandID,
 			settlement.StacksByPlayer, roomValue.Rules.MaxBuyIn,
+			bankroll.Rake{RecipientUserID: runtime.rakeRecipientID, Amount: settlement.Rake},
 		); err != nil {
 			return roomValue, err
 		}
@@ -1614,8 +1665,8 @@ func (manager *Manager) persistSettlementLocked(runtime *runtime, roomValue room
 			DealerSeat: runtime.engine.DealerSeat(),
 			StartedAt:  runtime.handStartedAt, EndedAt: manager.now(), Showdown: settlement.Showdown,
 			PotAwards: settlement.PotAwards, RevealedHands: settlement.RevealedHands,
-			RunoutBoards: settlement.RunoutBoards,
-			Actions:      append([]history.Action(nil), runtime.actions...),
+			RunoutBoards: settlement.RunoutBoards, Rake: settlement.Rake,
+			Actions: append([]history.Action(nil), runtime.actions...),
 		}
 		for _, card := range runtime.engine.Board() {
 			record.Board = append(record.Board, card.String())
@@ -2554,6 +2605,7 @@ func (manager *Manager) collectSpectatorFeesLocked(
 func annotateSpectators(runtime *runtime, roomValue room.Room, recipientUserID string, result *Snapshot) {
 	ensureSpectatorMaps(runtime)
 	result.SpectatorSettings = roomValue.Spectator
+	result.Rake = roomValue.Rake
 	result.SpectatorFee = int64(roomValue.Spectator.FeeBigBlinds) * roomValue.Rules.BigBlind
 	// 看牌权一律在开局时发放（免费模式发给所有在场观战者）。免费模式若按
 	// 「只要在观战位就能看」处理，输了的人手间进观战就能看到对手刚盖掉的牌，

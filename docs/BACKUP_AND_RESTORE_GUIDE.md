@@ -128,7 +128,7 @@ sudo /opt/texas/bin/texas-restore-drill.sh /opt/texas/backups/weekly/texas_20260
 | `migration_state` | 迁移记录存在且版本号连续无缺口 |
 | `row_counts` | 各表行数（信息性，用于与生产库比对） |
 | `ledger_conservation` | **筹码守恒**：账本净增量必须恰好等于虚拟充值总额 |
-| `settlement_per_hand` | 每手结算的 `table_delta` 之和为 0，赢家所得等于输家所失 |
+| `settlement_per_hand` | 每手结算的 `table_delta` 之和加上该手打进管理员钱包的抽水为 0：输家所失等于赢家所得加抽水。**0.7.0 起必须使用新版 `texas-verify.sql`**，旧版会把每一手抽过水的牌判成不平衡 |
 | `wallet_matches_ledger` | 每个钱包余额等于该用户最新一条账本记录的期末余额 |
 | `non_negative_balances` | 无负余额 |
 | `orphan_references` | 账本与钱包没有引用不存在的用户 |

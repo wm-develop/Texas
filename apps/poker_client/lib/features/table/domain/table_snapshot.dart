@@ -1,3 +1,5 @@
+import 'package:poker_client/features/table/domain/rake_settings.dart';
+
 class TableActionOptions {
   const TableActionOptions({
     required this.toCall,
@@ -373,10 +375,14 @@ class TableSettlement {
     required this.revealedHands,
     required this.potAwards,
     required this.runoutBoards,
+    this.rake = 0,
   });
 
   final String handId;
   final bool showdown;
+
+  /// 本手从底池里抽走的筹码；0 表示没抽。[potAwards] 里的金额已经扣过它。
+  final int rake;
   final List<RevealedHand> revealedHands;
   final List<PotAward> potAwards;
   final List<List<String>> runoutBoards;
@@ -396,6 +402,7 @@ class TableSettlement {
         runoutBoards: (json['runoutBoards'] as List<dynamic>? ?? const [])
             .map((value) => (value as List<dynamic>).cast<String>())
             .toList(growable: false),
+        rake: json['rake'] as int? ?? 0,
       );
 }
 
@@ -517,6 +524,7 @@ class TableSnapshot {
     this.spectatorSettings = const SpectatorSettings(),
     this.requestPreferences = const RequestPreferences(),
     this.spectatorFee = 0,
+    this.rake = const RakeSettings(),
     this.spectatorFees,
     this.spectating = false,
   });
@@ -565,6 +573,9 @@ class TableSnapshot {
 
   /// 每手看牌费的筹码数（= feeBigBlinds × 大盲）。0 表示免费。
   final int spectatorFee;
+
+  /// 房间当前的抽水规则（下一手起适用）。聊天公告会被刷走，信息栏靠它随时显示。
+  final RakeSettings rake;
 
   /// 某位成员的桌上筹码：上桌玩家取座位，观战者取观战位；不在房间返回 null。
   /// 补码等只关心「他有多少筹码」的逻辑用这个，别只认座位——观战者没有座位。
@@ -663,6 +674,9 @@ class TableSnapshot {
         : SpectatorFees.fromJson(json['spectatorFees'] as Map<String, dynamic>),
     spectating: json['spectating'] as bool? ?? false,
     spectatorFee: json['spectatorFee'] as int? ?? 0,
+    rake: RakeSettings.fromJson(
+      json['rake'] as Map<String, dynamic>? ?? const {},
+    ),
     requestPreferences: RequestPreferences.fromJson(
       json['requestPreferences'] as Map<String, dynamic>?,
     ),
@@ -685,6 +699,10 @@ class TableChatMessage {
   final String kind;
   final String content;
   final DateTime sentAt;
+
+  /// 服务端发的公告（例如管理员改了抽水规则），不是哪位玩家说的话：
+  /// 不能被屏蔽，也不按玩家消息的样子显示。
+  bool get isSystem => kind == 'system';
 
   factory TableChatMessage.fromJson(Map<String, dynamic> json) =>
       TableChatMessage(

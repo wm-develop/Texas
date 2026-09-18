@@ -44,6 +44,8 @@ type Hand struct {
 	PotAwards     []holdem.PotAward     `json:"potAwards"`
 	Showdown      bool                  `json:"showdown"`
 	RevealedHands []holdem.RevealedHand `json:"revealedHands"`
+	// Rake 是这一手从底池里抽走的筹码；各人输赢之和加上它恒等于 0。
+	Rake int64 `json:"rake,omitempty"`
 }
 
 // Store 保存已结算的手牌。
@@ -136,7 +138,8 @@ func validate(hand Hand) error {
 		seen[player.UserID] = struct{}{}
 		totalDelta += player.Delta
 	}
-	if totalDelta != 0 {
+	// 抽水是唯一离开牌桌的筹码，各人输赢之和加上它必须为零。
+	if hand.Rake < 0 || totalDelta+hand.Rake != 0 {
 		return errors.New("hand history does not conserve chips")
 	}
 	return nil

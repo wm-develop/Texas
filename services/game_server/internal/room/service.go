@@ -423,7 +423,7 @@ func (service *Service) Preview(ctx context.Context, code string) (Preview, erro
 		return Preview{}, Error{Code: "room_not_found"}
 	}
 	return Preview{
-		Code: value.Code, Rules: value.Rules, MaxPlayers: value.MaxPlayers,
+		Code: value.Code, Rules: value.Rules, Rake: value.Rake, MaxPlayers: value.MaxPlayers,
 		CurrentPlayers: seatedCount(value.Members), PasswordRequired: value.PasswordHash != "",
 	}, nil
 }
@@ -786,6 +786,51 @@ func (service *Service) TakeSeat(ctx context.Context, userID string) (Room, erro
 		return publicRoom(value), nil
 	}
 	return Room{}, Error{Code: "permission_denied"}
+}
+
+// UpdateRakeSettings 由管理员设置某个房间的抽水规则。调用方负责确认操作者是管理员：
+// 管理员不在房间里，这里按房间 ID 而不是按成员找房间。第二个返回值报告规则是否
+// 真的变了，调用方据此决定要不要在房间聊天里公告。
+func (service *Service) UpdateRakeSettings(ctx context.Context, roomID string, settings RakeSettings) (Room, bool, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	value, err := service.repository.ByID(ctx, roomID)
+	if errors.Is(err, ErrNotFound) {
+		return Room{}, false, Error{Code: "room_not_found"}
+	}
+	if err != nil {
+		return Room{}, false, err
+	}
+	if !settings.Valid(value.Rules.BigBlind) {
+		return Room{}, false, Error{Code: "invalid_rake_settings"}
+	}
+	if value.Rake == settings {
+		return publicRoom(value), false, nil
+	}
+	// 只写抽水这几列：整体 Save 会重写成员行，管理员改规则时牌局多半正在进行。
+	updated, err := service.repository.SaveRake(ctx, roomID, settings)
+	if errors.Is(err, ErrNotFound) {
+		return Room{}, false, Error{Code: "room_not_found"}
+	}
+	if err != nil {
+		return Room{}, false, err
+	}
+	return publicRoom(updated), true, nil
+}
+
+// ListOpen 返回所有未关闭的房间，供管理员后台使用。
+func (service *Service) ListOpen(ctx context.Context) ([]Room, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	values, err := service.repository.ListOpen(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]Room, 0, len(values))
+	for _, value := range values {
+		result = append(result, publicRoom(value))
+	}
+	return result, nil
 }
 
 // UpdateSpectatorSettings 由房主调整观战位的看牌费与权限，立即生效。

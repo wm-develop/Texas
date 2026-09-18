@@ -50,6 +50,7 @@ type TableState struct {
 	ActionResults     map[string]ActionResult `json:"actionResults,omitempty"`
 	HandStartStacks   map[string]int64        `json:"handStartStacks,omitempty"`
 	LastSettlement    Settlement              `json:"lastSettlement"`
+	Rake              RakeConfig              `json:"rake"`
 }
 
 // sortedSeats 返回升序的座位号。map 的遍历顺序随机，而状态要能稳定比较。
@@ -79,6 +80,7 @@ func (table *Table) State() TableState {
 		MinRaiseIncrement: table.minRaiseIncrement,
 		Board:             append([]Card(nil), table.board...),
 		LastSettlement:    table.lastSettlement,
+		Rake:              table.rake,
 	}
 	for _, seat := range sortedSeats(table.players) {
 		state.Players = append(state.Players, *table.players[seat])
@@ -155,6 +157,10 @@ func RestoreTable(state TableState) (*Table, error) {
 	table.minRaiseIncrement = state.MinRaiseIncrement
 	table.board = append([]Card(nil), state.Board...)
 	table.lastSettlement = state.LastSettlement
+	if !state.Rake.Valid(state.Config.BigBlind) {
+		return nil, errors.New("restored rake settings are invalid")
+	}
+	table.rake = state.Rake
 	if state.Deck != nil {
 		if state.Deck.Next < 0 || state.Deck.Next > len(state.Deck.Cards) {
 			return nil, errors.New("restored deck position is out of range")

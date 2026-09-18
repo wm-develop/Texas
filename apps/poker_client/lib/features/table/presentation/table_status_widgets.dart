@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:poker_client/core/network/game_socket_client.dart';
 import 'package:poker_client/core/platform/voice_chat_service.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
+import 'package:poker_client/features/table/domain/rake_settings.dart';
 
 /// 牌桌周边状态组件：房间信息、连接状态与语音控制。
 /// 手机布局把这些放在侧边栏，桌面布局放在顶部。
@@ -21,8 +22,12 @@ class TableRoomHeader extends StatelessWidget {
     this.maxPlayers = 10,
     this.onShowRoster,
     this.compact = false,
+    this.rake = const RakeSettings(),
     super.key,
   });
+
+  /// 房间当前的抽水规则；不抽时信息栏不多占一行。
+  final RakeSettings rake;
 
   final FriendRoom room;
   final int currentPlayers;
@@ -72,6 +77,12 @@ class TableRoomHeader extends StatelessWidget {
             '盲注 ${room.rules.smallBlind}/${room.rules.bigBlind}',
             style: const TextStyle(color: Colors.white60, fontSize: 12),
           ),
+          if (rake.takesChips)
+            Text(
+              '抽水 ${rake.summary}',
+              key: const ValueKey('room-header-rake'),
+              style: const TextStyle(color: Color(0xFFF6D986), fontSize: 11),
+            ),
           Row(
             children: [
               IconButton(
@@ -155,7 +166,8 @@ class TableRoomHeader extends StatelessWidget {
         ),
         const SizedBox(height: 2),
         Text(
-          '房间码 ${room.code}  ·  盲注 ${room.rules.smallBlind}/${room.rules.bigBlind}',
+          '房间码 ${room.code}  ·  盲注 ${room.rules.smallBlind}/${room.rules.bigBlind}'
+          '${rake.takesChips ? '  ·  抽水 ${rake.summary}' : ''}',
           style: const TextStyle(color: Colors.white60),
         ),
       ],

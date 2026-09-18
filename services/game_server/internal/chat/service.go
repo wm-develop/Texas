@@ -15,6 +15,8 @@ const (
 	KindText      Kind = "text"
 	KindQuickText Kind = "quick_text"
 	KindEmoji     Kind = "emoji"
+	// KindSystem 是服务端发的公告（例如管理员改了房间的抽水规则），玩家发不出这种消息。
+	KindSystem Kind = "system"
 )
 
 type Policy struct {
@@ -151,6 +153,27 @@ func (service *Service) Send(sender Sender, request Request) (Message, error) {
 		SentAt:          now,
 	}
 	return service.store.Save(message)
+}
+
+// Announce 以某位用户的名义在房间聊天里发一条系统公告。不经过禁言、频率限制与
+// 内容校验：发送方是服务端自己。actorUserID 必须是真实用户（聊天表对它有外键），
+// displayName 是公告显示的名字。
+func (service *Service) Announce(actorUserID, displayName, tableID, content string) (Message, error) {
+	content = strings.TrimSpace(content)
+	if actorUserID == "" || tableID == "" || content == "" {
+		return Message{}, Error{Code: "invalid_message"}
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	messageID := service.nextID()
+	if messageID == "" {
+		return Message{}, errors.New("chat message id generator returned empty id")
+	}
+	return service.store.Save(Message{
+		MessageID: messageID, ClientMessageID: "system:" + messageID,
+		UserID: actorUserID, DisplayName: displayName, TableID: tableID,
+		Kind: KindSystem, Content: content, SentAt: service.now(),
+	})
 }
 
 func (service *Service) SetMuted(actorUserID, userID string, muted bool) error {

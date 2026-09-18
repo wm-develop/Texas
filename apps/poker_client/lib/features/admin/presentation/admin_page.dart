@@ -6,6 +6,7 @@ import 'package:poker_client/core/network/game_api_client.dart';
 import 'package:poker_client/features/admin/presentation/minimum_client_version_dialog.dart';
 import 'package:poker_client/features/admin/domain/managed_user.dart';
 import 'package:poker_client/features/admin/presentation/admin_audit_page.dart';
+import 'package:poker_client/features/admin/presentation/admin_rake_page.dart';
 
 class AdminPage extends StatefulWidget {
   const AdminPage({required this.accessTokenProvider, super.key});
@@ -65,6 +66,11 @@ class _AdminPageState extends State<AdminPage> {
       appBar: AppBar(
         title: const Text('服务器管理'),
         actions: [
+          IconButton(
+            onPressed: _openRake,
+            icon: const Icon(Icons.percent),
+            tooltip: '抽水管理',
+          ),
           IconButton(
             onPressed: _openAudit,
             icon: const Icon(Icons.fact_check_outlined),
@@ -735,6 +741,24 @@ class _AdminPageState extends State<AdminPage> {
       await _load();
       _showMessage('已创建 $created 个账号');
     });
+  }
+
+  void _openRake() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => AdminRakePage(
+          loadRooms: () => _withAccessToken(_api.adminRooms),
+          loadSummary: () => _withAccessToken(_api.adminRakeSummary),
+          saveRake: (roomId, settings) => _withAccessToken(
+            (token) => _api.adminSetRoomRake(
+              accessToken: token,
+              roomId: roomId,
+              settings: settings,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   void _openAudit() {

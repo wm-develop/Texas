@@ -346,6 +346,12 @@ func (client *webSocketClient) authenticate(ctx context.Context, message protoco
 	}))
 }
 
+// announceChat 把一条服务端生成的聊天消息广播给房间里的人。公告不按玩家之间的
+// 屏蔽关系过滤：它不是谁说的话，每个人都要收到。
+func (server *webSocketServer) announceChat(roomID string, message chat.Message) {
+	_ = server.hub.broadcast(roomID, protocol.TypeTableChatMessage, chatPayload(message))
+}
+
 // disconnectUsers 把被移出房间的玩家踢下线，并用专门的关闭码与原因说明
 // 发生了什么，客户端据此显示提示而不是把它当成一次失败的牌桌操作。
 func (server *webSocketServer) disconnectUsers(roomID string, userIDs []string, reason string) {

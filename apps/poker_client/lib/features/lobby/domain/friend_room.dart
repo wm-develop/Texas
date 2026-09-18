@@ -1,3 +1,5 @@
+import 'package:poker_client/features/table/domain/rake_settings.dart';
+
 class RoomRules {
   const RoomRules({
     required this.startingChips,
@@ -53,10 +55,14 @@ class RoomPreview {
     required this.maxPlayers,
     required this.currentPlayers,
     required this.passwordRequired,
+    this.rake = const RakeSettings(),
   });
 
   final String code;
   final RoomRules rules;
+
+  /// 带入之前就让人知道这个房间抽不抽水、抽多少。
+  final RakeSettings rake;
   final int maxPlayers;
   final int currentPlayers;
   final bool passwordRequired;
@@ -67,6 +73,9 @@ class RoomPreview {
     maxPlayers: json['maxPlayers'] as int,
     currentPlayers: json['currentPlayers'] as int,
     passwordRequired: json['passwordRequired'] as bool,
+    rake: RakeSettings.fromJson(
+      json['rake'] as Map<String, dynamic>? ?? const {},
+    ),
   );
 }
 

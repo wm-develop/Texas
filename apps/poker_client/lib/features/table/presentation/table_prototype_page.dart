@@ -34,6 +34,7 @@ import 'package:poker_client/features/table/presentation/table_rebuy_dialog.dart
 import 'package:poker_client/features/table/presentation/table_status_widgets.dart';
 import 'package:poker_client/features/table/domain/table_snapshot.dart';
 import 'package:poker_client/features/table/presentation/table_viewport_layout.dart';
+import 'package:poker_client/features/table/domain/rake_settings.dart';
 
 class TablePrototypePage extends StatefulWidget {
   const TablePrototypePage({
@@ -281,6 +282,7 @@ class _TablePrototypePageState extends State<TablePrototypePage>
                           .length,
                   spectatorCount: _gameSocket.snapshot?.spectators.length ?? 0,
                   maxPlayers: widget.room.maxPlayers,
+                  rake: _gameSocket.snapshot?.rake ?? const RakeSettings(),
                   onShowRoster: _openRoster,
                   compact: true,
                   onLeave: _leaveTable,
@@ -714,7 +716,15 @@ class _TablePrototypePageState extends State<TablePrototypePage>
           chatVisible: true,
           compactOverride: _isMobilePlatform ? size.shortestSide < 600 : null,
         ).supportsSideChat;
-    if (!_compactChatOpen && !sideChatVisible) _unreadChatCount++;
+    if (!_compactChatOpen && !sideChatVisible) {
+      _unreadChatCount++;
+      // 公告关系到每个人的筹码，聊天没开着时不能只靠一个角标
+      if (message.isSystem) {
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _showNotice('收到系统公告，请到文字聊天查看'),
+        );
+      }
+    }
   }
 
   void _updatePlayerInteractions() {

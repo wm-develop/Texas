@@ -8,6 +8,7 @@ class RecentHand {
     required this.showdown,
     this.runoutBoards = const [],
     this.actions = const [],
+    this.rake = 0,
   });
 
   factory RecentHand.fromJson(Map<String, dynamic> json) => RecentHand(
@@ -27,6 +28,7 @@ class RecentHand {
     actions: (json['actions'] as List<dynamic>? ?? const [])
         .map((value) => RecentHandAction.fromJson(value as Map<String, dynamic>))
         .toList(growable: false),
+    rake: json['rake'] as int? ?? 0,
   );
 
   final String handId;
@@ -39,6 +41,9 @@ class RecentHand {
 
   /// 本手的动作序列，按发生顺序。复盘时最想知道的就是「谁在什么时候下了多少」。
   final List<RecentHandAction> actions;
+
+  /// 本手从底池里抽走的筹码；各人输赢之和加上它等于 0。
+  final int rake;
 }
 
 /// 一手牌里的一个动作。服务端一直在记录，此前客户端没有解析。

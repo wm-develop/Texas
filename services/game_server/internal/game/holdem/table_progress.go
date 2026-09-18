@@ -129,6 +129,21 @@ func (table *Table) settleHand() error {
 	for playerID, amount := range potResult.Refunds {
 		table.playerByID(playerID).Stack += amount
 	}
+	// 抽水在分池之前从底池里扣：整手只算一次，再按各池大小摊到每个池上，各池扣除
+	// 之和恒等于总抽水。发两次时也只抽这一次，之后各池再对半分到两块牌面。
+	var rakeBase int64
+	for _, pot := range potResult.Pots {
+		rakeBase += pot.Amount
+	}
+	flopSeen := len(table.board) >= 3 || len(table.runoutBoards) > 0
+	rake := table.rake.Amount(rakeBase, flopSeen, table.config.BigBlind)
+	shares, err := splitRake(rake, potResult.Pots)
+	if err != nil {
+		return err
+	}
+	for index, share := range shares {
+		potResult.Pots[index].Amount -= share
+	}
 
 	table.phase = PhaseShowdown
 	table.currentSeat = 0
@@ -209,6 +224,8 @@ func (table *Table) settleHand() error {
 	settlement := Settlement{
 		HandID:         table.handID,
 		PotAwards:      awards,
+		Rake:           rake,
+		RakeBase:       rakeBase,
 		Refunds:        potResult.Refunds,
 		StacksByPlayer: make(map[string]int64, len(table.players)),
 		Showdown:       len(nonFolded) > 1,
@@ -243,7 +260,8 @@ func (table *Table) settleHand() error {
 			BalanceAfter: player.Stack,
 		})
 	}
-	if ledgerDelta != 0 {
+	// 各人输赢之和加上抽水必须为零：抽水是唯一离开牌桌的筹码。
+	if ledgerDelta+rake != 0 {
 		return errors.New("settlement ledger does not conserve chips")
 	}
 	table.lastSettlement = settlement
@@ -255,4 +273,48 @@ func (table *Table) settleHand() error {
 		}
 	}
 	return nil
+}
+
+// splitRake 把一手的总抽水按各池大小摊开。各池先取 rake × 池 / 总额 的整数部分，
+// 剩下的零头按小数部分从大到小逐枚补上（并列时靠前的池优先），因此各池之和恰好
+// 等于总抽水，任何一个池也不会被扣成负数。
+//
+// 不能从主池起依次扣：短码全下的人只能争主池，那样他一个人替边池付了全部抽水，
+// 主池甚至会被扣到 0，牌最大却一分拿不到。
+func splitRake(rake int64, pots []Pot) ([]int64, error) {
+	shares := make([]int64, len(pots))
+	if rake == 0 {
+		return shares, nil
+	}
+	var total int64
+	for _, pot := range pots {
+		total += pot.Amount
+	}
+	if rake < 0 || rake > total {
+		return nil, errors.New("rake exceeds the pot")
+	}
+	remainders := make([]int64, len(pots))
+	assigned := int64(0)
+	for index, pot := range pots {
+		shares[index] = rake * pot.Amount / total
+		remainders[index] = rake * pot.Amount % total
+		assigned += shares[index]
+	}
+	for left := rake - assigned; left > 0; left-- {
+		best := -1
+		for index := range pots {
+			if shares[index] >= pots[index].Amount {
+				continue
+			}
+			if best < 0 || remainders[index] > remainders[best] {
+				best = index
+			}
+		}
+		if best < 0 {
+			return nil, errors.New("rake exceeds the pot")
+		}
+		shares[best]++
+		remainders[best] = -1
+	}
+	return shares, nil
 }

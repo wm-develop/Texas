@@ -69,10 +69,22 @@ func (service *Service) transfer(ctx context.Context, userID, tableID, requestID
 }
 
 func (service *Service) ApplySettlement(ctx context.Context, tableID, handID string, balances map[string]int64, maximum int64) error {
-	if tableID == "" || handID == "" || len(balances) < 2 || maximum <= 0 {
+	return service.ApplySettlementWithRake(ctx, tableID, handID, balances, maximum, Rake{})
+}
+
+// ApplySettlementWithRake 在结算的同一事务里把抽水转进收款人的钱包。
+func (service *Service) ApplySettlementWithRake(
+	ctx context.Context, tableID, handID string, balances map[string]int64, maximum int64, rake Rake,
+) error {
+	if tableID == "" || handID == "" || len(balances) < 2 || maximum <= 0 || !rake.valid() {
 		return Error{Code: "invalid_table_balance"}
 	}
-	return service.repository.ApplySettlement(ctx, tableID, handID, balances, maximum, service.now())
+	return service.repository.ApplySettlement(ctx, tableID, handID, balances, maximum, rake, service.now())
+}
+
+// RakeByRoom 按房间汇总抽水，供管理员后台查看。
+func (service *Service) RakeByRoom(ctx context.Context) ([]RoomRake, error) {
+	return service.repository.RakeByRoom(ctx)
 }
 
 // TransferWallet 把一名用户的全部钱包筹码转给另一名用户，用于账号注销。

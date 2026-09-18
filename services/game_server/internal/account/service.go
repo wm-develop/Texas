@@ -404,6 +404,23 @@ func (service *Service) RecordManagedWalletChange(
 	})
 }
 
+// RecordManagedRakeChange 记下管理员对某个房间抽水规则的修改。
+func (service *Service) RecordManagedRakeChange(
+	ctx context.Context,
+	actor User,
+	roomID, roomCode string,
+	settings map[string]any,
+) error {
+	if err := requireAdmin(actor); err != nil {
+		return err
+	}
+	metadata := map[string]any{"roomId": roomID, "roomCode": roomCode}
+	for key, value := range settings {
+		metadata[key] = value
+	}
+	return service.recordAudit(ctx, actor.UserID, "admin.rake_changed", metadata)
+}
+
 func (service *Service) RecordManagedRoomRemoval(
 	ctx context.Context,
 	actor User,

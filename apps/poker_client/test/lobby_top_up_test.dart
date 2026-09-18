@@ -109,12 +109,33 @@ void main() {
     expect(find.text('虚拟充值'), findsOneWidget);
     expect(find.text('钱包 +2000'), findsOneWidget);
   });
+
+  testWidgets('管理员不能创建或加入牌桌，并被告知原因', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(home: _LobbyHarness(role: 'admin')),
+    );
+    await tester.pumpAndSettle();
+
+    // 不会走到 onCreateRoom / onPreviewRoom：它们在这个夹具里一调用就抛错
+    await tester.ensureVisible(find.text('创建牌桌'));
+    await tester.tap(find.text('创建牌桌'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('不能创建或加入牌桌'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.ensureVisible(find.text('加入牌桌'));
+    await tester.tap(find.text('加入牌桌'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('不能创建或加入牌桌'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }
 
 class _LobbyHarness extends StatefulWidget {
-  const _LobbyHarness({this.entries = const []});
+  const _LobbyHarness({this.entries = const [], this.role = 'player'});
 
   final List<BankrollEntry> entries;
+  final String role;
 
   @override
   State<_LobbyHarness> createState() => _LobbyHarnessState();
@@ -139,10 +160,11 @@ class _LobbyHarnessState extends State<_LobbyHarness> {
   Widget build(BuildContext context) {
     return LobbyPage(
       session: AuthSession(
-        user: const AppUser(
+        user: AppUser(
           userId: 'user_1',
           username: 'friend_1',
           displayName: '好友一',
+          role: widget.role,
         ),
         accessToken: 'access',
         refreshToken: 'refresh',

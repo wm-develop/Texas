@@ -35,7 +35,7 @@ SELECT
     ) AS detail;
 
 -- 3. 筹码守恒：账本中只有 virtual_top_up 允许凭空创造筹码。
---    其余原因（买入、补码、离桌返还、牌局结算）都只在钱包与牌桌之间搬运，
+--    其余原因（买入、补码、离桌返还、牌局结算、抽水）都只在钱包与牌桌之间搬运，
 --    因此全部条目的 (wallet_delta + table_delta) 之和必须恰好等于充值总额。
 WITH totals AS (
     SELECT
@@ -50,14 +50,20 @@ SELECT
         || ' diff=' || (net_created - topped_up) AS detail
 FROM totals;
 
--- 4. 每手结算内部守恒：同一 hand_id 的结算条目 table_delta 之和必须为 0，
---    即赢家赢得的正好等于输家失去的。
+-- 4. 每手结算内部守恒：同一 hand_id 的结算条目 table_delta 之和，加上这一手
+--    打进管理员钱包的抽水（reason = 'rake'，同一 reference_id），必须为 0，
+--    即输家失去的正好等于赢家赢得的加上被抽走的。不抽水的手抽水为 0。
+--    只有抽水流水而没有结算流水的手同样会被判为不平衡。
 WITH per_hand AS (
-    SELECT reference_id, sum(table_delta) AS delta
+    SELECT
+        reference_id,
+        COALESCE(sum(table_delta) FILTER (WHERE reason = 'hand_settlement'), 0)
+            + COALESCE(sum(wallet_delta) FILTER (WHERE reason = 'rake'), 0) AS delta
     FROM bankroll_entries
-    WHERE reason = 'hand_settlement'
+    WHERE reason IN ('hand_settlement', 'rake')
     GROUP BY reference_id
-    HAVING sum(table_delta) <> 0
+    HAVING COALESCE(sum(table_delta) FILTER (WHERE reason = 'hand_settlement'), 0)
+        + COALESCE(sum(wallet_delta) FILTER (WHERE reason = 'rake'), 0) <> 0
 )
 SELECT
     'settlement_per_hand' AS check_name,

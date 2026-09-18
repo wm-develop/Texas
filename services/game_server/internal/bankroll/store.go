@@ -18,6 +18,8 @@ const (
 	ReasonSettlement   Reason = "hand_settlement"
 	ReasonCashOut      Reason = "cash_out"
 	ReasonAdminAdjust  Reason = "admin_adjustment"
+	// ReasonRake 是抽水入账：user_id 为管理员，TableID 为房间，ReferenceID 为手号。
+	ReasonRake Reason = "rake"
 	// ReasonAccountDeletion 记录注销账号时钱包整体转入管理员钱包的两笔流水。
 	ReasonAccountDeletion Reason = "account_deletion"
 )
@@ -50,7 +52,10 @@ type Repository interface {
 	TopUp(ctx context.Context, userID, requestID string, amount int64, now time.Time) (Snapshot, error)
 	SetWallet(ctx context.Context, userID, requestID string, amount int64, now time.Time) (Snapshot, error)
 	TransferToTable(ctx context.Context, userID, tableID, requestID string, amount, maximum int64, reason Reason, now time.Time) (Snapshot, error)
-	ApplySettlement(ctx context.Context, tableID, handID string, balances map[string]int64, maximum int64, now time.Time) error
+	// ApplySettlement 把一手牌结算后的筹码写进各人的桌上余额。rake 不为零时，这笔
+	// 筹码在同一事务里从牌桌转进收款人的钱包，守恒校验为「结算前各人桌上余额之和
+	// = 结算后之和 + 抽水」。按 (tableID, handID) 幂等。
+	ApplySettlement(ctx context.Context, tableID, handID string, balances map[string]int64, maximum int64, rake Rake, now time.Time) error
 	CashOut(ctx context.Context, userID, tableID, requestID string, now time.Time) (Snapshot, error)
 	// TransferWallet 把 fromUserID 的全部钱包筹码转给 toUserID，双方各记一条
 	// reason 流水且 reference_id 为 referenceID。fromUserID 必须没有牌桌余额。
@@ -60,6 +65,29 @@ type Repository interface {
 	// RoomLedger 汇总某人在某个房间内的钱包收支：带入与补码为负，离桌返还
 	// 为正。净胜负还要加上此刻仍在牌桌上的筹码，见 Service.RoomResult。
 	RoomLedger(ctx context.Context, userID, roomID string) (RoomLedger, error)
+	// RakeByRoom 按房间汇总抽水，最近有抽水的房间在前，已关闭的房间也在内。
+	RakeByRoom(ctx context.Context) ([]RoomRake, error)
+}
+
+// Rake 是一手牌的抽水及其收款人。Amount 为 0 表示这一手不抽水。
+type Rake struct {
+	RecipientUserID string
+	Amount          int64
+}
+
+func (rake Rake) valid() bool {
+	return rake.Amount >= 0 && (rake.Amount == 0 || rake.RecipientUserID != "")
+}
+
+// RoomRake 是一个房间的累计抽水。
+type RoomRake struct {
+	RoomID string `json:"roomId"`
+	// RoomCode 与 Closed 由持久化仓储从房间表补上；内存仓储不知道房间，留空。
+	RoomCode string    `json:"roomCode"`
+	Closed   bool      `json:"closed"`
+	Hands    int       `json:"hands"`
+	Total    int64     `json:"total"`
+	LastAt   time.Time `json:"lastAt"`
 }
 
 type Error struct{ Code string }
@@ -186,6 +214,7 @@ func (repository *MemoryRepository) ApplySettlement(
 	tableID, handID string,
 	balances map[string]int64,
 	_ int64,
+	rake Rake,
 	now time.Time,
 ) error {
 	repository.mu.Lock()
@@ -194,7 +223,11 @@ func (repository *MemoryRepository) ApplySettlement(
 	if _, ok := repository.settled[settlementKey]; ok {
 		return nil
 	}
-	var before, after int64
+	if !rake.valid() {
+		return Error{Code: "invalid_table_balance"}
+	}
+	var before int64
+	after := rake.Amount
 	for userID, balance := range balances {
 		if userID == "" || balance < 0 {
 			return Error{Code: "invalid_table_balance"}
@@ -204,6 +237,11 @@ func (repository *MemoryRepository) ApplySettlement(
 	}
 	if before != after {
 		return Error{Code: "table_chips_not_conserved"}
+	}
+	// 收款人钱包放不下要在动任何余额之前发现：这里没有事务可回滚，改了一半再报错
+	// 会让之后每次重试都对不上账。
+	if rake.Amount > 0 && repository.accountLocked(rake.RecipientUserID).wallet > maximumChipAmount-rake.Amount {
+		return Error{Code: "invalid_chip_amount"}
 	}
 	userIDs := make([]string, 0, len(balances))
 	for userID := range balances {
@@ -227,8 +265,51 @@ func (repository *MemoryRepository) ApplySettlement(
 			RevisionAfter: state.revision, CreatedAt: now,
 		})
 	}
+	if rake.Amount > 0 {
+		recipient := repository.accountLocked(rake.RecipientUserID)
+		recipient.wallet += rake.Amount
+		recipient.revision++
+		repository.appendLocked(Entry{
+			EntryID:   entryID(rake.RecipientUserID, "rake:"+tableID+":"+handID),
+			RequestID: "rake:" + handID, UserID: rake.RecipientUserID, TableID: tableID,
+			ReferenceID: handID, Reason: ReasonRake, WalletDelta: rake.Amount,
+			WalletBalanceAfter: recipient.wallet, RevisionAfter: recipient.revision, CreatedAt: now,
+		})
+	}
 	repository.settled[settlementKey] = struct{}{}
 	return nil
+}
+
+func (repository *MemoryRepository) RakeByRoom(_ context.Context) ([]RoomRake, error) {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	byRoom := make(map[string]*RoomRake)
+	for _, entry := range repository.entries {
+		if entry.Reason != ReasonRake {
+			continue
+		}
+		summary := byRoom[entry.TableID]
+		if summary == nil {
+			summary = &RoomRake{RoomID: entry.TableID}
+			byRoom[entry.TableID] = summary
+		}
+		summary.Hands++
+		summary.Total += entry.WalletDelta
+		if entry.CreatedAt.After(summary.LastAt) {
+			summary.LastAt = entry.CreatedAt
+		}
+	}
+	result := make([]RoomRake, 0, len(byRoom))
+	for _, summary := range byRoom {
+		result = append(result, *summary)
+	}
+	sort.Slice(result, func(left, right int) bool {
+		if !result[left].LastAt.Equal(result[right].LastAt) {
+			return result[left].LastAt.After(result[right].LastAt)
+		}
+		return result[left].RoomID < result[right].RoomID
+	})
+	return result, nil
 }
 
 func (repository *MemoryRepository) CashOut(_ context.Context, userID, tableID, requestID string, now time.Time) (Snapshot, error) {

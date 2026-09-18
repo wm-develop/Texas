@@ -71,6 +71,9 @@ func NewHandler(logger *slog.Logger, options Options) http.Handler {
 		options.Chat, presence, webSockets.disconnectUsers,
 	)
 	registerAdminAuditRoute(mux, options.Accounts)
+	registerAdminRakeRoutes(
+		mux, options.Accounts, options.Rooms, options.Bankroll, options.Chat, webSockets.announceChat,
+	)
 	registerRoomRoutes(mux, options.Accounts, options.Rooms, options.Tables, guard)
 	registerRoomOwnerRoutes(
 		mux, options.Accounts, options.Rooms, options.Tables, options.Bankroll,

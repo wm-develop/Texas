@@ -231,7 +231,9 @@ func (repository *PostgresRepository) Save(ctx context.Context, value Room) erro
 		 max_players = $5, small_blind = $6, big_blind = $7, max_buy_in = $8,
 		 action_seconds = $9, join_locked = $10, revision = $11,
 		 spectator_fee_big_blinds = $12, spectator_voice_allowed = $13,
-		 spectator_chat_allowed = $14, spectator_emote_allowed = $15
+		 spectator_chat_allowed = $14, spectator_emote_allowed = $15,
+		 rake_enabled = $16, rake_basis_points = $17, rake_cap = $18,
+		 rake_postflop_enabled = $19, rake_postflop_amount = $20
 		 WHERE room_id = $1 AND status <> 'closed'`,
 		value.RoomID, value.OwnerUserID, value.Preset, value.PasswordHash,
 		value.MaxPlayers, value.Rules.SmallBlind, value.Rules.BigBlind,
@@ -239,6 +241,8 @@ func (repository *PostgresRepository) Save(ctx context.Context, value Room) erro
 		value.Revision,
 		value.Spectator.FeeBigBlinds, value.Spectator.VoiceAllowed,
 		value.Spectator.ChatAllowed, value.Spectator.EmoteAllowed,
+		value.Rake.Enabled, value.Rake.BasisPoints, value.Rake.Cap,
+		value.Rake.PostflopEnabled, value.Rake.PostflopAmount,
 	)
 	if err != nil {
 		_ = transaction.Rollback()
@@ -282,6 +286,67 @@ func (repository *PostgresRepository) ByUser(ctx context.Context, userID string)
 	)`, userID)
 }
 
+// ListOpen 返回所有未关闭的房间，新建的在前。房间数量很少（熟人局，同时开着的
+// 不过几个），逐个按 ID 加载成员即可，不值得为此另写一条聚合查询。
+func (repository *PostgresRepository) SaveRake(ctx context.Context, roomID string, settings RakeSettings) (Room, error) {
+	result, err := repository.database.ExecContext(
+		ctx,
+		`UPDATE rooms SET rake_enabled = $2, rake_basis_points = $3, rake_cap = $4,
+		 rake_postflop_enabled = $5, rake_postflop_amount = $6, revision = revision + 1
+		 WHERE room_id = $1 AND status = 'open'`,
+		roomID, settings.Enabled, settings.BasisPoints, settings.Cap,
+		settings.PostflopEnabled, settings.PostflopAmount,
+	)
+	if err != nil {
+		return Room{}, fmt.Errorf("save room rake: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Room{}, fmt.Errorf("save room rake: %w", err)
+	}
+	if affected == 0 {
+		return Room{}, ErrNotFound
+	}
+	return repository.ByID(ctx, roomID)
+}
+
+func (repository *PostgresRepository) ListOpen(ctx context.Context) ([]Room, error) {
+	rows, err := repository.database.QueryContext(
+		ctx,
+		`SELECT room_id FROM rooms WHERE status <> 'closed' ORDER BY created_at DESC, room_id`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list open rooms: %w", err)
+	}
+	var roomIDs []string
+	for rows.Next() {
+		var roomID string
+		if err := rows.Scan(&roomID); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan open room: %w", err)
+		}
+		roomIDs = append(roomIDs, roomID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterate open rooms: %w", err)
+	}
+	// 先关掉游标再逐个加载：集成测试把连接数限制为 1，游标开着时再发查询会一直等下去。
+	rows.Close()
+	result := make([]Room, 0, len(roomIDs))
+	for _, roomID := range roomIDs {
+		value, err := loadRoom(ctx, repository.database, `r.room_id = $1`, roomID)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, value)
+	}
+	return result, nil
+}
+
 func (repository *PostgresRepository) Delete(ctx context.Context, roomID string) error {
 	transaction, err := repository.database.BeginTx(ctx, nil)
 	if err != nil {
@@ -320,6 +385,8 @@ const roomSelectColumns = `r.room_id, trim(r.room_code), r.owner_user_id, r.pres
 		 r.max_buy_in, r.action_seconds, r.join_locked,
 		 r.spectator_fee_big_blinds, r.spectator_voice_allowed,
 		 r.spectator_chat_allowed, r.spectator_emote_allowed,
+		 r.rake_enabled, r.rake_basis_points, r.rake_cap,
+		 r.rake_postflop_enabled, r.rake_postflop_amount,
 		 r.revision, r.created_at`
 
 // memberSelectColumns 与 memberScanTargets 同样一一对应，由
@@ -342,6 +409,8 @@ func roomScanTargets(value *Room, revision *int64) []any {
 		&value.JoinLocked,
 		&value.Spectator.FeeBigBlinds, &value.Spectator.VoiceAllowed,
 		&value.Spectator.ChatAllowed, &value.Spectator.EmoteAllowed,
+		&value.Rake.Enabled, &value.Rake.BasisPoints, &value.Rake.Cap,
+		&value.Rake.PostflopEnabled, &value.Rake.PostflopAmount,
 		revision, &value.CreatedAt,
 	}
 }

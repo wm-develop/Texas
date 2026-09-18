@@ -134,7 +134,7 @@
 }
 ```
 
-`kind` 允许 `text`、`quick_text` 和 `emoji`。自由文本按 Unicode 字符计数，限制 1～200 字符；服务端还限制每人每 10 秒最多 5 条。服务端确认后客户端才显示为发送成功。
+`kind` 允许 `text`、`quick_text` 和 `emoji`；`system` 只由服务端发出（见 5.3），客户端提交会得到 `content_rejected`。自由文本按 Unicode 字符计数，限制 1～200 字符；服务端还限制每人每 10 秒最多 5 条。服务端确认后客户端才显示为发送成功。
 
 ## 5. 服务端消息
 
@@ -195,7 +195,7 @@
 | 类型 | 用途 | 是否可补发 |
 |---|---|---|
 | `table.snapshot` | 对当前接收者裁剪后的完整牌桌状态。所有牌局状态变化都通过它下发 | 否（个性化，仅占位记录序号） |
-| `table.chat.message` | 向牌桌成员广播最终聊天消息 | 是 |
+| `table.chat.message` | 向牌桌成员广播最终聊天消息。`kind=system` 是服务端公告（目前只有管理员修改本房间抽水规则时发出，正文写明比例、封顶、翻后加抽与「下一手起生效」），`displayName` 固定为「系统公告」，不受玩家之间屏蔽关系影响；客户端须按公告样式显示，不提供屏蔽入口 | 是 |
 | `table.player.interaction` | 广播赞赏或嘲讽动画、音效所需的数据 | 是 |
 | `table.request.declined` | **只发给申请者本人**：他的换位或私下看牌申请被对方在弹窗里拒绝。载荷 `{"kind": "seat_swap" \| "hole_card_view", "requestId", "targetUserId", "targetDisplayName", "scope": "once" \| "requester" \| "everyone"}`。不进房间事件缓冲、`sequence` 为 0（客户端把 0 当带外消息接受），因此断线补发不会把它送给别人；申请者不在线则直接丢弃 | 否 |
 | `table.voice.state` | 广播当前牌桌语音成员及其开麦状态 | 是 |
@@ -294,7 +294,9 @@
 
 ### 6.4 `settlement`
 
-`handId`、`potAwards[]`、`refunds`、`stacksByPlayer`、`ledgerEntries`、`showdown`、`revealedHands[]`、`runoutBoards[][]`（仅发两次时存在）。
+`handId`、`potAwards[]`、`refunds`、`stacksByPlayer`、`ledgerEntries`、`showdown`、`revealedHands[]`、`runoutBoards[][]`（仅发两次时存在）、`rake` 与 `rakeBase`（仅本手有抽水时存在）。
+
+快照顶层另有 `rake`（`enabled`、`basisPoints`、`cap`、`postflopEnabled`、`postflopAmount`）：房间**当前**的抽水规则，下一手起适用，客户端在牌桌信息栏常驻显示；`GET /v1/rooms/preview` 的响应同样带 `rake`，供带入前告知。以下两个字段在 `settlement` 内：`rake` 是本手从底池抽走的筹码，`rakeBase` 是计算它的底池基数（已退还无人跟注部分）。`potAwards[].amount` 已经扣过抽水，`ledgerEntries` 的输赢之和加上 `rake` 恒为 0。客户端在结算区写明「本手抽水」，否则玩家会以为分到手的比底池少是算错了。
 
 每个 `potAward` 含 `potIndex`、`runoutIndex`（发两次时标明所属牌面）、`amount`、`winnerPlayerIds`、`payouts`。
 
@@ -425,6 +427,8 @@
 | `invalid_buy_in` | 带入金额不合法 |
 | `invalid_table_balance` | 牌桌余额状态不合法 |
 | `table_chips_not_conserved` | 检测到筹码不守恒，操作已回滚 |
+| `admin_cannot_play` | 管理员账号收取抽水，不能创建或加入房间。仅 HTTP 创建/加入房间接口返回，状态码 403 |
+| `invalid_rake_settings` | 抽水规则不合法：比例超过 10%、封顶为负、翻后加抽超过一个大盲，或五个字段没有传齐。仅 `POST /v1/admin/rooms/{roomID}/rake` 返回，状态码 400 |
 
 ### 7.6 聊天与互动
 

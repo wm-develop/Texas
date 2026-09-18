@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
 import 'package:poker_client/features/admin/domain/audit_event.dart';
+import 'package:poker_client/features/admin/domain/rake.dart';
 
 /// 管理审计查询：按时间倒序展示管理操作、账号变更和语音加入/退出记录。
 class AdminAuditPage extends StatefulWidget {
@@ -202,6 +203,7 @@ IconData auditEventIcon(String eventType) => switch (eventType) {
   'voice.left' => Icons.mic_off_outlined,
   'account.self_deleted' => Icons.person_remove_outlined,
   'admin.wallet_changed' => Icons.toll,
+  'admin.rake_changed' => Icons.percent,
   'admin.user_removed_from_room' => Icons.exit_to_app,
   'admin.user_status_changed' => Icons.manage_accounts_outlined,
   'admin.user_created' => Icons.person_add_alt_1,
@@ -229,6 +231,9 @@ String describeAuditEvent(AuditEvent event, AuditLog log) {
       return '重置 ${user('targetUserId')} 的密码';
     case 'admin.wallet_changed':
       return '把 ${user('targetUserId')} 的钱包调整为 ${metadata['walletChips']} 筹码';
+    case 'admin.rake_changed':
+      final rake = RakeSettings.fromJson(metadata);
+      return '把房间 ${metadata['roomCode'] ?? ''} 的抽水设为：${rake.summary}';
     case 'admin.user_removed_from_room':
       return '把 ${user('targetUserId')} 请出房间 ${metadata['roomCode'] ?? ''}';
     case 'admin.registration_changed':

@@ -68,7 +68,17 @@ func newOwnerFixture(t *testing.T) ownerFixture {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	tables, err := tablemanager.NewWithConfig(rooms, transportZeroRandom{}, tablemanager.ManagerConfig{Bankroll: chips})
+	tables, err := tablemanager.NewWithConfig(rooms, transportZeroRandom{}, tablemanager.ManagerConfig{
+		Bankroll: chips,
+		// 与生产接线一致：抽水打进最早创建的在用管理员钱包；没有管理员时不抽。
+		RakeRecipient: func(ctx context.Context) (string, error) {
+			admin, err := accounts.EarliestActiveAdmin(ctx)
+			if err != nil {
+				return "", err
+			}
+			return admin.UserID, nil
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

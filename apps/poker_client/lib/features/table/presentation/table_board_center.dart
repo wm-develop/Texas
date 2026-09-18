@@ -253,6 +253,13 @@ class TableBoardCenterState extends State<TableBoardCenter> {
                         fontWeight: FontWeight.w700,
                       ),
                     ),
+                  // 结算时的底池与各人分到的数额都已经扣过抽水，不写清楚的话
+                  // 玩家只看到底池在结算那一刻凭空少了一截
+                  if (snapshot.settlement!.rake > 0)
+                    Text(
+                      rakeLabel(snapshot.settlement!.rake),
+                      style: const TextStyle(color: Colors.white70, fontSize: 11),
+                    ),
                   // 看牌费让玩家筹码凭空多了一截，不写清楚会让人以为算错了
                   if (snapshot.spectatorFees != null &&
                       spectatorFeeLabel(snapshot.spectatorFees!).isNotEmpty)

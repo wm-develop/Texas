@@ -130,6 +130,14 @@ func main() {
 	tableManager, err := tablemanager.NewWithConfig(roomService, holdem.CryptoRandom{}, tablemanager.ManagerConfig{
 		Ledger: ledgerStore, History: historyStore, Bankroll: bankrollService,
 		TableStates: tableStates, Logger: logger,
+		// 抽水打进管理员钱包；系统只允许一个管理员，取最早创建的在用管理员。
+		RakeRecipient: func(ctx context.Context) (string, error) {
+			admin, err := accountService.EarliestActiveAdmin(ctx)
+			if err != nil {
+				return "", err
+			}
+			return admin.UserID, nil
+		},
 	})
 	if err != nil {
 		logger.Error("table manager initialization failed", "error", err)

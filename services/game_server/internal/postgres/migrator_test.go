@@ -20,7 +20,7 @@ func TestEmbeddedMigrationCatalogIsOrderedAndReversible(t *testing.T) {
 	versions := migrator.Versions()
 	// 版本必须连续且从 1 开始；写死一长串比较在每次新增迁移后都要改，
 	// 而且漏改只会让检查悄悄失效。
-	if len(versions) != 11 {
+	if len(versions) != 12 {
 		t.Fatalf("versions=%v", versions)
 	}
 	for index, version := range versions {

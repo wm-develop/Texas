@@ -41,6 +41,32 @@ func (settings SpectatorSettings) Valid() bool {
 	return settings.FeeBigBlinds >= 0 && settings.FeeBigBlinds <= MaximumSpectatorFeeBigBlinds
 }
 
+// RakeSettings 是管理员为一个房间设置的抽水规则，新房间一律不抽水。
+//
+// 每手抽水 = min(底池 × BasisPoints / 10000 向下取整, Cap) + 翻后加抽。Cap 为 0 表示
+// 比例部分不设上限；翻后加抽不受 Cap 限制，只在这手牌发出过翻牌时收取，且不得
+// 超过一个大盲。抽走的筹码进管理员钱包。修改从下一手开始生效。
+type RakeSettings struct {
+	Enabled         bool  `json:"enabled"`
+	BasisPoints     int   `json:"basisPoints"`
+	Cap             int64 `json:"cap"`
+	PostflopEnabled bool  `json:"postflopEnabled"`
+	PostflopAmount  int64 `json:"postflopAmount"`
+}
+
+// MaximumRakeBasisPoints 是抽水比例的上限（10%）。
+const MaximumRakeBasisPoints = 1000
+
+// Valid 报告规则是否在允许范围内。
+func (settings RakeSettings) Valid(bigBlind int64) bool {
+	return settings.BasisPoints >= 0 && settings.BasisPoints <= MaximumRakeBasisPoints &&
+		settings.Cap >= 0 && settings.Cap <= MaximumRakeCap &&
+		settings.PostflopAmount >= 0 && settings.PostflopAmount <= bigBlind
+}
+
+// MaximumRakeCap 只是防止写入离谱的数；实际上限由管理员按房间盲注决定。
+const MaximumRakeCap = 1_000_000_000
+
 type Rules struct {
 	StartingChips int64 `json:"startingChips"`
 	MaxBuyIn      int64 `json:"maxBuyIn"`
@@ -78,19 +104,23 @@ type Room struct {
 	// 成员不受影响。
 	JoinLocked bool `json:"joinLocked"`
 	// Spectator 是房主对观战位的设置。
-	Spectator    SpectatorSettings `json:"spectator"`
-	Revision     uint64            `json:"revision"`
-	CreatedAt    time.Time         `json:"createdAt"`
-	PasswordHash string            `json:"-"`
+	Spectator SpectatorSettings `json:"spectator"`
+	// Rake 是管理员为本房间设置的抽水规则。
+	Rake         RakeSettings `json:"rake"`
+	Revision     uint64       `json:"revision"`
+	CreatedAt    time.Time    `json:"createdAt"`
+	PasswordHash string       `json:"-"`
 }
 
 type Preview struct {
-	Code             string `json:"code"`
-	JoinLocked       bool   `json:"joinLocked"`
-	Rules            Rules  `json:"rules"`
-	MaxPlayers       int    `json:"maxPlayers"`
-	CurrentPlayers   int    `json:"currentPlayers"`
-	PasswordRequired bool   `json:"passwordRequired"`
+	Code       string `json:"code"`
+	JoinLocked bool   `json:"joinLocked"`
+	Rules      Rules  `json:"rules"`
+	// Rake 让人在带入之前就知道这个房间抽不抽水、抽多少。
+	Rake             RakeSettings `json:"rake"`
+	MaxPlayers       int          `json:"maxPlayers"`
+	CurrentPlayers   int          `json:"currentPlayers"`
+	PasswordRequired bool         `json:"passwordRequired"`
 }
 
 type Error struct {

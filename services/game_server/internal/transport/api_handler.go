@@ -648,6 +648,12 @@ func registerRoomRoutes(
 		if !guard.allow(writer, guard.userOps, user.UserID, "user_ops") {
 			return
 		}
+		// 抽水打进管理员钱包，管理员再上桌就既是收款方又是玩家，账目与立场都说不清。
+		// 观战同样不行：付费观战能看到所有人的底牌。
+		if user.Role == account.RoleAdmin {
+			writeJSONError(writer, http.StatusForbidden, "admin_cannot_play")
+			return
+		}
 		var body struct {
 			Preset     room.Preset `json:"preset"`
 			MaxPlayers int         `json:"maxPlayers"` // Deprecated; accepted but ignored.
@@ -697,6 +703,12 @@ func registerRoomRoutes(
 			return
 		}
 		if !guard.allow(writer, guard.userOps, user.UserID, "user_ops") {
+			return
+		}
+		// 抽水打进管理员钱包，管理员再上桌就既是收款方又是玩家，账目与立场都说不清。
+		// 观战同样不行：付费观战能看到所有人的底牌。
+		if user.Role == account.RoleAdmin {
+			writeJSONError(writer, http.StatusForbidden, "admin_cannot_play")
 			return
 		}
 		var body struct {

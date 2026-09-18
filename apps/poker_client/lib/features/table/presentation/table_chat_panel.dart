@@ -60,7 +60,11 @@ class TableChatPanelState extends State<TableChatPanel> {
   @override
   Widget build(BuildContext context) {
     final messages = widget.client.chatMessages
-        .where((message) => !widget.blockedUserIds.contains(message.userId))
+        .where(
+          (message) =>
+              message.isSystem ||
+              !widget.blockedUserIds.contains(message.userId),
+        )
         .toList(growable: false);
     return Card(
       color: const Color(0xE6112621),
@@ -106,6 +110,9 @@ class TableChatPanelState extends State<TableChatPanel> {
                       itemCount: messages.length,
                       itemBuilder: (context, index) {
                         final message = messages[messages.length - 1 - index];
+                        if (message.isSystem) {
+                          return TableChatSystemLine(message: message.content);
+                        }
                         return TableChatLine(
                           name: message.displayName,
                           message: message.content,
@@ -202,6 +209,40 @@ class TableChatPanelState extends State<TableChatPanel> {
             child: const Text('关闭'),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 系统公告：与玩家消息区分开，没有发言人，也没有屏蔽入口。
+class TableChatSystemLine extends StatelessWidget {
+  const TableChatSystemLine({required this.message, super.key});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 9),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0x33F4D477),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text.rich(
+        TextSpan(
+          children: [
+            const TextSpan(
+              text: '系统公告　',
+              style: TextStyle(
+                color: Color(0xFFF4D477),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            TextSpan(text: message),
+          ],
+        ),
+        style: const TextStyle(fontSize: 13),
       ),
     );
   }

@@ -104,8 +104,13 @@ type ActionResult struct {
 }
 
 type Settlement struct {
-	HandID         string           `json:"handId"`
-	PotAwards      []PotAward       `json:"potAwards"`
+	HandID    string     `json:"handId"`
+	PotAwards []PotAward `json:"potAwards"`
+	// Rake 是本手从底池里抽走的筹码。它先于分池扣除，因此 PotAwards 的金额是
+	// 抽水之后的；各人输赢之和加上 Rake 恒等于 0。
+	Rake int64 `json:"rake,omitempty"`
+	// RakeBase 是计算抽水所用的底池（未被跟注的下注已退回，不计入）。
+	RakeBase       int64            `json:"rakeBase,omitempty"`
 	Refunds        map[string]int64 `json:"refunds"`
 	StacksByPlayer map[string]int64 `json:"stacksByPlayer"`
 	LedgerEntries  []ledger.Entry   `json:"ledgerEntries"`
@@ -146,7 +151,73 @@ type Table struct {
 	actionResults     map[string]ActionResult
 	handStartStacks   map[string]int64
 	lastSettlement    Settlement
+	// rake 是当前这一手适用的抽水规则，由牌桌管理层在开局前设置。
+	rake RakeConfig
 }
+
+// RakeConfig 是一手牌的抽水规则。
+//
+// 抽水 = min(底池 × BasisPoints / 10000 向下取整, Cap) + 翻后加抽。Cap 为 0 表示
+// 比例部分不设上限；翻后加抽不受 Cap 限制，只在这手牌发出过翻牌、且底池不少于
+// 两个大盲时收取。底池指退回未被跟注的下注之后、真正有人争夺的部分。
+type RakeConfig struct {
+	Enabled         bool  `json:"enabled"`
+	BasisPoints     int   `json:"basisPoints"`
+	Cap             int64 `json:"cap"`
+	PostflopEnabled bool  `json:"postflopEnabled"`
+	PostflopAmount  int64 `json:"postflopAmount"`
+}
+
+// MaximumRakeBasisPoints 是抽水比例的上限（10%）。
+const MaximumRakeBasisPoints = 1000
+
+// Valid 报告规则是否在允许范围内。翻后加抽不得超过一个大盲。
+func (config RakeConfig) Valid(bigBlind int64) bool {
+	return config.BasisPoints >= 0 && config.BasisPoints <= MaximumRakeBasisPoints &&
+		config.Cap >= 0 && config.PostflopAmount >= 0 && config.PostflopAmount <= bigBlind
+}
+
+// Amount 计算一手牌的抽水。整手只算这一次、结果是整数：逐池各自取整再相加会
+// 和总数差出零头，账就对不上了。
+//
+// 底池不足两个大盲时不加抽：短码在盲注位全下、随后补发公共牌的手，底池可能只有
+// 几个筹码，一个大盲的加抽会把它整个抽走，赢家什么都拿不到。有了这条，加抽不超过
+// 底池的一半，连同至多 10% 的比例部分，抽水永远小于底池。
+func (config RakeConfig) Amount(pot int64, flopSeen bool, bigBlind int64) int64 {
+	if !config.Enabled || pot <= 0 {
+		return 0
+	}
+	rake := pot * int64(config.BasisPoints) / 10000
+	if config.Cap > 0 && rake > config.Cap {
+		rake = config.Cap
+	}
+	if config.PostflopEnabled && flopSeen && pot >= 2*bigBlind {
+		rake += config.PostflopAmount
+	}
+	if rake > pot {
+		rake = pot
+	}
+	if rake < 0 {
+		rake = 0
+	}
+	return rake
+}
+
+// SetRake 设置下一手适用的抽水规则。只能在两手之间调用：一手牌打到一半改规则，
+// 对已经按旧规则下注的人不公平。
+func (table *Table) SetRake(config RakeConfig) error {
+	if table.phase != PhaseWaiting && table.phase != PhaseWaitingNextHand {
+		return RuleError{Code: "hand_in_progress"}
+	}
+	if !config.Valid(table.config.BigBlind) {
+		return RuleError{Code: "invalid_rake_settings"}
+	}
+	table.rake = config
+	return nil
+}
+
+// Rake 返回当前这一手适用的抽水规则。
+func (table *Table) Rake() RakeConfig { return table.rake }
 
 func NewTable(config Config) (*Table, error) {
 	if !validTableID.MatchString(config.TableID) ||

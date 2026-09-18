@@ -269,8 +269,12 @@ func (repository *PostgresRepository) ApplySettlement(
 	tableID, handID string,
 	balances map[string]int64,
 	_ int64,
+	rake Rake,
 	now time.Time,
 ) error {
+	if !rake.valid() {
+		return Error{Code: "invalid_table_balance"}
+	}
 	transaction, err := repository.database.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin settlement: %w", err)
@@ -306,9 +310,17 @@ func (repository *PostgresRepository) ApplySettlement(
 		userIDs = append(userIDs, userID)
 	}
 	sort.Strings(userIDs)
-	wallets := make(map[string]int64, len(userIDs))
-	revisions := make(map[string]uint64, len(userIDs))
-	for _, userID := range userIDs {
+	// 收款人的钱包和玩家的钱包按同一个顺序上锁，否则两手牌同时结算可能互相等锁。
+	lockOrder := append([]string(nil), userIDs...)
+	if rake.Amount > 0 {
+		if _, playing := balances[rake.RecipientUserID]; !playing {
+			lockOrder = append(lockOrder, rake.RecipientUserID)
+			sort.Strings(lockOrder)
+		}
+	}
+	wallets := make(map[string]int64, len(lockOrder))
+	revisions := make(map[string]uint64, len(lockOrder))
+	for _, userID := range lockOrder {
 		wallet, revision, err := lockWallet(ctx, transaction, userID)
 		if err != nil {
 			_ = transaction.Rollback()
@@ -339,7 +351,8 @@ func (repository *PostgresRepository) ApplySettlement(
 		beforeTotal += balance
 		afterTotal += balances[userID]
 	}
-	if beforeTotal != afterTotal {
+	// 抽水是唯一离开牌桌的筹码：结算前之和 = 结算后之和 + 抽水。
+	if beforeTotal != afterTotal+rake.Amount {
 		_ = transaction.Rollback()
 		return Error{Code: "table_chips_not_conserved"}
 	}
@@ -349,6 +362,7 @@ func (repository *PostgresRepository) ApplySettlement(
 			continue
 		}
 		revision := revisions[userID] + 1
+		revisions[userID] = revision
 		if _, err := transaction.ExecContext(
 			ctx,
 			`UPDATE room_members SET table_chips = $3 WHERE room_id = $1 AND user_id = $2`,
@@ -377,10 +391,66 @@ func (repository *PostgresRepository) ApplySettlement(
 			return err
 		}
 	}
+	if rake.Amount > 0 {
+		wallet := wallets[rake.RecipientUserID]
+		if wallet > maximumChipAmount-rake.Amount {
+			_ = transaction.Rollback()
+			return Error{Code: "invalid_chip_amount"}
+		}
+		wallet += rake.Amount
+		revision := revisions[rake.RecipientUserID] + 1
+		if _, err := transaction.ExecContext(
+			ctx,
+			`UPDATE account_wallets SET wallet_chips = $2, revision = $3, updated_at = $4 WHERE user_id = $1`,
+			rake.RecipientUserID, wallet, revision, now,
+		); err != nil {
+			_ = transaction.Rollback()
+			return fmt.Errorf("credit rake: %w", err)
+		}
+		if err := insertEntry(ctx, transaction, Entry{
+			EntryID:   entryID(rake.RecipientUserID, "rake:"+tableID+":"+handID),
+			RequestID: "rake:" + handID, UserID: rake.RecipientUserID, TableID: tableID,
+			ReferenceID: handID, Reason: ReasonRake, WalletDelta: rake.Amount,
+			WalletBalanceAfter: wallet, RevisionAfter: revision, CreatedAt: now,
+		}); err != nil {
+			_ = transaction.Rollback()
+			return err
+		}
+	}
 	if err := transaction.Commit(); err != nil {
 		return fmt.Errorf("commit settlement: %w", err)
 	}
 	return nil
+}
+
+// RakeByRoom 按房间汇总抽水。房间关闭后记录仍在 rooms 表里，房间码照样取得到。
+func (repository *PostgresRepository) RakeByRoom(ctx context.Context) ([]RoomRake, error) {
+	rows, err := repository.database.QueryContext(
+		ctx,
+		`SELECT e.room_id, COALESCE(trim(r.room_code), ''), COALESCE(r.status = 'closed', true),
+                count(*), COALESCE(sum(e.wallet_delta), 0), max(e.created_at)
+         FROM bankroll_entries e
+         LEFT JOIN rooms r ON r.room_id = e.room_id
+         WHERE e.reason = 'rake' AND e.room_id IS NOT NULL
+         GROUP BY e.room_id, r.room_code, r.status
+         ORDER BY max(e.created_at) DESC, e.room_id`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("summarise rake: %w", err)
+	}
+	defer rows.Close()
+	var result []RoomRake
+	for rows.Next() {
+		var value RoomRake
+		if err := rows.Scan(&value.RoomID, &value.RoomCode, &value.Closed, &value.Hands, &value.Total, &value.LastAt); err != nil {
+			return nil, fmt.Errorf("scan rake summary: %w", err)
+		}
+		result = append(result, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rake summary: %w", err)
+	}
+	return result, nil
 }
 
 func (repository *PostgresRepository) CashOut(
