@@ -482,7 +482,12 @@ func (client *webSocketClient) submitAction(ctx context.Context, message protoco
 			)
 		}
 		client.server.actionsTotal.Inc("rejected")
-		return client.sendError(message, protocol.TypeTableActionRejected, code)
+		if err := client.sendError(message, protocol.TypeTableActionRejected, code); err != nil {
+			return err
+		}
+		// 被拒不代表引擎没动：结束一手的动作若在结算落盘时出错，引擎已经结束了
+		// 这一手，只有行动者收到错误，其他人的界面停在旧状态。广播一次让全桌同步。
+		return client.server.hub.broadcastSnapshots(ctx, client.server.tables, client.roomID, nil)
 	}
 	client.server.actionsTotal.Inc("accepted")
 	if err := client.respond(message, protocol.TypeTableActionAccepted, result); err != nil {
@@ -637,7 +642,10 @@ func (client *webSocketClient) chooseRunout(ctx context.Context, message protoco
 		ctx, client.user.UserID, client.roomID, payload.Count,
 	)
 	if err != nil {
-		return client.sendError(message, protocol.TypeSystemError, errorCode(err))
+		if err := client.sendError(message, protocol.TypeSystemError, errorCode(err)); err != nil {
+			return err
+		}
+		return client.server.hub.broadcastSnapshots(ctx, client.server.tables, client.roomID, nil)
 	}
 	if err := client.respond(message, protocol.TypeTableRunoutChoose, map[string]int{"count": payload.Count}); err != nil {
 		return err

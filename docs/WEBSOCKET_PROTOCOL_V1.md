@@ -342,6 +342,10 @@
 
 错误码通过 `system.error`、`table.action.rejected`、`table.chat.rejected`、`table.rebuy.rejected`、`table.time_extension.rejected`、`table.hole_cards.reveal.rejected` 的 payload `code` 字段返回。
 
+`table.action.rejected` 与 `table.runout.choose` 的 `system.error` 之后，服务端会紧接着向全桌广播一次 `table.snapshot`：被拒不代表引擎没动——结束一手的动作若在结算落盘时出错，引擎已经结束了这一手，只有行动者收到错误，其他人的界面会停在旧状态。客户端收到被拒后照常以随后的快照为准。
+
+结算落盘失败（`table_chips_not_conserved`、`invalid_table_balance` 等）时，服务端**不会开下一手**：下一次有人 `table.ready.set` 会先补做上一手的落盘，成功则重置所有人的准备状态、不开局，失败则把错误码原样返回给点准备的人。
+
 ### 7.1 传输与会话
 
 | 错误码 | 含义 |
@@ -387,6 +391,7 @@
 | `invalid_action` | 动作名称不合法 |
 | `invalid_amount` | `raiseTo` 不合法（越界或非小盲整数倍） |
 | `hand_in_progress` | 补码和换位仅允许在两手之间；未弃牌的参局玩家不能中途离桌（已弃牌或未参局玩家可以） |
+| `settlement_not_persisted` | 上一手的结算尚未入账，暂不能补码；下一次有人准备会先补做入账 |
 | `not_enough_ready_players` | 已准备玩家不足以开局 |
 | `no_time_extensions` | 本手的两张加时卡已用完 |
 | `time_extension_expired` | 当前行动已超时，不能再主动加时 |

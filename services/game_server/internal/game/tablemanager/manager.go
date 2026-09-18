@@ -38,6 +38,9 @@ type Manager struct {
 	// stateWriter 在后台把状态写入 tableStates，避免在牌桌锁里等数据库。
 	stateWriter *stateWriter
 	logger      *slog.Logger
+	// beforeLockForTest 在 Join / SetReady 取完房间、拿牌桌锁之前调用，只供测试
+	// 制造「取房间与上锁之间有人离开」的交错。生产环境为 nil。
+	beforeLockForTest func()
 }
 
 type runtime struct {
@@ -314,8 +317,18 @@ func (manager *Manager) Join(ctx context.Context, userID string, roomID string) 
 	if err != nil {
 		return Snapshot{}, err
 	}
+	if manager.beforeLockForTest != nil {
+		manager.beforeLockForTest()
+	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
+	// 拿到锁之后重新取一份成员表。锁外取到的那份可能已经过期：等锁的这段时间
+	// 里若有人离开，用旧表同步引擎会把他当成新玩家加回来（幽灵座位），此后
+	// 每一手结算都对不上账。同步引擎的成员表必须是持锁期间取到的。
+	roomValue, err = manager.rooms.GetForMember(ctx, userID, roomID)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	runtime.online[userID] = true
 	if _, leaving := runtime.pendingCashOuts[userID]; leaving {
 		// 弃牌中途离开、本手还没打完又回来了：他仍是成员、筹码原样在桌上，
@@ -370,7 +383,7 @@ func (manager *Manager) SetReady(ctx context.Context, userID string, ready bool)
 	if ready && manager.draining.Load() {
 		return Snapshot{}, holdem.RuleError{Code: "server_draining"}
 	}
-	roomValue, err := manager.rooms.SetReady(ctx, userID, ready)
+	roomValue, err := manager.rooms.Current(ctx, userID)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -378,8 +391,25 @@ func (manager *Manager) SetReady(ctx context.Context, userID string, ready bool)
 	if err != nil {
 		return Snapshot{}, err
 	}
+	if manager.beforeLockForTest != nil {
+		manager.beforeLockForTest()
+	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
+	// 写「准备」必须在牌桌锁内进行，同步引擎用它返回的那份成员表。此前先写再
+	// 上锁：自动准备倒计时到点时服务端替每个人点准备，若恰有人在这一瞬间离开，
+	// 拿到的成员表里还有他而引擎里已经没有，同步时会把他当成新玩家加回引擎——
+	// 一个数据库里不存在的幽灵座位，此后每一手结算都因为筹码对不上账而失败，
+	// 整场的输赢一分都记不进账户。线上一晚上坏了两个房间。
+	roomValue, err = manager.rooms.SetReady(ctx, userID, ready)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if roomValue.RoomID != runtime.roomID {
+		// 锁外确定运行时到锁内写准备之间，他若离开了这张桌又进了另一张，写回的
+		// 是另一张桌的成员表，不能拿来同步这张桌的引擎。
+		return Snapshot{}, room.Error{Code: "room_not_found"}
+	}
 	if err := syncMembers(runtime.engine, roomValue, runtime.online); err != nil {
 		return Snapshot{}, err
 	}
@@ -408,10 +438,12 @@ func (manager *Manager) startHandIfReadyLocked(
 	roomValue room.Room,
 ) (room.Room, error) {
 	betweenHands := runtime.engine.Phase() == holdem.PhaseWaiting || runtime.engine.Phase() == holdem.PhaseWaitingNextHand
-	if betweenHands && len(runtime.pendingCashOuts) > 0 {
-		// 手间还有「待离开」的人，说明上一手的落盘没走完（多半是数据库一时出错）。
-		// 他还占着成员位却永远不会准备，不补做的话下一手永远开不了。整段落盘是
-		// 幂等的，重做一遍；成功后照常重置准备，这一次调用不开局。
+	lastSettlement := runtime.engine.LastSettlement()
+	if betweenHands && lastSettlement.HandID != "" && runtime.persistedHandID != lastSettlement.HandID {
+		// 上一手的落盘没走完（数据库一时出错、或账对不上）。此前这里会照常开下一手，
+		// 引擎继续发牌而账户一分不记：线上有个房间就这样打了 46 手，全场输赢作废。
+		// 现在先把上一手补做完，做不完就不开局并把错误抛给点准备的人。整段落盘
+		// 是幂等的；成功后照常重置准备，这一次调用不开局。
 		var err error
 		roomValue, err = manager.persistSettlementLocked(runtime, roomValue)
 		if err != nil {
@@ -569,16 +601,29 @@ func (manager *Manager) SubmitRunoutChoice(
 }
 
 func (manager *Manager) Snapshot(ctx context.Context, userID string, roomID string) (Snapshot, error) {
+	runtime := manager.existingRuntime(roomID)
+	if runtime == nil {
+		// 第一次为这个房间生成快照：先取一份房间信息把运行时建起来。
+		roomValue, err := manager.rooms.GetForMember(ctx, userID, roomID)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		if runtime, err = manager.runtimeFor(roomValue); err != nil {
+			return Snapshot{}, err
+		}
+	}
+	if manager.beforeLockForTest != nil {
+		manager.beforeLockForTest()
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	// 成员表在锁内取：快照会同步引擎成员，锁外取到的那份可能在等锁期间过期，
+	// 把刚离开的人当成新玩家加回引擎。广播快照时每个客户端都走一遍这里，是
+	// 撞上这种交错概率最高的路径。常规情况下读库次数不变，只是挪到锁内。
 	roomValue, err := manager.rooms.GetForMember(ctx, userID, roomID)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	runtime, err := manager.runtimeFor(roomValue)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	runtime.mu.Lock()
-	defer runtime.mu.Unlock()
 	if err := syncMembers(runtime.engine, roomValue, runtime.online); err != nil {
 		return Snapshot{}, err
 	}
@@ -994,6 +1039,12 @@ func (manager *Manager) Rebuy(
 	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
+	if last := runtime.engine.LastSettlement(); last.HandID != "" && runtime.persistedHandID != last.HandID {
+		// 上一手的结算还没入账，成员记录里的筹码是上一手之前的数：这时补码会把钱
+		// 转到一个即将被结算覆盖的余额上，之后的对账永远差这一笔，牌桌再也开不了。
+		// 等下一次有人准备把上一手补做完再补码。
+		return Snapshot{}, holdem.RuleError{Code: "settlement_not_persisted"}
+	}
 	var current int64 = -1
 	for _, player := range runtime.engine.Players() {
 		if player.PlayerID == userID {
@@ -1426,9 +1477,9 @@ func (manager *Manager) handleTimeout(roomID string, generation uint64) {
 			runtime.timer = nil
 		}
 		runtime.mu.Unlock()
-		if err == nil {
-			manager.notifySnapshot(roomID)
-		}
+		// 无论成败都广播：结算失败时引擎已经结束这一手，不广播的话其他人的界面
+		// 停在旧状态，看起来就是「最后一个动作没反应」。
+		manager.notifySnapshot(roomID)
 		return
 	}
 	if runtime.engine.CurrentSeat() == 0 {
@@ -1480,9 +1531,7 @@ func (manager *Manager) handleTimeout(roomID string, generation uint64) {
 	// 会与其他协程对同一批表的写入并发。
 	manager.persistStateLocked(runtime)
 	runtime.mu.Unlock()
-	if err == nil {
-		manager.notifySnapshot(roomID)
-	}
+	manager.notifySnapshot(roomID)
 }
 
 func (manager *Manager) resetReadyLocked(
@@ -1509,11 +1558,19 @@ func (manager *Manager) resetReadyLocked(
 // persistSettlementLocked 把刚结束的一手落盘，并让弃牌中途离开的人真正离开。
 // 返回刷新后的房间：待离开者在这里被移出，调用方随后的 resetReadyLocked 与快照
 // 必须用这份成员列表，否则会对一个已经不在房间里的人操作。
-func (manager *Manager) persistSettlementLocked(runtime *runtime, roomValue room.Room) (room.Room, error) {
+func (manager *Manager) persistSettlementLocked(runtime *runtime, roomValue room.Room) (result room.Room, err error) {
 	settlement := runtime.engine.LastSettlement()
 	if settlement.HandID == "" || runtime.persistedHandID == settlement.HandID {
 		return roomValue, nil
 	}
+	defer func() {
+		// 结算落盘失败意味着这一手的输赢没进账户。此前只有内部错误才记日志，
+		// 「筹码不守恒」这类业务错误码一声不响，66 手结算失败没人知道。
+		if err != nil && manager.logger != nil {
+			manager.logger.Error("hand settlement was not persisted",
+				"roomId", roomValue.RoomID, "handId", settlement.HandID, "error", err)
+		}
+	}()
 	if len(manager.ledger.EntriesForHand(settlement.HandID)) == 0 {
 		if err := manager.ledger.Append(settlement.LedgerEntries); err != nil {
 			return roomValue, err
@@ -1595,7 +1652,7 @@ func (manager *Manager) persistSettlementLocked(runtime *runtime, roomValue room
 	}
 	// 放在牌谱之后：退还失败时这一手的账和牌谱都已经落盘，只剩退还留待重试
 	// （下一手开局前会再来一次）。此前退还排在牌谱前面，一失败整手牌谱就丢了。
-	roomValue, err := manager.finishPendingLeavesLocked(runtime, roomValue)
+	roomValue, err = manager.finishPendingLeavesLocked(runtime, roomValue)
 	if err != nil {
 		return roomValue, err
 	}

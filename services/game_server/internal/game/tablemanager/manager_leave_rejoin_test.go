@@ -32,11 +32,17 @@ type leaveFixture struct {
 
 func newLeaveFixture(t *testing.T) leaveFixture {
 	t.Helper()
-	ctx := context.Background()
 	chips, err := bankroll.NewService(bankroll.NewMemoryRepository(), time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return newLeaveFixtureWithBankroll(t, chips)
+}
+
+// newLeaveFixtureWithBankroll 用给定的账户服务搭桌，便于注入会按需失败的仓储。
+func newLeaveFixtureWithBankroll(t *testing.T, chips *bankroll.Service) leaveFixture {
+	t.Helper()
+	ctx := context.Background()
 	users := []string{"owner", "guestA", "guestB"}
 	for _, userID := range users {
 		if _, err := chips.TopUp(ctx, userID, "topup-"+userID, 5_000); err != nil {
@@ -587,9 +593,8 @@ func TestFailedCashOutAtSettlementIsRetriedBeforeTheNextHand(t *testing.T) {
 	}
 }
 
-// 退还失败之后、补做之前，有人补了码：补做不能拿上一手的旧结算再写一遍筹码，
-// 否则补进来的筹码在成员记录里被盖掉（PostgreSQL 上就是凭空消失），引擎与账户
-// 从此对不上，之后每一手结算都报不守恒。
+// 退还失败之后、补做之前不允许补码；补做之后补码照常，且补做不会拿上一手的旧结算
+// 再写一遍筹码（那会把补进来的筹码在成员记录里盖掉，PostgreSQL 上就是凭空消失）。
 func TestSettlementRetryDoesNotOverwriteARebuyMadeInBetween(t *testing.T) {
 	ctx := context.Background()
 	flaky := &flakyCashOutRepository{Repository: bankroll.NewMemoryRepository()}
@@ -658,15 +663,20 @@ func TestSettlementRetryDoesNotOverwriteARebuyMadeInBetween(t *testing.T) {
 			break
 		}
 	}
-	if _, err := manager.Rebuy(ctx, rebuyer, created.RoomID, "rebuy-in-between", 500); err != nil {
-		t.Fatalf("rebuy between hands: %v", err)
+	// 上一手没入账时补码被拒：补进去的钱会被补做的结算覆盖。
+	if _, err := manager.Rebuy(ctx, rebuyer, created.RoomID, "rebuy-in-between", 500); ruleCodeOf(err) != "settlement_not_persisted" {
+		t.Fatalf("rebuy must be refused until the settlement is persisted, err=%v", err)
+	}
+	// 有人准备触发补做，之后补码照常，成员记录与账户一致
+	if _, err := manager.SetReady(ctx, rebuyer, true); err != nil {
+		t.Fatalf("retry on ready: %v", err)
+	}
+	if _, err := manager.Rebuy(ctx, rebuyer, created.RoomID, "rebuy-after-retry", 500); err != nil {
+		t.Fatalf("rebuy after the retry: %v", err)
 	}
 	balanceAfterRebuy, err := chips.Snapshot(ctx, rebuyer)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if _, err := manager.SetReady(ctx, rebuyer, true); err != nil {
-		t.Fatalf("retry on ready: %v", err)
 	}
 	roomValue, err := rooms.Current(ctx, rebuyer)
 	if err != nil {
