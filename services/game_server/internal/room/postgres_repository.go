@@ -288,7 +288,7 @@ func (repository *PostgresRepository) ByUser(ctx context.Context, userID string)
 
 // ListOpen 返回所有未关闭的房间，新建的在前。房间数量很少（熟人局，同时开着的
 // 不过几个），逐个按 ID 加载成员即可，不值得为此另写一条聚合查询。
-func (repository *PostgresRepository) SaveRake(ctx context.Context, roomID string, settings RakeSettings) (Room, error) {
+func (repository *PostgresRepository) SaveRake(ctx context.Context, roomID string, settings RakeSettings) error {
 	result, err := repository.database.ExecContext(
 		ctx,
 		`UPDATE rooms SET rake_enabled = $2, rake_basis_points = $3, rake_cap = $4,
@@ -298,16 +298,16 @@ func (repository *PostgresRepository) SaveRake(ctx context.Context, roomID strin
 		settings.PostflopEnabled, settings.PostflopAmount,
 	)
 	if err != nil {
-		return Room{}, fmt.Errorf("save room rake: %w", err)
+		return fmt.Errorf("save room rake: %w", err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return Room{}, fmt.Errorf("save room rake: %w", err)
+		return fmt.Errorf("save room rake: %w", err)
 	}
 	if affected == 0 {
-		return Room{}, ErrNotFound
+		return ErrNotFound
 	}
-	return repository.ByID(ctx, roomID)
+	return nil
 }
 
 func (repository *PostgresRepository) ListOpen(ctx context.Context) ([]Room, error) {

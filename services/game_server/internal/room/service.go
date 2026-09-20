@@ -808,14 +808,18 @@ func (service *Service) UpdateRakeSettings(ctx context.Context, roomID string, s
 		return publicRoom(value), false, nil
 	}
 	// 只写抽水这几列：整体 Save 会重写成员行，管理员改规则时牌局多半正在进行。
-	updated, err := service.repository.SaveRake(ctx, roomID, settings)
+	// 写成功之后不再回库重读：重读一旦失败，规则其实已经改了，调用方却收到错误，
+	// 重试时规则没变，公告与审计就永远补不上了。
+	err = service.repository.SaveRake(ctx, roomID, settings)
 	if errors.Is(err, ErrNotFound) {
 		return Room{}, false, Error{Code: "room_not_found"}
 	}
 	if err != nil {
 		return Room{}, false, err
 	}
-	return publicRoom(updated), true, nil
+	value.Rake = settings
+	value.Revision++
+	return publicRoom(value), true, nil
 }
 
 // ListOpen 返回所有未关闭的房间，供管理员后台使用。

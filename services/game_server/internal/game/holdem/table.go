@@ -194,7 +194,8 @@ func (config RakeConfig) Amount(pot int64, flopSeen bool, bigBlind int64) int64 
 	if config.Cap > 0 && rake > config.Cap {
 		rake = config.Cap
 	}
-	if config.PostflopEnabled && flopSeen && pot >= 2*bigBlind {
+	// 写成 pot/2 >= bigBlind 而不是 pot >= 2*bigBlind：建房不限盲注，后者在离谱的大盲下会溢出
+	if config.PostflopEnabled && flopSeen && pot/2 >= bigBlind {
 		rake += config.PostflopAmount
 	}
 	if rake > pot {

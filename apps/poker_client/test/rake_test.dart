@@ -411,6 +411,41 @@ void main() {
       expect(find.text('合计 —'), findsOneWidget);
     });
 
+    testWidgets('窄窗口里天文数字的累计不会把一行撑破', (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(360, 640);
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AdminRakePage(
+            loadRooms: () async => const [_room],
+            loadSummary: () async => const RakeSummary(
+              rooms: [
+                RoomRakeTotal(
+                  roomId: 'room_1',
+                  roomCode: '123456',
+                  closed: false,
+                  hands: 99999,
+                  total: 9000000000000000,
+                ),
+              ],
+              total: 9000000000000000,
+              hands: 99999,
+            ),
+            saveRake: (_, settings) async => settings,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('rake-total-room_1')),
+        200,
+        // 页面里的输入框自己也带 Scrollable，要指明滚的是列表
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('服务端拒绝时显示中文原因', (tester) async {
       await tester.pumpWidget(
         MaterialApp(

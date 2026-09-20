@@ -28,11 +28,20 @@ func TestRakeAmount(t *testing.T) {
 		{"底池不足两个大盲不加抽", RakeConfig{Enabled: true, BasisPoints: 1000, PostflopEnabled: true, PostflopAmount: 20}, 39, true, 3},
 		{"底池恰好两个大盲起加抽", RakeConfig{Enabled: true, BasisPoints: 1000, PostflopEnabled: true, PostflopAmount: 20}, 40, true, 24},
 		{"空底池", RakeConfig{Enabled: true, BasisPoints: 500}, 0, true, 0},
-		{"接近钱包上限的底池不溢出", RakeConfig{Enabled: true, BasisPoints: 1000}, 9_000_000_000_000_007, false, 900_000_000_000_000},
+		{"接近钱包上限的底池不溢出", RakeConfig{Enabled: true, BasisPoints: 1000}, 90_000_000_000_000_007, false, 9_000_000_000_000_000},
 	} {
 		if got := testCase.config.Amount(testCase.pot, testCase.flopSeen, 20); got != testCase.want {
 			t.Errorf("%s: got %d want %d", testCase.name, got, testCase.want)
 		}
+	}
+}
+
+// 建房不限盲注：离谱的大盲下「两个大盲」不能算溢出，否则小底池会被加抽整个抽走。
+func TestPostflopGuardDoesNotOverflowWithHugeBlinds(t *testing.T) {
+	const bigBlind = int64(5_000_000_000_000_000_000)
+	config := RakeConfig{Enabled: true, PostflopEnabled: true, PostflopAmount: bigBlind}
+	if got := config.Amount(40, true, bigBlind); got != 0 {
+		t.Fatalf("a 40-chip pot is far below two big blinds, rake=%d", got)
 	}
 }
 

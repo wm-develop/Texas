@@ -138,6 +138,11 @@ func (table *Table) settleHand() error {
 	}
 	flopSeen := len(table.board) >= 3 || len(table.runoutBoards) > 0
 	rake := table.rake.Amount(rakeBase, flopSeen, table.config.BigBlind)
+	// 协议约定 rakeBase 只在本手有抽水时出现；不抽的手不带它，
+	// 免得客户端把「有 rakeBase」读成「这手抽过水」。
+	if rake == 0 {
+		rakeBase = 0
+	}
 	shares, err := splitRake(rake, potResult.Pots)
 	if err != nil {
 		return err

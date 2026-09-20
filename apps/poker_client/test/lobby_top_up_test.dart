@@ -4,7 +4,9 @@ import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/core/settings/app_settings.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_entry.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
+import 'package:poker_client/features/lobby/domain/friend_room.dart';
 import 'package:poker_client/features/lobby/presentation/lobby_page.dart';
+import 'package:poker_client/features/table/domain/rake_settings.dart';
 
 void main() {
   testWidgets('uses a compact two-column lobby on a landscape phone', (
@@ -110,6 +112,58 @@ void main() {
     expect(find.text('钱包 +2000'), findsOneWidget);
   });
 
+  testWidgets('带入窗口写明房间的抽水；横屏手机弹出键盘后输入框与按钮仍然够得着', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(900, 430);
+    addTearDown(() {
+      tester.view.resetDevicePixelRatio();
+      tester.view.resetPhysicalSize();
+      tester.view.resetViewInsets();
+    });
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: _LobbyHarness(
+          preview: RoomPreview(
+            code: '123456',
+            rules: RoomRules(
+              startingChips: 1000,
+              maxBuyIn: 2000,
+              smallBlind: 10,
+              bigBlind: 20,
+              actionSeconds: 30,
+            ),
+            maxPlayers: 10,
+            currentPlayers: 3,
+            passwordRequired: false,
+            rake: RakeSettings(enabled: true, basisPoints: 500, cap: 50),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, '123456');
+    await tester.tap(find.text('加入牌桌'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('本房间抽水：5%，最多 50'), findsOneWidget);
+
+    final field = find.descendant(
+      of: find.byType(AlertDialog),
+      matching: find.byType(TextField),
+    );
+    await tester.tap(field);
+    tester.view.viewInsets = const FakeViewPadding(bottom: 220);
+    await tester.pumpAndSettle();
+    final visibleBottom =
+        tester.view.physicalSize.height - tester.view.viewInsets.bottom;
+    expect(field.hitTestable(), findsOneWidget);
+    expect(find.text('带入并加入').hitTestable(), findsOneWidget);
+    expect(
+      tester.getBottomRight(field).dy,
+      lessThanOrEqualTo(visibleBottom),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('管理员不能创建或加入牌桌，并被告知原因', (tester) async {
     await tester.pumpWidget(
       const MaterialApp(home: _LobbyHarness(role: 'admin')),
@@ -132,10 +186,15 @@ void main() {
 }
 
 class _LobbyHarness extends StatefulWidget {
-  const _LobbyHarness({this.entries = const [], this.role = 'player'});
+  const _LobbyHarness({
+    this.entries = const [],
+    this.role = 'player',
+    this.preview,
+  });
 
   final List<BankrollEntry> entries;
   final String role;
+  final RoomPreview? preview;
 
   @override
   State<_LobbyHarness> createState() => _LobbyHarnessState();
@@ -186,7 +245,9 @@ class _LobbyHarnessState extends State<_LobbyHarness> {
         return next;
       },
       onLoadBankrollEntries: () async => widget.entries,
-      onPreviewRoom: (_) => Future.error(UnimplementedError()),
+      onPreviewRoom: (_) => widget.preview == null
+          ? Future.error(UnimplementedError())
+          : Future.value(widget.preview),
       onUpdateUsername: (username) async =>
           AppUser(userId: 'user_1', username: username, displayName: '好友一'),
       onUpdateDisplayName: (displayName) async => AppUser(

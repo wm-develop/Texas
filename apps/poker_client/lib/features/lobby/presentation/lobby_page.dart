@@ -662,8 +662,12 @@ class _ChipAmountDialogState extends State<_ChipAmountDialog> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(widget.description),
-          SizedBox(height: keyboardVisible ? 8 : 12),
+          // 手机横屏弹出键盘后窗口只剩一百多像素高：说明文字一长（带入窗口有三四行），
+          // 输入框就被挤到操作按钮后面去了。此时只留输入框，上限写在它的辅助文字里。
+          if (!keyboardVisible) ...[
+            Text(widget.description),
+            const SizedBox(height: 12),
+          ],
           PlatformNumberField(
             controller: _controller,
             autofocus: false,

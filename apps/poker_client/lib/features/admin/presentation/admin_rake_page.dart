@@ -260,14 +260,11 @@ class _AdminRakePageState extends State<AdminRakePage> {
                               '${summary?.rooms.length ?? '—'} 个房间 · ${summary?.hands ?? '—'} 手'
                               '${rate.isValid ? '' : ' · 请输入大于 0 的金额与筹码'}',
                             ),
-                            trailing: Text(
+                            trailing: _trailing(
                               summary == null
                                   ? ''
                                   : _money2(summary.total, rate),
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
-                              ),
+                              fontSize: 16,
                             ),
                           ),
                         ),
@@ -289,12 +286,9 @@ class _AdminRakePageState extends State<AdminRakePage> {
                               '${entry.closed && entry.roomCode.isNotEmpty ? ' · 已关闭' : ''}',
                             ),
                             subtitle: Text('${entry.hands} 手'),
-                            trailing: Text(
+                            trailing: _trailing(
                               '${entry.total}'
                               '${rate.isValid ? '  ${_money2(entry.total, rate)}' : ''}',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w700,
-                              ),
                             ),
                           ),
                       ],
@@ -305,6 +299,20 @@ class _AdminRakePageState extends State<AdminRakePage> {
       ),
     );
   }
+
+  /// 行尾的数字。窄窗口里数字一长就会把整行宽度占满（ListTile 直接报错），
+  /// 所以限宽并在放不下时缩小，而不是撑破。
+  Widget _trailing(String text, {double? fontSize}) => ConstrainedBox(
+    constraints: const BoxConstraints(maxWidth: 170),
+    child: FittedBox(
+      fit: BoxFit.scaleDown,
+      alignment: Alignment.centerRight,
+      child: Text(
+        text,
+        style: TextStyle(fontSize: fontSize, fontWeight: FontWeight.w700),
+      ),
+    ),
+  );
 
   Widget _sectionTitle(String text) => Padding(
     padding: const EdgeInsets.only(bottom: 4),
