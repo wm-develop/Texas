@@ -28,6 +28,7 @@ func TestRakeAmount(t *testing.T) {
 		{"底池不足两个大盲不加抽", RakeConfig{Enabled: true, BasisPoints: 1000, PostflopEnabled: true, PostflopAmount: 20}, 39, true, 3},
 		{"底池恰好两个大盲起加抽", RakeConfig{Enabled: true, BasisPoints: 1000, PostflopEnabled: true, PostflopAmount: 20}, 40, true, 24},
 		{"空底池", RakeConfig{Enabled: true, BasisPoints: 500}, 0, true, 0},
+		{"接近钱包上限的底池不溢出", RakeConfig{Enabled: true, BasisPoints: 1000}, 9_000_000_000_000_007, false, 900_000_000_000_000},
 	} {
 		if got := testCase.config.Amount(testCase.pot, testCase.flopSeen, 20); got != testCase.want {
 			t.Errorf("%s: got %d want %d", testCase.name, got, testCase.want)
@@ -253,6 +254,10 @@ func TestSplitRakeIsProportional(t *testing.T) {
 		{"零头补给小数部分最大的池", 10, []int64{100, 100, 100}, []int64{4, 3, 3}},
 		{"不抽", 0, []int64{300, 600}, []int64{0, 0}},
 		{"抽走全部", 900, []int64{300, 600}, []int64{300, 600}},
+		// 建房不限盲注与带入：两个 int64 直接相乘在这种底池里会溢出，算出负的份额，
+		// 而各池之和仍等于总抽水，守恒校验发现不了
+		{"天文数字的底池不溢出", 3_600_000_000, []int64{6_000_000_000, 30_000_000_000}, []int64{600_000_000, 3_000_000_000}},
+		{"万亿级底池立刻算完", 600_000_000_001, []int64{3_000_000_000_000, 3_000_000_000_000}, []int64{300_000_000_001, 300_000_000_000}},
 	} {
 		pots := make([]Pot, len(testCase.pots))
 		for index, amount := range testCase.pots {

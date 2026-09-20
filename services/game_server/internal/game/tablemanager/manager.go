@@ -978,12 +978,17 @@ func (manager *Manager) applyRakeForNextHandLocked(ctx context.Context, runtime 
 		recipient, err := manager.rakeRecipient(ctx)
 		// 收款人自己在这个房间里（升级前就坐着的管理员）时不抽：收抽水的人不能同时
 		// 在这张桌上打牌。创建与加入接口已经拦住管理员，这里兜住存量。
+		recipientInRoom := false
 		for _, member := range roomValue.Members {
-			if err == nil && member.UserID == recipient {
-				err = errors.New("the rake recipient is a member of this room")
+			if err == nil && recipient != "" && member.UserID == recipient {
+				recipientInRoom = true
 			}
 		}
-		if err == nil && recipient != "" {
+		if recipientInRoom {
+			if manager.logger != nil {
+				manager.logger.Info("rake skipped: the recipient is a member of this room", "roomId", roomValue.RoomID)
+			}
+		} else if err == nil && recipient != "" {
 			config = holdem.RakeConfig{
 				Enabled: true, BasisPoints: roomValue.Rake.BasisPoints, Cap: roomValue.Rake.Cap,
 				PostflopEnabled: roomValue.Rake.PostflopEnabled, PostflopAmount: roomValue.Rake.PostflopAmount,

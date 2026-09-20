@@ -88,6 +88,20 @@ func TestAdminSetsRakeAndPlayersAreToldInChat(t *testing.T) {
 			t.Fatalf("announcement %q is missing %q", announcement.Content, expected)
 		}
 	}
+	// 公告之后紧跟一份快照，带着新规则：牌桌信息栏不必等下一个牌局事件才更新
+	pushed := readUntilType(t, ctx, guestSocket, protocol.TypeTableSnapshot)
+	var pushedSnapshot struct {
+		Rake struct {
+			Enabled     bool `json:"enabled"`
+			BasisPoints int  `json:"basisPoints"`
+		} `json:"rake"`
+	}
+	if err := json.Unmarshal(pushed.Payload, &pushedSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	if !pushedSnapshot.Rake.Enabled || pushedSnapshot.Rake.BasisPoints != 250 {
+		t.Fatalf("snapshot after the rake change=%s", pushed.Payload)
+	}
 	// 规则没变时不重复公告
 	again := doJSONRequest(t, http.MethodPost, fixture.server.URL+ratePath, administrator.AccessToken, settings)
 	if again.StatusCode != http.StatusOK {

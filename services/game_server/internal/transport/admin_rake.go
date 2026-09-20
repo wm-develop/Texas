@@ -2,6 +2,7 @@ package transport
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -33,6 +34,7 @@ type adminRoomResponse struct {
 // 去任何设置页里找，也不占牌桌界面的空间。
 func registerAdminRakeRoutes(
 	mux *http.ServeMux,
+	logger *slog.Logger,
 	accounts *account.Service,
 	rooms *room.Service,
 	chips *bankroll.Service,
@@ -136,9 +138,13 @@ func registerAdminRakeRoutes(
 			if err := accounts.RecordManagedRakeChange(request.Context(), actor, updated.RoomID, updated.Code, map[string]any{
 				"enabled": settings.Enabled, "basisPoints": settings.BasisPoints, "cap": settings.Cap,
 				"postflopEnabled": settings.PostflopEnabled, "postflopAmount": settings.PostflopAmount,
-			}); err != nil {
-				writeAccountError(writer, err)
-				return
+			}); err != nil && logger != nil {
+				// 规则已经落库并公告，这时回一个错误只会让管理员以为没改成；重试时规则
+				// 没变也不会再记审计。所以照常回 200，把缺的这条审计写进错误日志。
+				logger.Error("rake change was saved but its audit record was not written",
+					"roomId", updated.RoomID, "actorUserId", actor.UserID, "error", err,
+					"enabled", settings.Enabled, "basisPoints", settings.BasisPoints, "cap", settings.Cap,
+					"postflopEnabled", settings.PostflopEnabled, "postflopAmount", settings.PostflopAmount)
 			}
 		}
 		writeJSON(writer, http.StatusOK, map[string]any{"roomId": updated.RoomID, "roomCode": updated.Code, "rake": updated.Rake})

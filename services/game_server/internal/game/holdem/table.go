@@ -187,7 +187,10 @@ func (config RakeConfig) Amount(pot int64, flopSeen bool, bigBlind int64) int64 
 	if !config.Enabled || pot <= 0 {
 		return 0
 	}
-	rake := pot * int64(config.BasisPoints) / 10000
+	// 拆成商与余数两段再乘：建房不限盲注与带入、钱包上限是 9e15，pot × 万分比
+	// 直接相乘在极端房间里会溢出。两段之和与直接相乘再整除完全相等。
+	basisPoints := int64(config.BasisPoints)
+	rake := pot/10000*basisPoints + pot%10000*basisPoints/10000
 	if config.Cap > 0 && rake > config.Cap {
 		rake = config.Cap
 	}

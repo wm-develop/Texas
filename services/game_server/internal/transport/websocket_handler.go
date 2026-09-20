@@ -348,8 +348,16 @@ func (client *webSocketClient) authenticate(ctx context.Context, message protoco
 
 // announceChat 把一条服务端生成的聊天消息广播给房间里的人。公告不按玩家之间的
 // 屏蔽关系过滤：它不是谁说的话，每个人都要收到。
+//
+// 公告之后再补发一次快照：目前只有改抽水规则会发公告，而牌桌信息栏显示的规则来自
+// 快照，不补发的话它要等到下一个牌局事件才更新，与刚看到的公告对不上。
 func (server *webSocketServer) announceChat(roomID string, message chat.Message) {
 	_ = server.hub.broadcast(roomID, protocol.TypeTableChatMessage, chatPayload(message))
+	if server.tables != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.hub.broadcastSnapshots(ctx, server.tables, roomID, nil)
+	}
 }
 
 // disconnectUsers 把被移出房间的玩家踢下线，并用专门的关闭码与原因说明

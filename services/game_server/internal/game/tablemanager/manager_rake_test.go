@@ -261,3 +261,62 @@ func TestRakeSettingsValidation(t *testing.T) {
 		t.Fatal("unknown room must be rejected")
 	}
 }
+
+// 抽水与「弃牌后中途离开」叠在一起：离开者的盲注留在底池里照样被抽，他在结算后
+// 拿回弃牌时的余额；牌谱里有他这一行，输赢之和加抽水为 0，筹码一分不多一分不少。
+func TestRakeWithAFoldedLeaverStillConserves(t *testing.T) {
+	ctx := context.Background()
+	fixture := newRakeFixture(t, adminRecipient)
+	if _, _, err := fixture.rooms.UpdateRakeSettings(ctx, fixture.room.RoomID,
+		room.RakeSettings{Enabled: true, BasisPoints: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	inHand := startHand(t, ctx, fixture.manager, fixture.users)
+	first := inHand.CurrentAction.UserID
+	_, afterCall, err := fixture.manager.SubmitAction(ctx, first, fixture.room.RoomID, holdem.ActionRequest{
+		ActionID: "call-first", HandID: inHand.HandID, TableRevision: inHand.TableRevision, Action: holdem.ActionCall,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaver := afterCall.CurrentAction.UserID
+	submitFold(t, ctx, fixture.manager, fixture.room.RoomID, afterCall, "fold-blind")
+	if _, err := fixture.manager.Leave(ctx, leaver); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := fixture.manager.Snapshot(ctx, first, fixture.room.RoomID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for steps := 0; snapshot.Phase != holdem.PhaseWaitingNextHand; steps++ {
+		if steps > 20 || snapshot.CurrentAction == nil {
+			t.Fatalf("hand did not finish: phase=%s", snapshot.Phase)
+		}
+		_, snapshot, err = fixture.manager.SubmitAction(ctx, snapshot.CurrentAction.UserID, fixture.room.RoomID, holdem.ActionRequest{
+			ActionID: "finish-" + string(rune('a'+steps)), HandID: snapshot.HandID,
+			TableRevision: snapshot.TableRevision, Action: holdem.ActionCheck,
+		})
+		if err != nil {
+			t.Fatalf("finishing the hand: %v", err)
+		}
+	}
+	// 小盲 10 + 两人各 20，底池 50，10% 抽 5
+	if snapshot.Settlement == nil || snapshot.Settlement.RakeBase != 50 || snapshot.Settlement.Rake != 5 {
+		t.Fatalf("settlement=%#v", snapshot.Settlement)
+	}
+	record, found := fixture.manager.history.Hand(snapshot.HandID)
+	if !found || record.Rake != 5 || len(record.Players) != 3 {
+		t.Fatalf("history=%#v found=%v", record, found)
+	}
+	gone, err := fixture.chips.Snapshot(ctx, leaver)
+	if err != nil || gone.TableChips != 0 || gone.WalletChips != 5_000-10 {
+		t.Fatalf("leaver=%#v err=%v", gone, err)
+	}
+	admin, err := fixture.chips.Snapshot(ctx, "admin")
+	if err != nil || admin.WalletChips != 5 {
+		t.Fatalf("admin=%#v err=%v", admin, err)
+	}
+	if players := fixture.playerChips(t); players != 15_000-5 {
+		t.Fatalf("players hold %d", players)
+	}
+}

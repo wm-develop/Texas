@@ -2,6 +2,7 @@ package holdem
 
 import (
 	"errors"
+	"math/bits"
 	"sort"
 	"strings"
 
@@ -293,17 +294,27 @@ func splitRake(rake int64, pots []Pot) ([]int64, error) {
 	if rake < 0 || rake > total {
 		return nil, errors.New("rake exceeds the pot")
 	}
-	remainders := make([]int64, len(pots))
+	remainders := make([]uint64, len(pots))
 	assigned := int64(0)
 	for index, pot := range pots {
-		shares[index] = rake * pot.Amount / total
-		remainders[index] = rake * pot.Amount % total
+		if pot.Amount < 0 {
+			return nil, errors.New("negative pot")
+		}
+		// rake × 池 用 128 位算：建房不限盲注与带入，两个 int64 直接相乘在大底池里
+		// 会溢出，溢出后各池之和仍等于总抽水，三处守恒校验都发现不了，
+		// 却会把筹码从一个池挪到另一个池。rake ≤ total，商不超过池本身，放得进 64 位。
+		high, low := bits.Mul64(uint64(rake), uint64(pot.Amount))
+		quotient, remainder := bits.Div64(high, low, uint64(total))
+		shares[index] = int64(quotient)
+		remainders[index] = remainder
 		assigned += shares[index]
 	}
+	// 每个池至多差不到 1，零头总数小于池数，这个循环最多跑 len(pots) 轮
+	given := make([]bool, len(pots))
 	for left := rake - assigned; left > 0; left-- {
 		best := -1
 		for index := range pots {
-			if shares[index] >= pots[index].Amount {
+			if given[index] || shares[index] >= pots[index].Amount {
 				continue
 			}
 			if best < 0 || remainders[index] > remainders[best] {
@@ -314,7 +325,7 @@ func splitRake(rake int64, pots []Pot) ([]int64, error) {
 			return nil, errors.New("rake exceeds the pot")
 		}
 		shares[best]++
-		remainders[best] = -1
+		given[best] = true
 	}
 	return shares, nil
 }

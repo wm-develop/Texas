@@ -293,7 +293,7 @@ func (repository *PostgresRepository) SaveRake(ctx context.Context, roomID strin
 		ctx,
 		`UPDATE rooms SET rake_enabled = $2, rake_basis_points = $3, rake_cap = $4,
 		 rake_postflop_enabled = $5, rake_postflop_amount = $6, revision = revision + 1
-		 WHERE room_id = $1 AND status = 'open'`,
+		 WHERE room_id = $1 AND status <> 'closed'`,
 		roomID, settings.Enabled, settings.BasisPoints, settings.Cap,
 		settings.PostflopEnabled, settings.PostflopAmount,
 	)

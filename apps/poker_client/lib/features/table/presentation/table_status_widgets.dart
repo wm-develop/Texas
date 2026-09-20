@@ -81,6 +81,9 @@ class TableRoomHeader extends StatelessWidget {
             Text(
               '抽水 ${rake.summary}',
               key: const ValueKey('room-header-rake'),
+              // 手机左栏只有一百多像素宽，信息面板下面还有连接状态与语音控件
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(color: Color(0xFFF6D986), fontSize: 11),
             ),
           Row(
