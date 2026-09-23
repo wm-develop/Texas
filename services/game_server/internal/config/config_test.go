@@ -105,6 +105,7 @@ func TestLoadReviewConfiguration(t *testing.T) {
 	t.Setenv("TRTC_SECRET_KEY", "")
 	for _, key := range []string{
 		"REVIEW_API_KEY", "REVIEW_BASE_URL", "REVIEW_MODEL", "REVIEW_TIMEOUT_SECONDS", "REVIEW_JSON_MODE", "REVIEW_MAX_TOKENS",
+		"REVIEW_THINKING", "REVIEW_REASONING_EFFORT", "REVIEW_SEND_USER_ID", "REVIEW_WORKERS",
 	} {
 		t.Setenv(key, "")
 	}
@@ -113,8 +114,10 @@ func TestLoadReviewConfiguration(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	if config.ReviewEnabled() || config.Review.BaseURL != "https://api.deepseek.com" ||
-		config.Review.Model != "deepseek-reasoner" || !config.Review.JSONMode ||
-		config.Review.Timeout != 5*time.Minute || config.Review.MaxTokens != 0 {
+		config.Review.Model != "deepseek-flash" || !config.Review.JSONMode ||
+		config.Review.Timeout != 5*time.Minute || config.Review.MaxTokens != 0 ||
+		config.Review.Thinking != "enabled" || config.Review.ReasoningEffort != "xhigh" ||
+		!config.Review.SendUserID || config.Review.Workers != 2 {
 		t.Fatalf("defaults=%+v", config.Review)
 	}
 
@@ -124,19 +127,58 @@ func TestLoadReviewConfiguration(t *testing.T) {
 	t.Setenv("REVIEW_TIMEOUT_SECONDS", "600")
 	t.Setenv("REVIEW_JSON_MODE", "false")
 	t.Setenv("REVIEW_MAX_TOKENS", "8000")
+	t.Setenv("REVIEW_THINKING", "none")
+	t.Setenv("REVIEW_REASONING_EFFORT", "none")
+	t.Setenv("REVIEW_WORKERS", "4")
 	if config, err = Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+	// 非 DeepSeek 的地址默认不发 user_id；思考相关的两个字段可以关掉
 	if !config.ReviewEnabled() || config.Review.BaseURL != "https://llm.example.com/v1" || config.Review.Model != "qwen-plus" ||
-		config.Review.JSONMode || config.Review.Timeout != 10*time.Minute || config.Review.MaxTokens != 8000 {
+		config.Review.JSONMode || config.Review.Timeout != 10*time.Minute || config.Review.MaxTokens != 8000 ||
+		config.Review.Thinking != "" || config.Review.ReasoningEffort != "" || config.Review.SendUserID ||
+		config.Review.Workers != 4 {
 		t.Fatalf("configured=%+v", config.Review)
+	}
+	t.Setenv("REVIEW_SEND_USER_ID", "true")
+	if config, err = Load(); err != nil || !config.Review.SendUserID {
+		t.Fatalf("explicit user id=%+v err=%v", config.Review, err)
+	}
+	// 非 DeepSeek 的服务升级后默认不发 DeepSeek 的扩展字段：严格的兼容服务会把它们
+	// 当成参数错误；要用就显式打开
+	t.Setenv("REVIEW_THINKING", "")
+	t.Setenv("REVIEW_REASONING_EFFORT", "")
+	t.Setenv("REVIEW_SEND_USER_ID", "")
+	if config, err = Load(); err != nil || config.Review.Thinking != "" || config.Review.ReasoningEffort != "" ||
+		config.Review.SendUserID {
+		t.Fatalf("other services=%+v err=%v", config.Review, err)
+	}
+	t.Setenv("REVIEW_THINKING", "enabled")
+	if config, err = Load(); err != nil || config.Review.Thinking != "enabled" {
+		t.Fatalf("explicit thinking=%+v err=%v", config.Review, err)
+	}
+	// DeepSeek 上显式关掉思考时，思考强度也不再默认发送
+	t.Setenv("REVIEW_BASE_URL", "https://api.deepseek.com")
+	t.Setenv("REVIEW_THINKING", "disabled")
+	if config, err = Load(); err != nil || config.Review.Thinking != "disabled" || config.Review.ReasoningEffort != "" {
+		t.Fatalf("thinking disabled=%+v err=%v", config.Review, err)
+	}
+	// 只认 deepseek.com 本身与它的子域名
+	t.Setenv("REVIEW_THINKING", "")
+	t.Setenv("REVIEW_BASE_URL", "https://notdeepseek.com")
+	if config, err = Load(); err != nil || config.Review.SendUserID || config.Review.Thinking != "" {
+		t.Fatalf("look-alike host=%+v err=%v", config.Review, err)
 	}
 
 	for key, value := range map[string]string{
-		"REVIEW_TIMEOUT_SECONDS": "5",
-		"REVIEW_JSON_MODE":       "maybe",
-		"REVIEW_MAX_TOKENS":      "-1",
-		"REVIEW_BASE_URL":        "api.deepseek.com",
+		"REVIEW_TIMEOUT_SECONDS":  "5",
+		"REVIEW_JSON_MODE":        "maybe",
+		"REVIEW_MAX_TOKENS":       "-1",
+		"REVIEW_BASE_URL":         "api.deepseek.com",
+		"REVIEW_THINKING":         "on",
+		"REVIEW_REASONING_EFFORT": "extreme",
+		"REVIEW_WORKERS":          "0",
+		"REVIEW_SEND_USER_ID":     "maybe",
 	} {
 		t.Run(key, func(t *testing.T) {
 			t.Setenv(key, value)

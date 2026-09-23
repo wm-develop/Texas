@@ -439,6 +439,18 @@ func (service *Service) RecordReviewAccessChange(ctx context.Context, actor User
 	})
 }
 
+// RecordReviewLimitsChange 记下管理员给某人单独设的复盘额度；nil 表示跟随全局。
+func (service *Service) RecordReviewLimitsChange(
+	ctx context.Context, actor User, targetUserID string, dailyLimit, maxInFlight *int,
+) error {
+	if err := requireAdmin(actor); err != nil {
+		return err
+	}
+	return service.recordAudit(ctx, actor.UserID, "admin.review_limits_changed", map[string]any{
+		"targetUserId": targetUserID, "dailyLimit": dailyLimit, "maxInFlight": maxInFlight,
+	})
+}
+
 func (service *Service) RecordManagedRoomRemoval(
 	ctx context.Context,
 	actor User,

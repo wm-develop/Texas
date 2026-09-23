@@ -45,6 +45,14 @@ type ReviewConfig struct {
 	Timeout   time.Duration
 	JSONMode  bool
 	MaxTokens int
+	// Thinking 是思考模式开关（enabled / disabled），空串表示不发这个字段。
+	Thinking string
+	// ReasoningEffort 是思考强度，原样发给模型服务；空串表示不发。
+	ReasoningEffort string
+	// SendUserID 为真时给模型服务附带玩家的匿名编号（DeepSeek 的 user_id）。
+	SendUserID bool
+	// Workers 是同时分析的条数。
+	Workers int
 }
 
 // ReviewEnabled 报告是否配置了 AI 复盘的大模型。
@@ -119,12 +127,16 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	// AI 复盘：默认接 DeepSeek 的推理模型；换任何兼容 OpenAI 接口的服务只改这三项。
+	// AI 复盘：默认接 DeepSeek 的 deepseek-flash，打开思考模式；换任何兼容 OpenAI
+	// 接口的服务改地址、型号与密钥，再按需关掉 DeepSeek 专有的几个字段。
 	config.Review = ReviewConfig{
 		BaseURL:  valueOrDefault("REVIEW_BASE_URL", "https://api.deepseek.com"),
-		Model:    valueOrDefault("REVIEW_MODEL", "deepseek-reasoner"),
+		Model:    valueOrDefault("REVIEW_MODEL", "deepseek-flash"),
 		APIKey:   strings.TrimSpace(os.Getenv("REVIEW_API_KEY")),
 		JSONMode: true,
+	}
+	if config.Review.Workers, err = intFromEnv("REVIEW_WORKERS", 2, 1, 16); err != nil {
+		return Config{}, err
 	}
 	if config.Review.Timeout, err = durationFromSeconds(
 		"REVIEW_TIMEOUT_SECONDS", 5*time.Minute, 10*time.Second, 15*time.Minute,
@@ -147,9 +159,45 @@ func Load() (Config, error) {
 	}
 	// 地址写错（例如漏了 https://）要在启动时就拒绝，而不是每次复盘都以「大模型
 	// 服务暂时不可用」失败
-	if parsed, parseErr := url.Parse(config.Review.BaseURL); parseErr != nil ||
-		(parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
+	parsedReviewURL, parseErr := url.Parse(config.Review.BaseURL)
+	if parseErr != nil || (parsedReviewURL.Scheme != "https" && parsedReviewURL.Scheme != "http") ||
+		parsedReviewURL.Host == "" {
 		return Config{}, errors.New("REVIEW_BASE_URL must be an http or https URL")
+	}
+	// thinking、reasoning_effort、user_id 是 DeepSeek 的扩展字段：严格的兼容服务会把
+	// 不认识的字段当成参数错误，每条复盘都失败。所以只在 DeepSeek 上默认发送，其他
+	// 服务要显式打开
+	host := strings.ToLower(parsedReviewURL.Hostname())
+	onDeepSeek := host == "deepseek.com" || strings.HasSuffix(host, ".deepseek.com")
+	defaultThinking, defaultEffort := "none", "none"
+	if onDeepSeek {
+		defaultThinking, defaultEffort = "enabled", "xhigh"
+	}
+	switch thinking := strings.ToLower(valueOrDefault("REVIEW_THINKING", defaultThinking)); thinking {
+	case "enabled", "disabled":
+		config.Review.Thinking = thinking
+	case "none":
+	default:
+		return Config{}, errors.New("REVIEW_THINKING must be enabled, disabled or none")
+	}
+	// 显式关掉思考时，思考强度也不再默认发送
+	if config.Review.Thinking == "disabled" {
+		defaultEffort = "none"
+	}
+	switch effort := strings.ToLower(valueOrDefault("REVIEW_REASONING_EFFORT", defaultEffort)); effort {
+	case "minimal", "low", "medium", "high", "xhigh", "max", "ultra":
+		config.Review.ReasoningEffort = effort
+	case "none":
+	default:
+		return Config{}, errors.New("REVIEW_REASONING_EFFORT must be one of minimal, low, medium, high, xhigh, max, ultra or none")
+	}
+	config.Review.SendUserID = onDeepSeek
+	if raw := strings.TrimSpace(os.Getenv("REVIEW_SEND_USER_ID")); raw != "" {
+		enabled, boolErr := strconv.ParseBool(raw)
+		if boolErr != nil {
+			return Config{}, errors.New("REVIEW_SEND_USER_ID must be true or false")
+		}
+		config.Review.SendUserID = enabled
 	}
 	config.ShutdownDrainTimeout = drainTimeout
 	if origins := strings.TrimSpace(os.Getenv("ALLOWED_ORIGINS")); origins != "" {
@@ -357,6 +405,19 @@ func loadEnvironmentFile(path string) error {
 		}
 	}
 	return scanner.Err()
+}
+
+// intFromEnv 读一个整数环境变量；没设时用默认值，超出范围时报错。
+func intFromEnv(key string, fallback, minimum, maximum int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < minimum || value > maximum {
+		return 0, fmt.Errorf("%s must be an integer between %d and %d", key, minimum, maximum)
+	}
+	return value, nil
 }
 
 func valueOrDefault(key string, fallback string) string {

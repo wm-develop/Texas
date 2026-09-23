@@ -11,9 +11,6 @@ import (
 
 // Result 是模型给出的复盘，按固定结构返回，客户端原生渲染。
 type Result struct {
-	// Situation 是这一手的基本局面（本人位置、人数、盲注、各家码量），由服务端
-	// 按交给模型的同一份数据填写，不经过模型：玩家据此能核对 AI 看到的桌面。
-	Situation *Situation `json:"situation,omitempty"`
 	// Summary 是对本人这一手整体打法的总评。
 	Summary string `json:"summary"`
 	// Decisions 逐条点评本人的每个决策，Step 对应回放时间轴的步号。
@@ -24,16 +21,6 @@ type Result struct {
 	OpponentNotes []string `json:"opponentNotes"`
 	// Hindsight 是结合摊牌亮出的底牌做的结果回顾，与「决策当时」的评价分开。
 	Hindsight string `json:"hindsight"`
-}
-
-// Situation 是一手牌的基本局面。
-type Situation struct {
-	HeroPosition string      `json:"heroPosition"`
-	HoleCards    []string    `json:"holeCards"`
-	Players      int         `json:"players"`
-	SmallBlind   int64       `json:"smallBlind"`
-	BigBlind     int64       `json:"bigBlind"`
-	Seats        []SeatFacts `json:"seats"`
 }
 
 // Decision 是对本人一个决策的点评。

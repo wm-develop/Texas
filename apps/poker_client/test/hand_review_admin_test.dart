@@ -96,7 +96,7 @@ void main() {
       expect(reviewErrorLabel(review.failure), '大模型服务暂时不可用，请稍后重试');
     });
 
-    test('管理员设置三个字段一起提交', () async {
+    test('管理员设置的四个字段一起提交', () async {
       final api = client((request) async {
         expect(request.method, 'POST');
         expect(request.url.path, '/v1/admin/review/settings');
@@ -104,6 +104,7 @@ void main() {
         expect(body, {
           'enabled': false,
           'dailyLimitPerUser': 0,
+          'maxInFlightPerUser': 0,
           'monthlyTokenBudget': 500000,
         });
         return _json(body);
@@ -185,6 +186,8 @@ void main() {
       required Future<ReviewOverview> Function() loadOverview,
       Future<ReviewSettings> Function(ReviewSettings settings)? saveSettings,
       Future<void> Function(String userId, bool granted)? setAccess,
+      Future<void> Function(String userId, int? daily, int? inFlight)?
+      setLimits,
     }) async {
       tester.view.devicePixelRatio = 1;
       tester.view.physicalSize = const Size(800, 1200);
@@ -200,6 +203,7 @@ void main() {
             ],
             saveSettings: saveSettings ?? (settings) async => settings,
             setAccess: setAccess ?? (_, _) async {},
+            setLimits: setLimits ?? (_, _, _) async {},
           ),
         ),
       );
@@ -211,7 +215,7 @@ void main() {
         tester,
         loadOverview: () async => _overview(access: {'usr_1'}),
       );
-      expect(find.text('大模型：deepseek-reasoner'), findsOneWidget);
+      expect(find.text('大模型：deepseek-reasoner · 同时分析 1 条'), findsOneWidget);
       expect(
         tester.widget<Text>(find.byKey(const ValueKey('review-usage'))).data,
         '最近 24 小时 3 次 · 最近 30 天 12 次 · 12.3 万 token',
@@ -324,6 +328,86 @@ void main() {
         find.byKey(const ValueKey('review-access-unavailable')),
         findsOneWidget,
       );
+    });
+
+    testWidgets('单独额度：留空跟随全局，保存后按新值显示', (tester) async {
+      final saved = <String>[];
+      var limits = <String, Object?>{};
+      await pump(
+        tester,
+        loadOverview: () async => ReviewOverview.fromJson({
+          'settings': {
+            'enabled': true,
+            'dailyLimitPerUser': 5,
+            'maxInFlightPerUser': 2,
+            'monthlyTokenBudget': 0,
+          },
+          'access': [
+            {'userId': 'usr_1', ...limits},
+          ],
+          'usage': <String, dynamic>{},
+          'modelConfigured': true,
+          'model': 'deepseek-flash',
+        }),
+        setLimits: (userId, daily, inFlight) async {
+          saved.add('$userId:$daily:$inFlight');
+          limits = {'dailyLimit': daily, 'maxInFlight': inFlight};
+        },
+      );
+      expect(
+        tester
+            .widget<Text>(find.byKey(const ValueKey('review-limits-usr_1')))
+            .data,
+        '每 24 小时 5（跟随全局） · 同时 2（跟随全局）',
+      );
+      await tester.tap(find.byKey(const ValueKey('review-edit-limits-usr_1')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const ValueKey('limits-daily')), '10');
+      await tester.tap(find.byKey(const ValueKey('limits-save')));
+      await tester.pumpAndSettle();
+      expect(saved, ['usr_1:10:null']);
+      expect(
+        tester
+            .widget<Text>(find.byKey(const ValueKey('review-limits-usr_1')))
+            .data,
+        '每 24 小时 10 · 同时 2（跟随全局）',
+      );
+      // 清空就回到跟随全局
+      await tester.tap(find.byKey(const ValueKey('review-edit-limits-usr_1')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const ValueKey('limits-daily')), '');
+      await tester.tap(find.byKey(const ValueKey('limits-save')));
+      await tester.pumpAndSettle();
+      expect(saved.last, 'usr_1:null:null');
+      // 鸿蒙数字面板不能提交空值：用「都跟随全局」
+      await tester.tap(find.byKey(const ValueKey('review-edit-limits-usr_1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('limits-follow-global')));
+      await tester.pumpAndSettle();
+      expect(saved, hasLength(3));
+      expect(saved.last, 'usr_1:null:null');
+    });
+
+    testWidgets('余额不足时管理员页醒目提示', (tester) async {
+      await pump(
+        tester,
+        loadOverview: () async => ReviewOverview.fromJson({
+          'settings': {'enabled': true},
+          'access': <dynamic>[],
+          'usage': <String, dynamic>{},
+          'modelConfigured': true,
+          'model': 'deepseek-flash',
+          'workers': 2,
+          'modelHealth': {
+            'failure': 'model_insufficient_balance',
+            'at': '2026-09-23T08:00:00Z',
+            'coolingDown': true,
+          },
+        }),
+      );
+      expect(find.textContaining('同时分析 2 条'), findsOneWidget);
+      expect(find.textContaining('大模型账户余额不足'), findsOneWidget);
+      expect(find.textContaining('5 分钟内不接收新的复盘'), findsOneWidget);
     });
 
     testWidgets('读取失败时不列开关，不把「没取到」显示成「没开通」', (tester) async {

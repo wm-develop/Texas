@@ -447,31 +447,37 @@
 | `spectator_emote_disabled` | 房主已关闭观战者的赞赏与嘲讽 |
 | `spectator_voice_disabled` | 房主已关闭观战者的麦克风。TRTC 的推流在客户端，服务端只能拒绝状态广播，客户端须配合关麦 |
 
-### 7.8 AI 复盘（HTTP，0.9.0）
+### 7.8 AI 复盘（HTTP，0.9.0 起，1.0.0 增加额度与重试）
 
 | 接口 | 说明 |
 |---|---|
 | `GET /v1/review/access` | 当前账号能不能用复盘：`{"available": bool}`。服务端没配置模型、总开关关着或不在名单里都是 `false`；客户端据此决定显不显示入口，老服务端返回 404 时客户端也当作 `false` |
 | `POST /v1/hands/{handId}/review` | 为本人这一手发起复盘，请求体为 `{}`。已有结果或正在分析时直接返回那一条（不重复计次），失败过的重新排队。返回复盘对象 |
-| `GET /v1/hands/{handId}/review` | 查看本人这一手的复盘；没发起过返回 404 `review_not_found` |
-| `GET /v1/admin/review` | 管理员：设置、开通名单、用量（`requests24h`、`requests30d`、`tokens30d`）、`modelConfigured` 与模型名 |
-| `POST /v1/admin/review/settings` | 管理员：`enabled`、`dailyLimitPerUser`、`monthlyTokenBudget` 三个字段必须都传，漏传返回 `invalid_review_settings`；0 表示不限 |
+| `GET /v1/hands/{handId}/review` | 查看本人这一手的复盘。当前版本的提示词还没分析过、但旧版分析过时返回旧版结果并带 `outdated: true`，客户端提供「用新版重新分析」（即 `POST`）；都没有时返回 404 `review_not_found` |
+| `GET /v1/admin/review` | 管理员：设置、开通名单（每人带 `dailyLimit`、`maxInFlight`，`null` 表示跟随全局）、用量（`requests24h`、`requests30d`、`tokens30d`）、`modelConfigured`、模型名、`workers`（同时分析几条），以及 `modelHealth`（最近一次余额不足或密钥失效：`failure`、`at`、`coolingDown` 是否还在 5 分钟冷却期内，恢复正常后不再出现） |
+| `POST /v1/admin/review/settings` | 管理员：`enabled`、`dailyLimitPerUser`、`monthlyTokenBudget` 必须都传，漏传返回 `invalid_review_settings`；`maxInFlightPerUser` 不传时保持原值（兼容 0.9.0 的管理页）；0 表示不限 |
+| `POST /v1/admin/review/limits` | 管理员：`{"userId", "dailyLimit", "maxInFlight"}` 给已开通的人单独设额度，`null` 表示跟随全局、0 表示不限；不在名单里返回 403 `review_not_allowed`，记审计 `admin.review_limits_changed` |
 | `POST /v1/admin/review/access` | 管理员：`{"userId", "granted"}` 开通或收回，记审计 `admin.review_access_changed`（设置变更记 `admin.review_settings_changed`）。漏传字段返回 400 `invalid_request`，账号不存在返回 404 `user_not_found` |
 
-复盘对象：`reviewId`、`handId`、`status`（`queued` / `running` / `done` / `failed`）、`model`、`failure`（失败原因码）、`result`，以及 token 用量与时间。`result` 为 `situation`（服务端填写：`heroPosition`、`holeCards`、`players`、`smallBlind`、`bigBlind`、`seats[]` 各家位置与起始码量）、`summary`、`decisions[]`、`keyLessons[]`、`opponentNotes[]`、`hindsight`。`decisions[]` 每一项：`step` 对应回放时间轴的步号；`verdict` 为「好」「合理」「有争议」「失误」之一；`reasoning`；`bestAction`（最佳行动，每一项都有）；模型估算的 `equityVsRangePercent`（对对手这条行动线范围的胜率）、`evTakenBB` 与 `evBestBB`（本次与最佳行动从这一步起的期望收益，大盲计、弃牌为 0，两者成对出现且最佳不低于本次，拿不准时省略）；以及服务端填写的 `facts`（这一步的底池、需跟注、所需胜率、本人最多能赢到的底池、SPR、有效筹码、最好的五张与用到的底牌、对随机手牌胜率等精确数字）。分析在后台进行，客户端每 3 秒查一次直到结束；查询遇到 4xx 或 `review_unavailable` 就停下并说明原因，其他 5xx 和解析不了的响应（例如部署重启时反代返回的 502 页面）下一轮接着查。库里是 `running`、但后台协程并没有在处理的那一条（上次结果没存进数据库，或是进程重启前留下的），`GET` 返回 `failed` / `internal_error`，再 `POST` 会重新排队，不占每人次数。
+复盘对象：`reviewId`、`handId`、`promptVersion`、`status`（`queued` / `running` / `done` / `failed`）、`model`、`failure`（失败原因码）、`result`、`attempts`（大模型服务繁忙时已经自动重试的次数）、`nextAttemptAt`（下一次重试的时间）、`outdated`（旧版结果）、`previous`（当前版本排队、分析中或失败时，旧版最近一次完成的结果，客户端接着显示），以及 token 用量与时间。`result` 为 `summary`、`decisions[]`、`keyLessons[]`、`opponentNotes[]`、`hindsight`。`decisions[]` 每一项：`step` 对应回放时间轴的步号；`verdict` 为「好」「合理」「有争议」「失误」之一；`reasoning`；`bestAction`（最佳行动，每一项都有）；模型估算的 `equityVsRangePercent`（对对手这条行动线范围的胜率）、`evTakenBB` 与 `evBestBB`（本次与最佳行动从这一步起的期望收益，大盲计、弃牌为 0，两者成对出现且最佳不低于本次，拿不准时省略）；以及服务端填写的 `facts`（这一步的底池、需跟注、所需胜率、本人最多能赢到的底池、SPR、有效筹码、最好的五张与用到的底牌、对随机手牌胜率等精确数字）。分析在后台进行，客户端每 3 秒查一次直到结束；查询遇到 4xx 或 `review_unavailable` 就停下并说明原因，其他 5xx 和解析不了的响应（例如部署重启时反代返回的 502 页面）下一轮接着查。库里是 `running`、但后台协程并没有在处理的那一条（上次结果没存进数据库，或是进程重启前留下的），`GET` 返回 `failed` / `internal_error`，再 `POST` 会重新排队，不占每人次数。
 
 | 错误码 | 含义 |
 |---|---|
 | `review_unavailable` | 服务端没配置模型或总开关关着，状态码 503 |
 | `review_not_allowed` | 当前账号不在开通名单里，状态码 403 |
-| `review_daily_limit` | 本人最近 24 小时的次数用完，状态码 429。只数排队、进行中和已完成的，失败的不占次数 |
+| `review_daily_limit` | 本人最近 24 小时的次数用完（单独额度优先，没设时用全局），状态码 429。只数排队、进行中和已完成的，失败的不占次数 |
+| `review_in_flight_limit` | 本人排队中与分析中的条数已达上限（单独额度优先，没设时用全局），状态码 429 |
+| `model_insufficient_balance` | 大模型账户余额不足（DeepSeek 返回 402）后的 5 分钟内拒绝新的复盘，状态码 503 |
+| `model_unauthorized` | 大模型密钥无效（返回 401）后的 5 分钟内拒绝新的复盘，状态码 503 |
 | `review_budget_exhausted` | 全服最近 30 天的 token 总额用完，状态码 429 |
 | `review_not_found` | 这一手还没有发起过复盘，状态码 404 |
 | `review_no_decisions` | 本人在这一手里没有行动过（例如大盲时所有人弃牌），没有可点评的，状态码 422 |
 | `replay_unavailable` | 发起复盘时这手牌无法还原成回放，状态码 422 |
 | `invalid_review_settings` | 管理员设置漏传字段、额度为负数或超过上限（每人次数 100 万、token 总额 1 万亿），状态码 400 |
 
-`failure` 的取值：`model_error`（模型服务出错或超时）、`invalid_output`（两次输出都不合格式，包括漏写或写了认不出的结论）、`output_truncated`（输出到了长度上限，见 `REVIEW_MAX_TOKENS`）、`replay_unavailable`、`hand_not_found`、`history_unavailable`、`invalid_input`、`internal_error`（结果存不进数据库）；排队期间管理员关了总开关、收回权限或全服额度用完时，不再调用模型，分别记为 `review_unavailable`、`review_not_allowed`、`review_budget_exhausted`。只返回原因码，模型服务的报错原文只写服务端日志 `hand review failed`。
+大模型服务的错误按 DeepSeek 的错误码分类处理：429（限流）、500、502、503、504、网络错误，以及 200 但 `finish_reason` 为 `insufficient_system_resource` / `aborted`、或排队后只回空白就断开，都是临时的，隔 30 秒、2 分钟自动重试，期间状态仍是 `queued`、`attempts` 递增，三次都不行记为 `model_busy`；超时时一共最多调用两次（与上面的重试共用次数），仍不行记为 `model_timeout`；402、401 是全局的，这一条与所有排队中的都记为 `model_insufficient_balance` / `model_unauthorized`，5 分钟内拒绝新的请求（没人处理的「进行中」也不重新排队），下一次成功调用后恢复；400、403、422 等是这一次请求的问题，记为 `model_error`。
+
+`failure` 的取值：`model_busy`（服务繁忙、自动重试三次仍失败）、`model_timeout`（超时，重试后仍超时）、`model_insufficient_balance`、`model_unauthorized`、`model_error`（请求格式或参数错误等）、`invalid_output`（两次输出都不合格式，包括漏写或写了认不出的结论）、`output_truncated`（输出到了长度上限，见 `REVIEW_MAX_TOKENS`）、`replay_unavailable`、`hand_not_found`、`history_unavailable`、`invalid_input`、`internal_error`（结果存不进数据库）；排队期间管理员关了总开关、收回权限或全服额度用完时，不再调用模型，分别记为 `review_unavailable`、`review_not_allowed`、`review_budget_exhausted`。只返回原因码，模型服务的报错原文只写服务端日志 `hand review failed`。
 
 ### 7.7 已废弃的文档错误码
 

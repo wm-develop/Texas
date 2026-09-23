@@ -567,6 +567,24 @@ class GameApiClient {
     );
   }
 
+  /// 给已开通的人单独设额度；传 null 表示跟随全局设置，0 表示不限。
+  Future<void> adminSetReviewLimits({
+    required String accessToken,
+    required String userId,
+    required int? dailyLimit,
+    required int? maxInFlight,
+  }) async {
+    await _request(
+      'v1/admin/review/limits',
+      token: accessToken,
+      body: {
+        'userId': userId,
+        'dailyLimit': dailyLimit,
+        'maxInFlight': maxInFlight,
+      },
+    );
+  }
+
   Future<Map<String, dynamic>> _request(
     String path, {
     required Map<String, Object?> body,

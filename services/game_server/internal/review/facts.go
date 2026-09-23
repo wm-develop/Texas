@@ -280,13 +280,9 @@ func decisionAt(
 	return decision
 }
 
-// attachFacts 把服务端算好的局面与每一步的精确数字挂到模型的点评上，客户端
-// 与模型的判断一起显示；这些数字不经过模型。
+// attachFacts 把服务端算好的每一步精确数字挂到模型的点评上，客户端与模型的
+// 判断一起显示；这些数字不经过模型。
 func attachFacts(result *Result, facts Facts) {
-	result.Situation = &Situation{
-		HeroPosition: facts.Hero.Position, HoleCards: facts.Hero.HoleCards, Players: facts.Game.Players,
-		SmallBlind: facts.Game.SmallBlind, BigBlind: facts.Game.BigBlind, Seats: facts.Seats,
-	}
 	byStep := make(map[int]DecisionFacts, len(facts.Decisions))
 	for _, decision := range facts.Decisions {
 		byStep[decision.Step] = decision

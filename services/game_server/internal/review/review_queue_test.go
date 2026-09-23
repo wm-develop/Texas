@@ -2,7 +2,9 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -453,7 +455,7 @@ func TestRunningReviewsAreNotOrphanedBeforeRecovery(t *testing.T) {
 	if _, err := service.Request(ctx, "usr_zhang", "hand_1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, found, _ := store.ClaimNext(ctx); !found {
+	if _, found, _ := store.ClaimNext(ctx, time.Now()); !found {
 		t.Fatal("claim")
 	}
 	service.recovering = true
@@ -490,7 +492,7 @@ func TestFailIfRunningDoesNotOverwriteAFinishedReview(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0).UTC()
 	_ = store.Create(ctx, Review{ReviewID: "rev_1", HandID: "h", UserID: "u", PromptVersion: PromptVersion,
 		Status: StatusQueued, CreatedAt: now, RequestedAt: now})
-	if _, found, _ := store.ClaimNext(ctx); !found {
+	if _, found, _ := store.ClaimNext(ctx, time.Now()); !found {
 		t.Fatal("claim")
 	}
 	_ = store.Finish(ctx, "rev_1", StatusDone, "m", &Result{Summary: "好"}, "", 1, 1, now)
@@ -542,8 +544,8 @@ func TestBestActionAndEstimates(t *testing.T) {
 	}
 }
 
-// 服务端把局面与每一步的精确数字挂到结果上，不经过模型。
-func TestResultCarriesSituationAndExactNumbers(t *testing.T) {
+// 服务端把每一步的精确数字挂到结果上，不经过模型。
+func TestResultCarriesExactNumbers(t *testing.T) {
 	ctx := context.Background()
 	service, store, _, _ := newTestService(t, &fakeModel{responses: []string{goodOutput}})
 	_ = store.SetAccess(ctx, "usr_zhang", true, "admin", time.Now())
@@ -552,13 +554,346 @@ func TestResultCarriesSituationAndExactNumbers(t *testing.T) {
 	}
 	service.ProcessNext(ctx)
 	done, _ := service.Get(ctx, "usr_zhang", "hand_1")
-	situation := done.Result.Situation
-	if situation == nil || situation.HeroPosition != "SB" || situation.Players != 3 || situation.BigBlind != 20 ||
-		len(situation.Seats) != 3 || strings.Join(situation.HoleCards, "") != "AsKd" {
-		t.Fatalf("situation=%+v", situation)
-	}
 	first := done.Result.Decisions[0]
 	if first.Facts == nil || first.Facts.PotBefore != 90 || first.Facts.ToCall != 50 || first.BestAction != "3bet 到 180" {
 		t.Fatalf("first=%+v", first)
+	}
+}
+
+// DeepSeek 的错误码归类：限流与服务繁忙自动重试，余额不足与密钥失效是全局故障，
+// 请求格式与参数错误直接失败。
+func TestModelFailuresAreClassified(t *testing.T) {
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{ModelError{Status: 429}, failureModelBusy},
+		{ModelError{Status: 500}, failureModelBusy},
+		{ModelError{Status: 503}, failureModelBusy},
+		{ModelError{Status: 402}, failureModelBalance},
+		{ModelError{Status: 401}, failureModelUnauthorized},
+		{ModelError{Status: 400}, failureModelError},
+		{ModelError{Status: 422}, failureModelError},
+		{transportError{errors.New("connection reset")}, failureModelBusy},
+		{fmt.Errorf("wrapped: %w", context.DeadlineExceeded), failureModelTimeout},
+		{ModelError{Status: 403}, failureModelError},
+		{errors.New("model returned no content"), failureModelError},
+	}
+	for _, value := range cases {
+		if got := classifyModelFailure(value.err); got != value.want {
+			t.Fatalf("%v: got %s want %s", value.err, got, value.want)
+		}
+	}
+}
+
+// 限流、服务繁忙：隔一段时间自动重试，玩家那边仍是分析中；三次都不行才失败。
+func TestBusyModelIsRetriedLater(t *testing.T) {
+	ctx := context.Background()
+	busy := ModelError{Status: 429, Detail: "rate limited"}
+	model := &fakeModel{errors: []error{busy, busy, busy}}
+	service, store, _, now := newTestService(t, model)
+	_ = store.SetAccess(ctx, "usr_zhang", true, "admin", time.Now())
+	if _, err := service.Request(ctx, "usr_zhang", "hand_1"); err != nil {
+		t.Fatal(err)
+	}
+	service.ProcessNext(ctx)
+	waiting, _ := service.Get(ctx, "usr_zhang", "hand_1")
+	if waiting.Status != StatusQueued || waiting.Attempts != 1 || waiting.NextAttemptAt == nil ||
+		!waiting.NextAttemptAt.Equal(now.Add(30*time.Second)) {
+		t.Fatalf("after the first failure=%+v", waiting)
+	}
+	if service.ProcessNext(ctx) {
+		t.Fatal("the retry must wait until it is due")
+	}
+	*now = now.Add(30 * time.Second)
+	service.ProcessNext(ctx)
+	if second, _ := service.Get(ctx, "usr_zhang", "hand_1"); second.Attempts != 2 ||
+		second.NextAttemptAt == nil || !second.NextAttemptAt.Equal(now.Add(2*time.Minute)) {
+		t.Fatalf("after the second failure=%+v", second)
+	}
+	*now = now.Add(2 * time.Minute)
+	service.ProcessNext(ctx)
+	failed, _ := service.Get(ctx, "usr_zhang", "hand_1")
+	if failed.Status != StatusFailed || failed.Error != failureModelBusy || len(model.calls) != 3 {
+		t.Fatalf("after three failures=%+v calls=%d", failed, len(model.calls))
+	}
+}
+
+// 余额不足：这一条与排着的都记失败，冷却期内拒绝新的请求，管理员页显示原因；
+// 冷却期过后放行，成功一次就清掉。
+func TestInsufficientBalanceStopsTheQueue(t *testing.T) {
+	ctx := context.Background()
+	model := &fakeModel{errors: []error{ModelError{Status: 402, Detail: "Insufficient Balance"}},
+		responses: []string{"", goodOutput}}
+	service, store, hands, now := newTestService(t, model)
+	_ = store.SetAccess(ctx, "usr_zhang", true, "admin", time.Now())
+	for index, handID := range []string{"hand_2", "hand_3"} {
+		if err := hands.Append(sampleHand(handID, now.Add(time.Duration(index+1)*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, handID := range []string{"hand_1", "hand_2"} {
+		if _, err := service.Request(ctx, "usr_zhang", handID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service.ProcessNext(ctx)
+	for _, handID := range []string{"hand_1", "hand_2"} {
+		if value, _ := service.Get(ctx, "usr_zhang", handID); value.Status != StatusFailed ||
+			value.Error != failureModelBalance {
+			t.Fatalf("%s=%+v", handID, value)
+		}
+	}
+	if len(model.calls) != 1 {
+		t.Fatalf("the queued review must not call the model: calls=%d", len(model.calls))
+	}
+	if _, err := service.Request(ctx, "usr_zhang", "hand_3"); codeOf(err) != failureModelBalance {
+		t.Fatalf("during the cooldown: %v", err)
+	}
+	overview, _ := service.Overview(ctx)
+	if overview.ModelHealth == nil || overview.ModelHealth.Failure != failureModelBalance {
+		t.Fatalf("overview=%+v", overview)
+	}
+	*now = now.Add(modelOutageCooldown)
+	if _, err := service.Request(ctx, "usr_zhang", "hand_3"); err != nil {
+		t.Fatalf("after the cooldown: %v", err)
+	}
+	service.ProcessNext(ctx)
+	if overview, _ = service.Overview(ctx); overview.ModelHealth != nil {
+		t.Fatalf("a success must clear the outage: %+v", overview.ModelHealth)
+	}
+}
+
+// 每人同时进行的上限与单独额度：单独设的优先，没设的跟随全局。
+func TestInFlightAndPerUserLimits(t *testing.T) {
+	ctx := context.Background()
+	service, store, hands, now := newTestService(t, &fakeModel{})
+	_ = store.SetAccess(ctx, "usr_zhang", true, "admin", time.Now())
+	for index, handID := range []string{"hand_2", "hand_3"} {
+		if err := hands.Append(sampleHand(handID, now.Add(time.Duration(index+1)*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = service.UpdateSettings(ctx, Settings{Enabled: true, MaxInFlightPerUser: 1}, "admin")
+	if _, err := service.Request(ctx, "usr_zhang", "hand_1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Request(ctx, "usr_zhang", "hand_2"); codeOf(err) != "review_in_flight_limit" {
+		t.Fatalf("global in-flight limit: %v", err)
+	}
+	two, one := 2, 1
+	if err := service.SetLimits(ctx, "usr_zhang", UserLimits{MaxInFlight: &two}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Request(ctx, "usr_zhang", "hand_2"); err != nil {
+		t.Fatalf("own limit wins: %v", err)
+	}
+	// 单独的每日额度：已经发起两条，上限 1
+	if err := service.SetLimits(ctx, "usr_zhang", UserLimits{DailyLimit: &one}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Request(ctx, "usr_zhang", "hand_3"); codeOf(err) != "review_in_flight_limit" {
+		// 同时进行的上限跟随全局（1），先撞上它
+		t.Fatalf("in flight follows the global value again: %v", err)
+	}
+	zero := 0
+	if err := service.SetLimits(ctx, "usr_zhang", UserLimits{DailyLimit: &one, MaxInFlight: &zero}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Request(ctx, "usr_zhang", "hand_3"); codeOf(err) != "review_daily_limit" {
+		t.Fatalf("own daily limit: %v", err)
+	}
+	if err := service.SetLimits(ctx, "usr_li", UserLimits{}); codeOf(err) != "review_not_allowed" {
+		t.Fatalf("limits for someone not on the list: %v", err)
+	}
+	negative := -1
+	if err := service.SetLimits(ctx, "usr_zhang", UserLimits{DailyLimit: &negative}); codeOf(err) != "invalid_review_settings" {
+		t.Fatalf("negative limit: %v", err)
+	}
+}
+
+// 新版提示词还没分析过时，先给旧版的结果并标明过时；重新发起按新版分析。
+func TestOutdatedResultIsShownUntilReanalysed(t *testing.T) {
+	ctx := context.Background()
+	service, store, _, now := newTestService(t, &fakeModel{responses: []string{goodOutput}})
+	_ = store.SetAccess(ctx, "usr_zhang", true, "admin", time.Now())
+	older := Review{ReviewID: "rev_old", HandID: "hand_1", UserID: "usr_zhang", PromptVersion: "v0",
+		Status: StatusQueued, CreatedAt: *now, RequestedAt: *now}
+	_ = store.Create(ctx, older)
+	_, _, _ = store.ClaimNext(ctx, *now)
+	_ = store.Finish(ctx, "rev_old", StatusDone, "m", &Result{Summary: "旧版"}, "", 1, 1, *now)
+	shown, err := service.Get(ctx, "usr_zhang", "hand_1")
+	if err != nil || !shown.Outdated || shown.Result.Summary != "旧版" {
+		t.Fatalf("shown=%+v err=%v", shown, err)
+	}
+	if queued, err := service.Request(ctx, "usr_zhang", "hand_1"); err != nil || queued.Status != StatusQueued ||
+		queued.PromptVersion != PromptVersion {
+		t.Fatalf("reanalyse=%+v err=%v", queued, err)
+	}
+	service.ProcessNext(ctx)
+	if fresh, _ := service.Get(ctx, "usr_zhang", "hand_1"); fresh.Outdated || fresh.Status != StatusDone {
+		t.Fatalf("fresh=%+v", fresh)
+	}
+}
+
+// 几个工作协程同时分析：正在处理的几条都不会被当成没人处理；停机时做完再退出。
+func TestSeveralWorkersKeepTrackOfWhatTheyProcess(t *testing.T) {
+	ctx := context.Background()
+	release := make(chan struct{})
+	started := make(chan string, 2)
+	model := &blockingModel{release: release, started: started}
+	service, store, hands, now := newTestService(t, model)
+	service.SetWorkers(2)
+	_ = store.SetAccess(ctx, "usr_zhang", true, "admin", time.Now())
+	if err := hands.Append(sampleHand("hand_2", now.Add(time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	for _, handID := range []string{"hand_1", "hand_2"} {
+		if _, err := service.Request(ctx, "usr_zhang", handID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		service.Run(runCtx)
+	}()
+	<-started
+	<-started
+	for _, handID := range []string{"hand_1", "hand_2"} {
+		if value, _ := service.Get(ctx, "usr_zhang", handID); value.Status != StatusRunning {
+			t.Fatalf("%s=%+v", handID, value)
+		}
+	}
+	cancel()
+	close(release)
+	<-done
+	for _, handID := range []string{"hand_1", "hand_2"} {
+		if value, _ := service.Get(ctx, "usr_zhang", handID); value.Status != StatusDone {
+			t.Fatalf("%s must finish during shutdown: %+v", handID, value)
+		}
+	}
+}
+
+type blockingModel struct {
+	release chan struct{}
+	started chan string
+}
+
+func (model *blockingModel) Name() string { return "blocking" }
+
+func (model *blockingModel) Complete(context.Context, string, string) (Completion, error) {
+	model.started <- "started"
+	<-model.release
+	return Completion{Content: goodOutput, Model: "blocking"}, nil
+}
+
+// 发给 DeepSeek 的请求：打开思考模式、带思考强度与匿名 user_id；匿名编号稳定、
+// 反推不出账号。关掉之后三个字段都不发（给不认识它们的兼容服务用）。
+func TestRequestBodyCarriesThinkingEffortAndAnonymousUser(t *testing.T) {
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(request.Body).Decode(&body)
+		bodies = append(bodies, body)
+		_, _ = writer.Write([]byte("\n\n" + `{"model":"deepseek-flash","choices":[{"message":{"content":"{}"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+	client, err := NewOpenAIClient(OpenAIConfig{
+		BaseURL: server.URL, Model: "deepseek-flash", APIKey: "k", Thinking: "enabled", ReasoningEffort: "xhigh",
+		SendUserID: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Complete(WithEndUser(context.Background(), "usr_zhang"), "s", "u"); err != nil {
+		t.Fatal(err)
+	}
+	body := bodies[0]
+	thinking, _ := body["thinking"].(map[string]any)
+	userID, _ := body["user_id"].(string)
+	if body["model"] != "deepseek-flash" || thinking["type"] != "enabled" || body["reasoning_effort"] != "xhigh" ||
+		!strings.HasPrefix(userID, "u_") || strings.Contains(userID, "zhang") || userID != anonymousUserID("usr_zhang") {
+		t.Fatalf("body=%v", body)
+	}
+	plain, _ := NewOpenAIClient(OpenAIConfig{BaseURL: server.URL, Model: "m", APIKey: "k"})
+	if _, err := plain.Complete(WithEndUser(context.Background(), "usr_zhang"), "s", "u"); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"thinking", "reasoning_effort", "user_id"} {
+		if _, sent := bodies[1][key]; sent {
+			t.Fatalf("%s must not be sent when disabled: %v", key, bodies[1])
+		}
+	}
+	if anonymousUserID("usr_zhang") == anonymousUserID("usr_li") {
+		t.Fatal("different players need different ids")
+	}
+}
+
+// DeepSeek 以 200 返回、但因资源不足中途停止，或排队太久只回一段空白就断开：
+// 都按「繁忙」稍后重试，不当成模型输出不合格。
+func TestAbortedResponsesAreTreatedAsBusy(t *testing.T) {
+	for name, body := range map[string]string{
+		"insufficient_system_resource": `{"choices":[{"message":{"content":"{\"summary\""},"finish_reason":"insufficient_system_resource"}]}`,
+		"aborted":                      `{"choices":[{"message":{"content":""},"finish_reason":"aborted"}]}`,
+		"keep-alive only":              "\n\n\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				_, _ = writer.Write([]byte(body))
+			}))
+			defer server.Close()
+			client, _ := NewOpenAIClient(OpenAIConfig{BaseURL: server.URL, Model: "m", APIKey: "k"})
+			_, err := client.Complete(context.Background(), "s", "u")
+			if got := classifyModelFailure(err); got != failureModelBusy {
+				t.Fatalf("err=%v classified=%s", err, got)
+			}
+		})
+	}
+}
+
+// 超时只重试一次：思考模式下一次生成就可能超过时限，多试几次只会让玩家白等。
+func TestTimeoutIsRetriedOnlyOnce(t *testing.T) {
+	ctx := context.Background()
+	model := &fakeModel{errors: []error{
+		transportError{fmt.Errorf("call model service: %w", context.DeadlineExceeded)},
+		transportError{fmt.Errorf("call model service: %w", context.DeadlineExceeded)},
+	}}
+	service, store, _, now := newTestService(t, model)
+	_ = store.SetAccess(ctx, "usr_zhang", true, "admin", time.Now())
+	if _, err := service.Request(ctx, "usr_zhang", "hand_1"); err != nil {
+		t.Fatal(err)
+	}
+	service.ProcessNext(ctx)
+	if waiting, _ := service.Get(ctx, "usr_zhang", "hand_1"); waiting.Status != StatusQueued || waiting.Attempts != 1 {
+		t.Fatalf("after the first timeout=%+v", waiting)
+	}
+	*now = now.Add(30 * time.Second)
+	service.ProcessNext(ctx)
+	failed, _ := service.Get(ctx, "usr_zhang", "hand_1")
+	if failed.Status != StatusFailed || failed.Error != failureModelTimeout || len(model.calls) != 2 {
+		t.Fatalf("after the second timeout=%+v calls=%d", failed, len(model.calls))
+	}
+}
+
+// 用新版重新分析时，排队、分析中、失败的这段时间里旧版结果照样带着。
+func TestPreviousResultStaysVisibleWhileReanalysing(t *testing.T) {
+	ctx := context.Background()
+	model := &fakeModel{errors: []error{ModelError{Status: 422, Detail: "bad"}}}
+	service, store, _, now := newTestService(t, model)
+	_ = store.SetAccess(ctx, "usr_zhang", true, "admin", time.Now())
+	_ = store.Create(ctx, Review{ReviewID: "rev_old", HandID: "hand_1", UserID: "usr_zhang", PromptVersion: "v0",
+		Status: StatusQueued, CreatedAt: *now, RequestedAt: *now})
+	_, _, _ = store.ClaimNext(ctx, *now)
+	_ = store.Finish(ctx, "rev_old", StatusDone, "m", &Result{Summary: "旧版"}, "", 1, 1, *now)
+	queued, err := service.Request(ctx, "usr_zhang", "hand_1")
+	if err != nil || queued.Status != StatusQueued || queued.Previous == nil || queued.Previous.Summary != "旧版" {
+		t.Fatalf("queued=%+v err=%v", queued, err)
+	}
+	service.ProcessNext(ctx)
+	failed, _ := service.Get(ctx, "usr_zhang", "hand_1")
+	if failed.Status != StatusFailed || failed.Previous == nil || failed.Outdated {
+		t.Fatalf("failed=%+v", failed)
 	}
 }

@@ -277,9 +277,28 @@ func TestLiveReview(t *testing.T) {
 	}
 	env := readReviewEnv(t, envPath)
 	timeout := 300 * time.Second
+	// 进程环境变量优先于 env 文件，试新型号或新参数时不用改 env 文件
+	setting := func(key, fallback string) string {
+		if value := os.Getenv(key); value != "" {
+			return value
+		}
+		if value := env[key]; value != "" {
+			return value
+		}
+		return fallback
+	}
+	thinking := setting("REVIEW_THINKING", "enabled")
+	effort := setting("REVIEW_REASONING_EFFORT", "xhigh")
+	if thinking == "none" {
+		thinking = ""
+	}
+	if effort == "none" {
+		effort = ""
+	}
 	client, err := review.NewOpenAIClient(review.OpenAIConfig{
-		BaseURL: env["REVIEW_BASE_URL"], Model: env["REVIEW_MODEL"], APIKey: env["REVIEW_API_KEY"],
-		Timeout: timeout, JSONMode: env["REVIEW_JSON_MODE"] != "false",
+		BaseURL: setting("REVIEW_BASE_URL", "https://api.deepseek.com"), Model: setting("REVIEW_MODEL", "deepseek-flash"),
+		APIKey: env["REVIEW_API_KEY"], Timeout: timeout, JSONMode: env["REVIEW_JSON_MODE"] != "false",
+		Thinking: thinking, ReasoningEffort: effort, SendUserID: true,
 	})
 	if err != nil {
 		t.Fatal(err)

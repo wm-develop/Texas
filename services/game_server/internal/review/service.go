@@ -25,8 +25,33 @@ const tendencyHandLimit = 300
 // 管理员设置的上限，只为不让数据库列溢出。
 const (
 	maximumDailyLimit  = 1_000_000
+	maximumInFlight    = 1_000
 	maximumTokenBudget = 1_000_000_000_000
 )
+
+// 模型服务繁忙（429、5xx、网络、资源不足中断）时自动重试：一共最多调用三次，两次
+// 重试分别隔 30 秒和 2 分钟。间隔是给对方恢复的时间，太密只会继续撞限流。超时时
+// 一共最多调用两次（与繁忙的重试共用次数）：思考模式下一次生成就可能超过时限，
+// 多试几次只会让玩家白等。
+const (
+	maxModelAttempts   = 3
+	maxTimeoutAttempts = 2
+)
+
+var modelRetryDelays = []time.Duration{30 * time.Second, 2 * time.Minute}
+
+// 余额不足或密钥失效之后这么久之内不再接收新的复盘：调用也只会失败，还会把
+// 玩家的等待白白拉长。时间到了再放行，下一次调用会告诉我们问题解决了没有。
+const modelOutageCooldown = 5 * time.Minute
+
+// ModelHealth 是最近一次「全局性」的模型故障（余额不足、密钥失效），给管理员看。
+// CoolingDown 为真表示还在冷却期、拒绝新请求；过了冷却期但还没有成功调用过时为假，
+// 下一次调用会确认问题解决了没有。
+type ModelHealth struct {
+	Failure     string    `json:"failure"`
+	At          time.Time `json:"at"`
+	CoolingDown bool      `json:"coolingDown"`
+}
 
 // 一次模型调用的兜底上限。真正的超时是 REVIEW_TIMEOUT_SECONDS（最多 15 分钟，
 // 由 HTTP 客户端执行）；这里只防某个模型实现自己不设超时把队列卡死，必须比
@@ -41,14 +66,20 @@ type Service struct {
 	logger *slog.Logger
 	wake   chan struct{}
 
-	// processing 是后台协程此刻正在分析的那一条。库里是「进行中」、却不是它的，
+	// workers 是同时分析的条数。每条要调用模型几十秒到一两分钟，一个协程串行
+	// 处理时，几个人同时发起就要排很久。
+	workers int
+
+	// processing 是后台协程此刻正在分析的那些条。库里是「进行中」、却不在这里的，
 	// 说明上次结果没存进去（数据库当时不可用）或是进程重启前留下的：不能让玩家
 	// 对着它一直等，按失败处理、允许重新发起。单实例部署，进程内记一下就够。
 	mu         sync.Mutex
-	processing string
+	processing map[string]bool
 	// recovering 在进程启动、RequeueRunning 做完之前为真：这时库里的「进行中」
 	// 都是上次留下的、马上会被放回队列，不能当成没人处理。
 	recovering bool
+	// health 是最近一次余额不足或密钥失效；冷却期内拒绝新的复盘。
+	health *ModelHealth
 }
 
 // 后台协程每次读写仓储的时限：连接半开时不能让协程永远挂住、整个队列停摆。
@@ -68,8 +99,16 @@ func NewService(store Store, hands history.Store, model Model, now func() time.T
 	}
 	return &Service{
 		store: store, hands: hands, model: model, now: now, logger: logger, wake: make(chan struct{}, 1),
-		recovering: model != nil,
+		workers: 1, processing: make(map[string]bool), recovering: model != nil,
 	}, nil
+}
+
+// SetWorkers 设置同时分析的条数，在 Run 之前调用。
+func (service *Service) SetWorkers(workers int) {
+	if workers < 1 {
+		workers = 1
+	}
+	service.workers = workers
 }
 
 // ModelConfigured 报告是否配置了大模型。
@@ -92,13 +131,20 @@ func (service *Service) Available(ctx context.Context, userID string) (bool, err
 	if err != nil || !settings.Enabled {
 		return false, err
 	}
-	return service.store.HasAccess(ctx, userID)
+	if _, err := service.store.AccessFor(ctx, userID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // Request 为本人某一手发起复盘。已经有结果或正在分析的直接返回那一条，不重复花钱；
 // 失败过的重新排队。
 func (service *Service) Request(ctx context.Context, userID, handID string) (Review, error) {
-	if err := service.checkAccess(ctx, userID); err != nil {
+	access, err := service.checkAccess(ctx, userID)
+	if err != nil {
 		return Review{}, err
 	}
 	hand, err := service.hands.HandForPlayer(userID, handID)
@@ -128,19 +174,23 @@ func (service *Service) Request(ctx context.Context, userID, handID string) (Rev
 			if err != nil {
 				return Review{}, err
 			}
-			return publicReview(current), nil
+			return service.withPrevious(ctx, publicReview(current)), nil
 		}
 	}
 	switch {
 	case orphaned:
 		// 已经记成失败，下面按失败重新排队；这一条本来就占着次数，不再查额度
 	case err == nil && existing.Status != StatusFailed:
-		return publicReview(existing), nil
+		return service.withPrevious(ctx, publicReview(existing)), nil
 	case err != nil && !errors.Is(err, ErrNotFound):
 		return Review{}, err
 	}
+	// 冷却期内连没人处理的那条也不重新排队：调用也只会失败
+	if outage := service.modelOutage(); outage != "" {
+		return Review{}, Error{Code: outage}
+	}
 	if !orphaned {
-		if err := service.checkQuota(ctx, userID); err != nil {
+		if err := service.checkQuota(ctx, access); err != nil {
 			return Review{}, err
 		}
 	}
@@ -163,15 +213,39 @@ func (service *Service) Request(ctx context.Context, userID, handID string) (Rev
 	if err != nil {
 		return Review{}, err
 	}
-	return publicReview(current), nil
+	return service.withPrevious(ctx, publicReview(current)), nil
 }
 
-// Get 返回本人某一手的复盘；没有发起过时返回 ErrNotFound。
+// withPrevious 在当前版本还没有结果（排队、分析中、失败）时附上旧版提示词最近
+// 一次完成的结果：玩家点了「用新版重新分析」之后，原来的复盘不能看不到。
+func (service *Service) withPrevious(ctx context.Context, value Review) Review {
+	if value.Status == StatusDone {
+		return value
+	}
+	older, err := service.store.FindLatestDone(ctx, value.UserID, value.HandID)
+	if err != nil || older.PromptVersion == value.PromptVersion || older.Result == nil {
+		return value
+	}
+	value.Previous = older.Result
+	return value
+}
+
+// Get 返回本人某一手的复盘。当前版本的提示词还没分析过、但旧版分析过时，
+// 先给旧版的结果（Outdated 为真），玩家可以再用新版重新分析；都没有时返回
+// ErrNotFound。
 func (service *Service) Get(ctx context.Context, userID, handID string) (Review, error) {
-	if err := service.checkAccess(ctx, userID); err != nil {
+	if _, err := service.checkAccess(ctx, userID); err != nil {
 		return Review{}, err
 	}
 	value, err := service.store.Find(ctx, userID, handID, PromptVersion)
+	if errors.Is(err, ErrNotFound) {
+		older, olderErr := service.store.FindLatestDone(ctx, userID, handID)
+		if olderErr != nil {
+			return Review{}, olderErr
+		}
+		older.Outdated = true
+		return publicReview(older), nil
+	}
 	if err != nil {
 		return Review{}, err
 	}
@@ -179,7 +253,7 @@ func (service *Service) Get(ctx context.Context, userID, handID string) (Review,
 		// 只改给客户端看的状态，让它停止轮询、显示可以重试；重新发起时才动库
 		value.Status, value.Error = StatusFailed, "internal_error"
 	}
-	return publicReview(value), nil
+	return service.withPrevious(ctx, publicReview(value)), nil
 }
 
 // orphaned 报告一条「进行中」的复盘是不是没有人在处理了。
@@ -189,7 +263,7 @@ func (service *Service) orphaned(value Review) bool {
 	}
 	service.mu.Lock()
 	defer service.mu.Unlock()
-	return !service.recovering && service.processing != value.ReviewID
+	return !service.recovering && !service.processing[value.ReviewID]
 }
 
 // failOrphan 在锁里核对并把没人处理的那一条记成失败：领取也在这把锁里，核对与
@@ -197,7 +271,7 @@ func (service *Service) orphaned(value Review) bool {
 func (service *Service) failOrphan(ctx context.Context, value Review) (bool, error) {
 	service.mu.Lock()
 	defer service.mu.Unlock()
-	if service.recovering || service.processing == value.ReviewID {
+	if service.recovering || service.processing[value.ReviewID] {
 		return false, nil
 	}
 	err := service.store.FailIfRunning(ctx, value.ReviewID, "internal_error", service.now())
@@ -207,39 +281,56 @@ func (service *Service) failOrphan(ctx context.Context, value Review) (bool, err
 	return err == nil, err
 }
 
-func (service *Service) checkAccess(ctx context.Context, userID string) error {
+func (service *Service) checkAccess(ctx context.Context, userID string) (Access, error) {
 	if service.model == nil {
-		return Error{Code: "review_unavailable"}
+		return Access{}, Error{Code: "review_unavailable"}
 	}
 	settings, err := service.store.Settings(ctx)
 	if err != nil {
-		return err
+		return Access{}, err
 	}
 	if !settings.Enabled {
-		return Error{Code: "review_unavailable"}
+		return Access{}, Error{Code: "review_unavailable"}
 	}
-	granted, err := service.store.HasAccess(ctx, userID)
+	access, err := service.store.AccessFor(ctx, userID)
+	if errors.Is(err, ErrNotFound) {
+		return Access{}, Error{Code: "review_not_allowed"}
+	}
 	if err != nil {
-		return err
+		return Access{}, err
 	}
-	if !granted {
-		return Error{Code: "review_not_allowed"}
-	}
-	return nil
+	return access, nil
 }
 
-func (service *Service) checkQuota(ctx context.Context, userID string) error {
+// effectiveLimit 取某人的单独额度，没单独设时用全局的。
+func effectiveLimit(own *int, global int) int {
+	if own != nil {
+		return *own
+	}
+	return global
+}
+
+func (service *Service) checkQuota(ctx context.Context, access Access) error {
 	settings, err := service.store.Settings(ctx)
 	if err != nil {
 		return err
 	}
 	now := service.now()
-	if settings.DailyLimitPerUser > 0 {
-		count, err := service.store.CountRequests(ctx, userID, now.Add(-24*time.Hour))
+	if limit := effectiveLimit(access.MaxInFlight, settings.MaxInFlightPerUser); limit > 0 {
+		count, err := service.store.CountInFlight(ctx, access.UserID)
 		if err != nil {
 			return err
 		}
-		if count >= settings.DailyLimitPerUser {
+		if count >= limit {
+			return Error{Code: "review_in_flight_limit"}
+		}
+	}
+	if limit := effectiveLimit(access.DailyLimit, settings.DailyLimitPerUser); limit > 0 {
+		count, err := service.store.CountRequests(ctx, access.UserID, now.Add(-24*time.Hour))
+		if err != nil {
+			return err
+		}
+		if count >= limit {
 			return Error{Code: "review_daily_limit"}
 		}
 	}
@@ -262,6 +353,9 @@ type Overview struct {
 	Usage           Usage    `json:"usage"`
 	ModelConfigured bool     `json:"modelConfigured"`
 	Model           string   `json:"model"`
+	Workers         int      `json:"workers"`
+	// ModelHealth 是最近一次余额不足或密钥失效，恢复正常后清空。
+	ModelHealth *ModelHealth `json:"modelHealth,omitempty"`
 }
 
 func (service *Service) Overview(ctx context.Context) (Overview, error) {
@@ -277,20 +371,55 @@ func (service *Service) Overview(ctx context.Context) (Overview, error) {
 	if err != nil {
 		return Overview{}, err
 	}
+	service.mu.Lock()
+	var health *ModelHealth
+	if service.health != nil {
+		copied := *service.health
+		copied.CoolingDown = service.now().Sub(copied.At) < modelOutageCooldown
+		health = &copied
+	}
+	service.mu.Unlock()
 	return Overview{
 		Settings: settings, Access: access, Usage: usage,
-		ModelConfigured: service.model != nil, Model: service.ModelName(),
+		ModelConfigured: service.model != nil, Model: service.ModelName(), Workers: service.workers,
+		ModelHealth: health,
 	}, nil
+}
+
+// modelOutage 在余额不足或密钥失效的冷却期内返回对应的原因码。
+func (service *Service) modelOutage() string {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if service.health == nil || service.now().Sub(service.health.At) >= modelOutageCooldown {
+		return ""
+	}
+	return service.health.Failure
 }
 
 // UpdateSettings 保存全局设置；额度不能为负。
 func (service *Service) UpdateSettings(ctx context.Context, settings Settings, actorUserID string) error {
 	// 上限防的是数据库列溢出，远超任何实际用量
 	if settings.DailyLimitPerUser < 0 || settings.DailyLimitPerUser > maximumDailyLimit ||
+		settings.MaxInFlightPerUser < 0 || settings.MaxInFlightPerUser > maximumInFlight ||
 		settings.MonthlyTokenBudget < 0 || settings.MonthlyTokenBudget > maximumTokenBudget {
 		return Error{Code: "invalid_review_settings"}
 	}
 	return service.store.SaveSettings(ctx, settings, actorUserID, service.now())
+}
+
+// SetLimits 给已开通的人单独设额度；为空的一项跟随全局设置。
+func (service *Service) SetLimits(ctx context.Context, userID string, limits UserLimits) error {
+	if value := limits.DailyLimit; value != nil && (*value < 0 || *value > maximumDailyLimit) {
+		return Error{Code: "invalid_review_settings"}
+	}
+	if value := limits.MaxInFlight; value != nil && (*value < 0 || *value > maximumInFlight) {
+		return Error{Code: "invalid_review_settings"}
+	}
+	err := service.store.SetLimits(ctx, userID, limits)
+	if errors.Is(err, ErrNotFound) {
+		return Error{Code: "review_not_allowed"}
+	}
+	return err
 }
 
 // SetAccess 开通或收回某人的复盘权限。调用方负责确认该用户存在。
@@ -305,8 +434,8 @@ func (service *Service) signal() {
 	}
 }
 
-// Run 是后台工作协程：一次处理一条，直到 ctx 结束。服务重启时把上次没处理完的
-// 放回队列。
+// Run 启动后台工作协程，直到 ctx 结束且手上的都做完才返回。服务重启时先把上次
+// 没处理完的放回队列。
 func (service *Service) Run(ctx context.Context) {
 	if service.model == nil {
 		return
@@ -320,7 +449,20 @@ func (service *Service) Run(ctx context.Context) {
 	service.mu.Lock()
 	service.recovering = false
 	service.mu.Unlock()
-	ticker := time.NewTicker(10 * time.Second)
+	var group sync.WaitGroup
+	for range service.workers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			service.work(ctx)
+		}()
+	}
+	group.Wait()
+}
+
+func (service *Service) work(ctx context.Context) {
+	// 自动重试的那条到点时没有人发信号，靠定时器去看
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
 		for service.ProcessNext(ctx) {
@@ -346,10 +488,10 @@ func (service *Service) ProcessNext(ctx context.Context) bool {
 	// 的这条误判成没人处理
 	service.mu.Lock()
 	claimCtx, cancel := context.WithTimeout(ctx, storeCallTimeout)
-	value, found, err := service.store.ClaimNext(claimCtx)
+	value, found, err := service.store.ClaimNext(claimCtx, service.now())
 	cancel()
 	if err == nil && found {
-		service.processing = value.ReviewID
+		service.processing[value.ReviewID] = true
 	}
 	service.mu.Unlock()
 	if err != nil {
@@ -361,7 +503,7 @@ func (service *Service) ProcessNext(ctx context.Context) bool {
 	}
 	defer func() {
 		service.mu.Lock()
-		service.processing = ""
+		delete(service.processing, value.ReviewID)
 		service.mu.Unlock()
 	}()
 	// 已经领取的这一条做完再停：模型调用与存库都不随停机取消，否则已经在生成的
@@ -377,21 +519,66 @@ func (service *Service) ProcessNext(ctx context.Context) bool {
 		return true
 	}
 	result, completion, failure := service.analyse(work, value)
-	status := StatusDone
-	failure = clip(failure, 1000)
-	if failure != "" {
-		status, result = StatusFailed, nil
-		if service.logger != nil {
-			service.logger.Error("hand review failed", "reviewId", value.ReviewID, "handId", value.HandID, "failure", failure)
-		}
-	}
 	model := completion.Model
 	if model == "" {
 		model = service.model.Name()
 	}
 	completion.Model = model
+	status := StatusDone
+	failure = clip(failure, 1000)
+	if failure != "" {
+		status, result = StatusFailed, nil
+		code := FailureCode(failure)
+		switch {
+		case (code == failureModelBusy && value.Attempts+1 < maxModelAttempts) ||
+			(code == failureModelTimeout && value.Attempts+1 < maxTimeoutAttempts):
+			// 限流、服务繁忙、超时：稍后自动重试，玩家那边仍显示分析中
+			next := service.now().Add(modelRetryDelays[min(value.Attempts, len(modelRetryDelays)-1)])
+			if service.logger != nil {
+				service.logger.Warn("hand review will be retried", "reviewId", value.ReviewID,
+					"attempt", value.Attempts+1, "next", next, "failure", failure)
+			}
+			retryCtx, cancel := context.WithTimeout(work, storeCallTimeout)
+			err := service.store.RetryLater(retryCtx, value.ReviewID, next, completion.InputTokens, completion.OutputTokens)
+			cancel()
+			if err == nil {
+				return true
+			}
+			service.logError("hand review could not be scheduled for retry", err)
+		case code == failureModelBalance || code == failureModelUnauthorized:
+			service.modelOutageDetected(work, code)
+		}
+		if service.logger != nil {
+			service.logger.Error("hand review failed", "reviewId", value.ReviewID, "handId", value.HandID, "failure", failure)
+		}
+	} else {
+		service.clearModelOutage()
+	}
 	service.finish(work, value.ReviewID, status, model, result, failure, completion)
 	return true
+}
+
+// modelOutageDetected 处理余额不足、密钥失效：排着的全部记失败（再调用也只会
+// 失败），冷却期内拒绝新的请求，管理员页显示原因。
+func (service *Service) modelOutageDetected(ctx context.Context, code string) {
+	service.mu.Lock()
+	service.health = &ModelHealth{Failure: code, At: service.now()}
+	service.mu.Unlock()
+	failCtx, cancel := context.WithTimeout(ctx, storeCallTimeout)
+	count, err := service.store.FailQueued(failCtx, code, service.now())
+	cancel()
+	if err != nil {
+		service.logError("queued reviews could not be failed after a model outage", err)
+	}
+	if service.logger != nil {
+		service.logger.Error("model service refused all reviews", "failure", code, "queuedFailed", count)
+	}
+}
+
+func (service *Service) clearModelOutage() {
+	service.mu.Lock()
+	service.health = nil
+	service.mu.Unlock()
 }
 
 // finish 存下结果。数据库短暂不可用时隔几秒重试；一直存不进去（例如数据库拒收
@@ -433,7 +620,7 @@ func (service *Service) finish(
 // stillAllowed 在真正调用模型前再核对一次开关、名单与额度，返回失败原因码；
 // 可以继续时返回空串。读不到设置时放行，由发起时的检查兜底。
 func (service *Service) stillAllowed(ctx context.Context, userID string) string {
-	if err := service.checkAccess(ctx, userID); err != nil {
+	if _, err := service.checkAccess(ctx, userID); err != nil {
 		var reviewError Error
 		if errors.As(err, &reviewError) {
 			return reviewError.Code
@@ -488,14 +675,14 @@ func (service *Service) analyse(ctx context.Context, value Review) (*Result, Com
 	var total Completion
 	// 模型偶尔输出不合格式的内容，再问一次；两次都不行就算失败
 	for attempt := 0; attempt < 2; attempt++ {
-		callCtx, cancel := context.WithTimeout(ctx, modelCallTimeout)
+		callCtx, cancel := context.WithTimeout(WithEndUser(ctx, value.UserID), modelCallTimeout)
 		completion, err := service.model.Complete(callCtx, systemPrompt, prompt)
 		cancel()
 		total.Model = completion.Model
 		total.InputTokens += completion.InputTokens
 		total.OutputTokens += completion.OutputTokens
 		if err != nil {
-			return nil, total, "model_error: " + err.Error()
+			return nil, total, classifyModelFailure(err) + ": " + err.Error()
 		}
 		// 截断了再问一次也一样会截断，直接记失败，让管理员去调输出上限
 		if completion.Truncated {

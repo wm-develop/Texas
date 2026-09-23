@@ -124,7 +124,7 @@ METRICS_TOKEN=替换为随机字符串
 # AI 复盘（可选）。留空则不启用；任何兼容 OpenAI 接口的服务都可以，默认 DeepSeek
 REVIEW_API_KEY=
 REVIEW_BASE_URL=https://api.deepseek.com
-REVIEW_MODEL=deepseek-reasoner
+REVIEW_MODEL=deepseek-flash
 ```
 
 `TRUSTED_PROXIES` 不填时，代理后的所有玩家会被算成同一个 IP 而互相触发限流；`METRICS_TOKEN` 可用 `openssl rand -hex 24` 生成。限流参数保持默认即可，可选项与含义见[运行保障指南](OPERATIONS_GUIDE.md)。
@@ -134,7 +134,7 @@ REVIEW_MODEL=deepseek-reasoner
 - `ALLOWED_ORIGINS` 必须是完整 Web 来源，不带路径和末尾斜杠；多个来源以英文逗号分隔。
 - 数据库密码若包含 `@`、`:`、`/`、`?` 等 URL 特殊字符，必须在 `DATABASE_URL` 中进行百分号编码。
 - 不需要语音时可以同时留空 `TRTC_SDK_APP_ID` 和 `TRTC_SECRET_KEY`；只填写其中一个会导致服务拒绝启动。
-- AI 复盘需要游戏服务能访问 `REVIEW_BASE_URL`（出站 HTTPS；必须是带 `http://` 或 `https://` 的完整地址，写错服务拒绝启动）。另有 `REVIEW_TIMEOUT_SECONDS`（单次请求超时，默认 300，范围 10～900）、`REVIEW_JSON_MODE`（默认 `true`，服务不支持 `response_format` 时设为 `false`；服务返回 400 且报错里提到 `response_format` 时也会自动去掉重试）、`REVIEW_MAX_TOKENS`（每次输出上限，默认 0 即由服务决定；推理模型的上限包含思考过程，设小了整段输出会被截断，复盘记为「超出输出长度上限」，建议保持 0）。停机时正在分析的那一条会做完再退出，占用 `SHUTDOWN_DRAIN_TIMEOUT_SECONDS` 的同一段时限。配置好后还要由管理员在「服务器管理 → AI 复盘管理」里给账号开通。开通即意味着该账号发起复盘时，牌局数据会发往这家大模型服务，见[隐私说明](PRIVACY_NOTICE.md)。
+- AI 复盘需要游戏服务能访问 `REVIEW_BASE_URL`（出站 HTTPS；必须是带 `http://` 或 `https://` 的完整地址，写错服务拒绝启动）。另有 `REVIEW_TIMEOUT_SECONDS`（单次请求超时，默认 300，范围 10～900）、`REVIEW_JSON_MODE`（默认 `true`，服务不支持 `response_format` 时设为 `false`；服务返回 400 且报错里提到 `response_format` 时也会自动去掉重试）、`REVIEW_MAX_TOKENS`（每次输出上限，默认 0 即由服务决定；推理模型的上限包含思考过程，设小了整段输出会被截断，复盘记为「超出输出长度上限」，建议保持 0）。停机时正在分析的那一条会做完再退出，占用 `SHUTDOWN_DRAIN_TIMEOUT_SECONDS` 的同一段时限。`REVIEW_THINKING`（思考模式 `enabled` / `disabled` / `none`）、`REVIEW_REASONING_EFFORT`（思考强度，DeepSeek 把 `xhigh` 映射为 `high`，`max` 是最高档，更慢也更贵；`none` 不发送）、`REVIEW_SEND_USER_ID`（是否附带玩家的匿名编号）——这三项是 DeepSeek 的扩展字段，地址在 deepseek.com 上时默认分别为 `enabled`、`xhigh`、开，其他服务默认都不发（严格的兼容服务会把不认识的字段当参数错误），要用就显式设置、`REVIEW_WORKERS`（同时分析几条，默认 2，范围 1～16）。DeepSeek 返回 429、500、503，或者以「资源不足」中途停止时，会隔 30 秒、2 分钟自动重试，三次都不行才记失败；超时时一共最多调用两次（思考模式下一次生成就可能超过 `REVIEW_TIMEOUT_SECONDS`，一直超时就调大它，超时的调用拿不到 token 用量）；返回 402（余额不足）或 401（密钥无效）时，排着的复盘一并记为失败，5 分钟内不接收新的复盘，管理页会显示原因，充值或换好密钥后自动恢复。配置好后还要由管理员在「服务器管理 → AI 复盘管理」里给账号开通。开通即意味着该账号发起复盘时，牌局数据会发往这家大模型服务，见[隐私说明](PRIVACY_NOTICE.md)。
 - 不要把该文件、TRTC 密钥、数据库密码或平台签名提交到 Git。
 
 ```bash

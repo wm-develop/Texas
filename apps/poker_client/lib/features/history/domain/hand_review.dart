@@ -7,6 +7,9 @@ class HandReview {
     this.result,
     this.failure = '',
     this.model = '',
+    this.attempts = 0,
+    this.outdated = false,
+    this.previous,
   });
 
   final String handId;
@@ -18,6 +21,15 @@ class HandReview {
   /// 失败原因码，例如 model_error、invalid_output。
   final String failure;
   final String model;
+
+  /// 大模型服务繁忙时已经自动重试了几次；大于 0 时界面说明正在重试。
+  final int attempts;
+
+  /// 这是旧版提示词的结果：新版还没分析过。可以用新版重新分析。
+  final bool outdated;
+
+  /// 新版还没有结果（排队、分析中、失败）时，旧版最近一次的结果。
+  final ReviewResult? previous;
 
   bool get inProgress => status == 'queued' || status == 'running';
   bool get done => status == 'done' && result != null;
@@ -31,6 +43,11 @@ class HandReview {
         : ReviewResult.fromJson(json['result'] as Map<String, dynamic>),
     failure: json['failure'] as String? ?? '',
     model: json['model'] as String? ?? '',
+    attempts: json['attempts'] as int? ?? 0,
+    outdated: json['outdated'] as bool? ?? false,
+    previous: json['previous'] == null
+        ? null
+        : ReviewResult.fromJson(json['previous'] as Map<String, dynamic>),
   );
 
   /// 某一步有没有点评；时间轴上的步号与点评一一对应。
@@ -40,7 +57,6 @@ class HandReview {
 
 class ReviewResult {
   const ReviewResult({
-    this.situation,
     required this.summary,
     required this.decisions,
     required this.keyLessons,
@@ -48,8 +64,6 @@ class ReviewResult {
     required this.hindsight,
   });
 
-  /// 这一手的基本局面，由服务端按交给模型的同一份数据填写。
-  final ReviewSituation? situation;
   final String summary;
   final List<ReviewDecision> decisions;
   final List<String> keyLessons;
@@ -57,9 +71,6 @@ class ReviewResult {
   final String hindsight;
 
   factory ReviewResult.fromJson(Map<String, dynamic> json) => ReviewResult(
-    situation: json['situation'] == null
-        ? null
-        : ReviewSituation.fromJson(json['situation'] as Map<String, dynamic>),
     summary: json['summary'] as String? ?? '',
     decisions: (json['decisions'] as List<dynamic>? ?? const [])
         .map((value) => ReviewDecision.fromJson(value as Map<String, dynamic>))
@@ -69,58 +80,6 @@ class ReviewResult {
     opponentNotes: (json['opponentNotes'] as List<dynamic>? ?? const [])
         .cast<String>(),
     hindsight: json['hindsight'] as String? ?? '',
-  );
-}
-
-class ReviewSituation {
-  const ReviewSituation({
-    required this.heroPosition,
-    required this.holeCards,
-    required this.players,
-    required this.smallBlind,
-    required this.bigBlind,
-    required this.seats,
-  });
-
-  final String heroPosition;
-  final List<String> holeCards;
-  final int players;
-  final int smallBlind;
-  final int bigBlind;
-  final List<ReviewSeat> seats;
-
-  factory ReviewSituation.fromJson(Map<String, dynamic> json) =>
-      ReviewSituation(
-        heroPosition: json['heroPosition'] as String? ?? '',
-        holeCards: (json['holeCards'] as List<dynamic>? ?? const [])
-            .cast<String>(),
-        players: json['players'] as int? ?? 0,
-        smallBlind: json['smallBlind'] as int? ?? 0,
-        bigBlind: json['bigBlind'] as int? ?? 0,
-        seats: (json['seats'] as List<dynamic>? ?? const [])
-            .map((value) => ReviewSeat.fromJson(value as Map<String, dynamic>))
-            .toList(growable: false),
-      );
-}
-
-class ReviewSeat {
-  const ReviewSeat({
-    required this.position,
-    required this.stack,
-    required this.stackInBigBlinds,
-    required this.isHero,
-  });
-
-  final String position;
-  final int stack;
-  final double stackInBigBlinds;
-  final bool isHero;
-
-  factory ReviewSeat.fromJson(Map<String, dynamic> json) => ReviewSeat(
-    position: json['position'] as String? ?? '',
-    stack: json['startingStack'] as int? ?? 0,
-    stackInBigBlinds: (json['stackInBigBlinds'] as num?)?.toDouble() ?? 0,
-    isHero: json['isHero'] as bool? ?? false,
   );
 }
 
@@ -257,62 +216,108 @@ class HandReviewApi {
 class ReviewOverview {
   const ReviewOverview({
     required this.settings,
-    required this.accessUserIds,
+    required this.access,
     required this.requests24h,
     required this.requests30d,
     required this.tokens30d,
     required this.modelConfigured,
     required this.model,
+    this.workers = 1,
+    this.modelHealthFailure = '',
+    this.modelHealthAt,
+    this.modelCoolingDown = false,
   });
 
   final ReviewSettings settings;
-  final Set<String> accessUserIds;
+
+  /// 开通名单，按账号查单独额度。
+  final Map<String, ReviewUserLimits> access;
   final int requests24h;
   final int requests30d;
   final int tokens30d;
   final bool modelConfigured;
   final String model;
 
+  /// 服务端同时分析的条数。
+  final int workers;
+
+  /// 最近一次余额不足或密钥失效；为空表示正常。
+  final String modelHealthFailure;
+  final DateTime? modelHealthAt;
+
+  /// 还在冷却期、拒绝新的复盘；为假时冷却已过，等下一次调用确认是否恢复。
+  final bool modelCoolingDown;
+
+  Set<String> get accessUserIds => access.keys.toSet();
+
   factory ReviewOverview.fromJson(Map<String, dynamic> json) {
     final usage = json['usage'] as Map<String, dynamic>? ?? const {};
+    final health = json['modelHealth'] as Map<String, dynamic>?;
     return ReviewOverview(
       settings: ReviewSettings.fromJson(
         json['settings'] as Map<String, dynamic>? ?? const {},
       ),
-      accessUserIds: {
+      access: {
         for (final value in json['access'] as List<dynamic>? ?? const [])
-          (value as Map<String, dynamic>)['userId'] as String,
+          (value as Map<String, dynamic>)['userId'] as String:
+              ReviewUserLimits.fromJson(value),
       },
       requests24h: usage['requests24h'] as int? ?? 0,
       requests30d: usage['requests30d'] as int? ?? 0,
       tokens30d: usage['tokens30d'] as int? ?? 0,
       modelConfigured: json['modelConfigured'] as bool? ?? false,
       model: json['model'] as String? ?? '',
+      workers: json['workers'] as int? ?? 1,
+      modelHealthFailure: health?['failure'] as String? ?? '',
+      modelHealthAt: health?['at'] == null
+          ? null
+          : DateTime.tryParse(health!['at'] as String),
+      modelCoolingDown: health?['coolingDown'] as bool? ?? false,
     );
   }
 }
 
-/// 全局设置；两个额度为 0 表示不限。
+/// 某个人的单独额度；为空的一项跟随全局，0 表示不限。
+class ReviewUserLimits {
+  const ReviewUserLimits({this.dailyLimit, this.maxInFlight});
+
+  final int? dailyLimit;
+  final int? maxInFlight;
+
+  factory ReviewUserLimits.fromJson(Map<String, dynamic> json) =>
+      ReviewUserLimits(
+        dailyLimit: json['dailyLimit'] as int?,
+        maxInFlight: json['maxInFlight'] as int?,
+      );
+}
+
+/// 全局设置；额度为 0 表示不限。
 class ReviewSettings {
   const ReviewSettings({
     this.enabled = true,
     this.dailyLimitPerUser = 0,
+    this.maxInFlightPerUser = 0,
     this.monthlyTokenBudget = 0,
   });
 
   final bool enabled;
   final int dailyLimitPerUser;
+
+  /// 每人同时最多几条在排队或分析中。
+  final int maxInFlightPerUser;
   final int monthlyTokenBudget;
 
   factory ReviewSettings.fromJson(Map<String, dynamic> json) => ReviewSettings(
     enabled: json['enabled'] as bool? ?? true,
     dailyLimitPerUser: json['dailyLimitPerUser'] as int? ?? 0,
+    maxInFlightPerUser: json['maxInFlightPerUser'] as int? ?? 0,
     monthlyTokenBudget: json['monthlyTokenBudget'] as int? ?? 0,
   );
 
   Map<String, Object?> toJson() => {
     'enabled': enabled,
     'dailyLimitPerUser': dailyLimitPerUser,
+    'maxInFlightPerUser': maxInFlightPerUser,
     'monthlyTokenBudget': monthlyTokenBudget,
   };
 }
@@ -322,11 +327,16 @@ String reviewErrorLabel(String code) => switch (code) {
   'review_unavailable' => 'AI 复盘暂未开放',
   'review_not_allowed' => '你还没有开通 AI 复盘，请联系管理员',
   'review_daily_limit' => '24 小时内的复盘次数已用完，请稍后再来',
+  'review_in_flight_limit' => '你同时在分析的牌局已达上限，请等之前的分析完成后再发起',
   'review_budget_exhausted' => '最近 30 天的复盘额度已用完，请联系管理员',
   'hand_not_found' => '找不到这手牌',
   'review_no_decisions' => '这一手你没有做过决定，没有可复盘的内容',
   'internal_error' => '服务端出错，请稍后重试',
   'model_error' => '大模型服务暂时不可用，请稍后重试',
+  'model_busy' => '大模型服务繁忙，已自动重试多次仍未成功，请稍后再试',
+  'model_timeout' => '大模型分析超时，请稍后再试；一直超时请联系管理员调大超时时间',
+  'model_insufficient_balance' => '大模型账户余额不足，暂时无法分析，请联系管理员',
+  'model_unauthorized' => '大模型服务的密钥无效，暂时无法分析，请联系管理员',
   'invalid_output' => '这次的分析结果不完整，请重试',
   'output_truncated' => '分析内容超出了输出长度上限，请联系管理员调大或取消上限',
   'replay_unavailable' => '这手牌的记录不完整，无法复盘',

@@ -116,6 +116,21 @@ func TestHandReviewFlow(t *testing.T) {
 	if partial.StatusCode != http.StatusBadRequest || responseErrorCode(t, partial) != "invalid_review_settings" {
 		t.Fatalf("partial settings: status=%d", partial.StatusCode)
 	}
+	// 0.9.0 的管理页不传「每人同时进行」：保持原值，不被改成不限
+	full := func(fields map[string]any) review.Settings {
+		var saved review.Settings
+		decodeBody(t, doJSONRequest(t, http.MethodPost, server.URL+"/v1/admin/review/settings",
+			administrator.AccessToken, fields), &saved)
+		return saved
+	}
+	if saved := full(map[string]any{"enabled": true, "dailyLimitPerUser": 0, "maxInFlightPerUser": 3,
+		"monthlyTokenBudget": 0}); saved.MaxInFlightPerUser != 3 {
+		t.Fatalf("saved=%+v", saved)
+	}
+	if saved := full(map[string]any{"enabled": true, "dailyLimitPerUser": 0, "monthlyTokenBudget": 0}); saved.MaxInFlightPerUser != 3 {
+		t.Fatalf("an old admin client must not reset the in-flight limit: %+v", saved)
+	}
+	full(map[string]any{"enabled": true, "dailyLimitPerUser": 0, "maxInFlightPerUser": 0, "monthlyTokenBudget": 0})
 
 	// 发起 → 排队 → 后台处理 → 完成
 	var queued review.Review
@@ -144,9 +159,31 @@ func TestHandReviewFlow(t *testing.T) {
 	if !overview.ModelConfigured || len(overview.Access) != 1 || overview.Usage.Tokens30d != 15 || overview.Usage.Requests24h != 1 {
 		t.Fatalf("overview=%+v", overview)
 	}
+	// 单独额度：跟随全局用 null，设了就在名单里看得到；普通玩家改不了
+	limits := doJSONRequest(t, http.MethodPost, server.URL+"/v1/admin/review/limits", administrator.AccessToken,
+		map[string]any{"userId": owner.User.UserID, "dailyLimit": 3, "maxInFlight": nil})
+	if limits.StatusCode != http.StatusOK {
+		t.Fatalf("limits: status=%d body=%s", limits.StatusCode, readBody(limits))
+	}
+	limits.Body.Close()
+	forbidden = doJSONRequest(t, http.MethodPost, server.URL+"/v1/admin/review/limits", owner.AccessToken,
+		map[string]any{"userId": owner.User.UserID, "dailyLimit": 100})
+	if forbidden.StatusCode != http.StatusForbidden {
+		t.Fatalf("player setting limits: status=%d", forbidden.StatusCode)
+	}
+	forbidden.Body.Close()
+	notGranted := doJSONRequest(t, http.MethodPost, server.URL+"/v1/admin/review/limits", administrator.AccessToken,
+		map[string]any{"userId": guest.User.UserID, "dailyLimit": 3})
+	if notGranted.StatusCode != http.StatusForbidden || responseErrorCode(t, notGranted) != "review_not_allowed" {
+		t.Fatalf("limits for someone not on the list: status=%d", notGranted.StatusCode)
+	}
+	decodeBody(t, doJSONRequest(t, http.MethodGet, server.URL+"/v1/admin/review", administrator.AccessToken, nil), &overview)
+	if overview.Access[0].DailyLimit == nil || *overview.Access[0].DailyLimit != 3 || overview.Access[0].MaxInFlight != nil {
+		t.Fatalf("access with limits=%+v", overview.Access[0])
+	}
 	body := readBody(doJSONRequest(t, http.MethodGet, server.URL+"/v1/admin/audit?limit=50", administrator.AccessToken, nil))
-	if !strings.Contains(body, "admin.review_access_changed") {
-		t.Fatal("granting access must be audited")
+	if !strings.Contains(body, "admin.review_access_changed") || !strings.Contains(body, "admin.review_limits_changed") {
+		t.Fatal("granting access and setting limits must be audited")
 	}
 }
 

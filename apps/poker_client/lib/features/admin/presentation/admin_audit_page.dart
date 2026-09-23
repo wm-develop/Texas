@@ -205,7 +205,8 @@ IconData auditEventIcon(String eventType) => switch (eventType) {
   'admin.wallet_changed' => Icons.toll,
   'admin.rake_changed' => Icons.percent,
   'admin.review_settings_changed' ||
-  'admin.review_access_changed' => Icons.psychology_alt_outlined,
+  'admin.review_access_changed' ||
+  'admin.review_limits_changed' => Icons.psychology_alt_outlined,
   'admin.user_removed_from_room' => Icons.exit_to_app,
   'admin.user_status_changed' => Icons.manage_accounts_outlined,
   'admin.user_created' => Icons.person_add_alt_1,
@@ -241,11 +242,21 @@ String describeAuditEvent(AuditEvent event, AuditLog log) {
           value == 0 || value == null ? '不限' : '$value$unit';
       return '${metadata['enabled'] == false ? '关闭' : '开放'} AI 复盘，'
           '每人 24 小时 ${limit(metadata['dailyLimitPerUser'], ' 次')}，'
+          '${metadata.containsKey('maxInFlightPerUser') ? '每人同时 ${limit(metadata['maxInFlightPerUser'], ' 条')}，' : ''}'
           '30 天 token ${limit(metadata['monthlyTokenBudget'], '')}';
     case 'admin.review_access_changed':
       return metadata['granted'] == true
           ? '为 ${user('targetUserId')} 开通 AI 复盘'
           : '收回 ${user('targetUserId')} 的 AI 复盘';
+    case 'admin.review_limits_changed':
+      String own(Object? value, String unit) => switch (value) {
+        null => '跟随全局',
+        0 => '不限',
+        _ => '$value$unit',
+      };
+      return '把 ${user('targetUserId')} 的 AI 复盘额度设为：'
+          '24 小时 ${own(metadata['dailyLimit'], ' 次')}，'
+          '同时 ${own(metadata['maxInFlight'], ' 条')}';
     case 'admin.user_removed_from_room':
       return '把 ${user('targetUserId')} 请出房间 ${metadata['roomCode'] ?? ''}';
     case 'admin.registration_changed':

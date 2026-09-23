@@ -786,6 +786,14 @@ class _AdminPageState extends State<AdminPage> {
               granted: granted,
             ),
           ),
+          setLimits: (userId, dailyLimit, maxInFlight) => _withAccessToken(
+            (token) => _api.adminSetReviewLimits(
+              accessToken: token,
+              userId: userId,
+              dailyLimit: dailyLimit,
+              maxInFlight: maxInFlight,
+            ),
+          ),
         ),
       ),
     );

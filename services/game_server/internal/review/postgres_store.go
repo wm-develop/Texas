@@ -23,8 +23,9 @@ func NewPostgresStore(database *sql.DB) (*PostgresStore, error) {
 func (store *PostgresStore) Settings(ctx context.Context) (Settings, error) {
 	var settings Settings
 	err := store.database.QueryRowContext(ctx,
-		`SELECT enabled, daily_limit_per_user, monthly_token_budget FROM review_settings WHERE singleton = true`,
-	).Scan(&settings.Enabled, &settings.DailyLimitPerUser, &settings.MonthlyTokenBudget)
+		`SELECT enabled, daily_limit_per_user, max_in_flight_per_user, monthly_token_budget
+		 FROM review_settings WHERE singleton = true`,
+	).Scan(&settings.Enabled, &settings.DailyLimitPerUser, &settings.MaxInFlightPerUser, &settings.MonthlyTokenBudget)
 	if err != nil {
 		return Settings{}, fmt.Errorf("read review settings: %w", err)
 	}
@@ -33,9 +34,10 @@ func (store *PostgresStore) Settings(ctx context.Context) (Settings, error) {
 
 func (store *PostgresStore) SaveSettings(ctx context.Context, settings Settings, actorUserID string, now time.Time) error {
 	result, err := store.database.ExecContext(ctx,
-		`UPDATE review_settings SET enabled = $1, daily_limit_per_user = $2, monthly_token_budget = $3,
-		 updated_by = $4, updated_at = $5 WHERE singleton = true`,
-		settings.Enabled, settings.DailyLimitPerUser, settings.MonthlyTokenBudget, actorUserID, now,
+		`UPDATE review_settings SET enabled = $1, daily_limit_per_user = $2, max_in_flight_per_user = $3,
+		 monthly_token_budget = $4, updated_by = $5, updated_at = $6 WHERE singleton = true`,
+		settings.Enabled, settings.DailyLimitPerUser, settings.MaxInFlightPerUser, settings.MonthlyTokenBudget,
+		actorUserID, now,
 	)
 	if err != nil {
 		return fmt.Errorf("save review settings: %w", err)
@@ -46,15 +48,35 @@ func (store *PostgresStore) SaveSettings(ctx context.Context, settings Settings,
 	return nil
 }
 
-func (store *PostgresStore) HasAccess(ctx context.Context, userID string) (bool, error) {
-	var exists bool
-	err := store.database.QueryRowContext(ctx,
-		`SELECT EXISTS (SELECT 1 FROM review_access WHERE user_id = $1)`, userID,
-	).Scan(&exists)
-	if err != nil {
-		return false, fmt.Errorf("read review access: %w", err)
+const accessColumns = `user_id, granted_by, granted_at, daily_limit, max_in_flight`
+
+func scanAccess(row interface{ Scan(...any) error }) (Access, error) {
+	var value Access
+	var daily, inFlight sql.NullInt64
+	if err := row.Scan(&value.UserID, &value.GrantedBy, &value.GrantedAt, &daily, &inFlight); err != nil {
+		return Access{}, err
 	}
-	return exists, nil
+	if daily.Valid {
+		limit := int(daily.Int64)
+		value.DailyLimit = &limit
+	}
+	if inFlight.Valid {
+		limit := int(inFlight.Int64)
+		value.MaxInFlight = &limit
+	}
+	return value, nil
+}
+
+func (store *PostgresStore) AccessFor(ctx context.Context, userID string) (Access, error) {
+	value, err := scanAccess(store.database.QueryRowContext(ctx,
+		`SELECT `+accessColumns+` FROM review_access WHERE user_id = $1`, userID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Access{}, ErrNotFound
+	}
+	if err != nil {
+		return Access{}, fmt.Errorf("read review access: %w", err)
+	}
+	return value, nil
 }
 
 func (store *PostgresStore) SetAccess(ctx context.Context, userID string, granted bool, actorUserID string, now time.Time) error {
@@ -74,17 +96,37 @@ func (store *PostgresStore) SetAccess(ctx context.Context, userID string, grante
 	return nil
 }
 
+func (store *PostgresStore) SetLimits(ctx context.Context, userID string, limits UserLimits) error {
+	nullable := func(value *int) any {
+		if value == nil {
+			return nil
+		}
+		return *value
+	}
+	result, err := store.database.ExecContext(ctx,
+		`UPDATE review_access SET daily_limit = $2, max_in_flight = $3 WHERE user_id = $1`,
+		userID, nullable(limits.DailyLimit), nullable(limits.MaxInFlight),
+	)
+	if err != nil {
+		return fmt.Errorf("save review limits: %w", err)
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (store *PostgresStore) AccessList(ctx context.Context) ([]Access, error) {
 	rows, err := store.database.QueryContext(ctx,
-		`SELECT user_id, granted_by, granted_at FROM review_access ORDER BY granted_at, user_id`)
+		`SELECT `+accessColumns+` FROM review_access ORDER BY granted_at, user_id`)
 	if err != nil {
 		return nil, fmt.Errorf("list review access: %w", err)
 	}
 	defer rows.Close()
 	result := []Access{}
 	for rows.Next() {
-		var value Access
-		if err := rows.Scan(&value.UserID, &value.GrantedBy, &value.GrantedAt); err != nil {
+		value, err := scanAccess(rows)
+		if err != nil {
 			return nil, err
 		}
 		result = append(result, value)
@@ -93,16 +135,16 @@ func (store *PostgresStore) AccessList(ctx context.Context) ([]Access, error) {
 }
 
 const reviewColumns = `review_id, hand_id, user_id, prompt_version, status, model, result, error,
-	input_tokens, output_tokens, created_at, requested_at, finished_at`
+	input_tokens, output_tokens, created_at, requested_at, finished_at, attempts, next_attempt_at`
 
 func scanReview(row interface{ Scan(...any) error }) (Review, error) {
 	var value Review
 	var result []byte
-	var finished sql.NullTime
+	var finished, next sql.NullTime
 	if err := row.Scan(
 		&value.ReviewID, &value.HandID, &value.UserID, &value.PromptVersion, &value.Status, &value.Model,
 		&result, &value.Error, &value.InputTokens, &value.OutputTokens, &value.CreatedAt,
-		&value.RequestedAt, &finished,
+		&value.RequestedAt, &finished, &value.Attempts, &next,
 	); err != nil {
 		return Review{}, err
 	}
@@ -116,6 +158,9 @@ func scanReview(row interface{ Scan(...any) error }) (Review, error) {
 	if finished.Valid {
 		value.FinishedAt = &finished.Time
 	}
+	if next.Valid {
+		value.NextAttemptAt = &next.Time
+	}
 	return value, nil
 }
 
@@ -123,6 +168,19 @@ func (store *PostgresStore) Find(ctx context.Context, userID, handID, promptVers
 	value, err := scanReview(store.database.QueryRowContext(ctx,
 		`SELECT `+reviewColumns+` FROM hand_reviews WHERE user_id = $1 AND hand_id = $2 AND prompt_version = $3`,
 		userID, handID, promptVersion,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Review{}, ErrNotFound
+	}
+	return value, err
+}
+
+func (store *PostgresStore) FindLatestDone(ctx context.Context, userID, handID string) (Review, error) {
+	value, err := scanReview(store.database.QueryRowContext(ctx,
+		`SELECT `+reviewColumns+` FROM hand_reviews
+		 WHERE user_id = $1 AND hand_id = $2 AND status = 'done' AND finished_at IS NOT NULL
+		 ORDER BY finished_at DESC, review_id DESC LIMIT 1`,
+		userID, handID,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Review{}, ErrNotFound
@@ -152,7 +210,8 @@ func (store *PostgresStore) Create(ctx context.Context, value Review) error {
 
 func (store *PostgresStore) Requeue(ctx context.Context, reviewID string, now time.Time) error {
 	result, err := store.database.ExecContext(ctx,
-		`UPDATE hand_reviews SET status = 'queued', requested_at = $2, error = '', finished_at = NULL
+		`UPDATE hand_reviews SET status = 'queued', requested_at = $2, error = '', finished_at = NULL,
+		 attempts = 0, next_attempt_at = NULL
 		 WHERE review_id = $1 AND status = 'failed'`,
 		reviewID, now,
 	)
@@ -165,16 +224,18 @@ func (store *PostgresStore) Requeue(ctx context.Context, reviewID string, now ti
 	return nil
 }
 
-// ClaimNext 用 FOR UPDATE SKIP LOCKED 取任务：单实例下只有一个工作协程，但这样
-// 即使将来多开也不会两个进程抢到同一条。
-func (store *PostgresStore) ClaimNext(ctx context.Context) (Review, bool, error) {
+// ClaimNext 用 FOR UPDATE SKIP LOCKED 取任务：几个工作协程同时领取时不会抢到
+// 同一条。
+func (store *PostgresStore) ClaimNext(ctx context.Context, now time.Time) (Review, bool, error) {
 	value, err := scanReview(store.database.QueryRowContext(ctx,
 		`UPDATE hand_reviews SET status = 'running'
 		 WHERE review_id = (
-		   SELECT review_id FROM hand_reviews WHERE status = 'queued'
+		   SELECT review_id FROM hand_reviews
+		   WHERE status = 'queued' AND (next_attempt_at IS NULL OR next_attempt_at <= $1)
 		   ORDER BY requested_at, review_id LIMIT 1 FOR UPDATE SKIP LOCKED
 		 )
 		 RETURNING `+reviewColumns,
+		now,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Review{}, false, nil
@@ -198,7 +259,8 @@ func (store *PostgresStore) Finish(ctx context.Context, reviewID, status, model 
 	}
 	outcome, err := store.database.ExecContext(ctx,
 		`UPDATE hand_reviews SET status = $2, model = $3, result = $4::jsonb, error = $5,
-		 input_tokens = input_tokens + $6, output_tokens = output_tokens + $7, finished_at = $8
+		 input_tokens = input_tokens + $6, output_tokens = output_tokens + $7, finished_at = $8,
+		 next_attempt_at = NULL
 		 WHERE review_id = $1`,
 		reviewID, status, model, encoded, failure, inputTokens, outputTokens, now,
 	)
@@ -211,16 +273,17 @@ func (store *PostgresStore) Finish(ctx context.Context, reviewID, status, model 
 	return nil
 }
 
-func (store *PostgresStore) FailIfRunning(ctx context.Context, reviewID, failure string, now time.Time) error {
-	result, err := store.database.ExecContext(ctx,
-		`UPDATE hand_reviews SET status = 'failed', error = $2, result = NULL, finished_at = $3
+func (store *PostgresStore) RetryLater(ctx context.Context, reviewID string, next time.Time, inputTokens, outputTokens int64) error {
+	outcome, err := store.database.ExecContext(ctx,
+		`UPDATE hand_reviews SET status = 'queued', attempts = attempts + 1, next_attempt_at = $2,
+		 input_tokens = input_tokens + $3, output_tokens = output_tokens + $4
 		 WHERE review_id = $1 AND status = 'running'`,
-		reviewID, failure, now,
+		reviewID, next, inputTokens, outputTokens,
 	)
 	if err != nil {
-		return fmt.Errorf("fail running review: %w", err)
+		return fmt.Errorf("retry review later: %w", err)
 	}
-	if affected, err := result.RowsAffected(); err != nil || affected == 0 {
+	if affected, err := outcome.RowsAffected(); err != nil || affected == 0 {
 		return ErrNotFound
 	}
 	return nil
@@ -234,6 +297,37 @@ func (store *PostgresStore) RequeueRunning(ctx context.Context) error {
 	return nil
 }
 
+func (store *PostgresStore) FailIfRunning(ctx context.Context, reviewID, failure string, now time.Time) error {
+	result, err := store.database.ExecContext(ctx,
+		`UPDATE hand_reviews SET status = 'failed', error = $2, result = NULL, finished_at = $3, next_attempt_at = NULL
+		 WHERE review_id = $1 AND status = 'running'`,
+		reviewID, failure, now,
+	)
+	if err != nil {
+		return fmt.Errorf("fail running review: %w", err)
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (store *PostgresStore) FailQueued(ctx context.Context, failure string, now time.Time) (int, error) {
+	result, err := store.database.ExecContext(ctx,
+		`UPDATE hand_reviews SET status = 'failed', error = $1, finished_at = $2, next_attempt_at = NULL
+		 WHERE status = 'queued'`,
+		failure, now,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("fail queued reviews: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("fail queued reviews: %w", err)
+	}
+	return int(affected), nil
+}
+
 func (store *PostgresStore) CountRequests(ctx context.Context, userID string, since time.Time) (int, error) {
 	var count int
 	err := store.database.QueryRowContext(ctx,
@@ -241,6 +335,17 @@ func (store *PostgresStore) CountRequests(ctx context.Context, userID string, si
 	).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("count review requests: %w", err)
+	}
+	return count, nil
+}
+
+func (store *PostgresStore) CountInFlight(ctx context.Context, userID string) (int, error) {
+	var count int
+	err := store.database.QueryRowContext(ctx,
+		`SELECT count(*) FROM hand_reviews WHERE user_id = $1 AND status IN ('queued', 'running')`, userID,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count reviews in flight: %w", err)
 	}
 	return count, nil
 }

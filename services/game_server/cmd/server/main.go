@@ -179,19 +179,24 @@ func main() {
 		client, err := review.NewOpenAIClient(review.OpenAIConfig{
 			BaseURL: appConfig.Review.BaseURL, Model: appConfig.Review.Model, APIKey: appConfig.Review.APIKey,
 			Timeout: appConfig.Review.Timeout, JSONMode: appConfig.Review.JSONMode, MaxTokens: appConfig.Review.MaxTokens,
+			Thinking: appConfig.Review.Thinking, ReasoningEffort: appConfig.Review.ReasoningEffort,
+			SendUserID: appConfig.Review.SendUserID,
 		})
 		if err != nil {
 			logger.Error("review model initialization failed", "error", err)
 			os.Exit(1)
 		}
 		reviewModel = client
-		logger.Info("hand review enabled", "model", appConfig.Review.Model)
+		logger.Info("hand review enabled", "model", appConfig.Review.Model, "thinking", appConfig.Review.Thinking,
+			"reasoningEffort", appConfig.Review.ReasoningEffort, "workers", appConfig.Review.Workers,
+			"sendUserId", appConfig.Review.SendUserID)
 	}
 	reviewService, err := review.NewService(reviewStore, historyStore, reviewModel, time.Now, logger)
 	if err != nil {
 		logger.Error("review service initialization failed", "error", err)
 		os.Exit(1)
 	}
+	reviewService.SetWorkers(appConfig.Review.Workers)
 
 	var credentialIssuer trtc.CredentialIssuer
 	if appConfig.TRTCEnabled() {

@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -17,7 +18,7 @@ import (
 // 翻前王五加注到 60，本人跟注，李四弃牌；翻牌本人过牌、王五下注 60、本人跟注；
 // 转牌两人过牌；河牌本人下注 100，王五弃牌。没摊牌，王五和李四的牌谁都没看到。
 func sampleHand(handID string, endedAt time.Time) history.Hand {
-	return history.Hand{
+	hand := history.Hand{
 		HandID: handID, RoomID: "room_secret", RoomCode: "654321", DealerSeat: 3,
 		StartedAt: endedAt.Add(-time.Minute), EndedAt: endedAt, SmallBlind: 10, BigBlind: 20,
 		SmallBlindSeat: 1, BigBlindSeat: 2,
@@ -44,6 +45,12 @@ func sampleHand(handID string, endedAt time.Time) history.Hand {
 			Payouts: []holdem.Payout{{PlayerID: "usr_zhang", Amount: 260}},
 		}},
 	}
+	// 真实牌谱的每个动作都有全局唯一的动作号，Postgres 里它是主键：同一份样例
+	// 存成好几手时不能重复
+	for index := range hand.Actions {
+		hand.Actions[index].ActionID = fmt.Sprintf("%s_action_%d", handID, hand.Actions[index].Sequence)
+	}
+	return hand
 }
 
 type fakeModel struct {
@@ -220,7 +227,7 @@ func TestInvalidOutputFailsAndCanBeRetried(t *testing.T) {
 
 func TestModelErrorsDoNotLeakDetails(t *testing.T) {
 	ctx := context.Background()
-	model := &fakeModel{errors: []error{ModelError{Status: 401, Detail: "invalid api key sk-secret"}}}
+	model := &fakeModel{errors: []error{ModelError{Status: 422, Detail: "invalid parameter, key sk-secret"}}}
 	service, store, _, _ := newTestService(t, model)
 	_ = store.SetAccess(ctx, "usr_zhang", true, "admin", time.Now())
 	if _, err := service.Request(ctx, "usr_zhang", "hand_1"); err != nil {

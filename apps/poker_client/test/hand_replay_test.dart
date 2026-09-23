@@ -686,23 +686,6 @@ void main() {
       'status': 'done',
       'model': 'deepseek-reasoner',
       'result': {
-        'situation': {
-          'heroPosition': 'SB',
-          'holeCards': ['As', 'Kd'],
-          'players': 3,
-          'smallBlind': 10,
-          'bigBlind': 20,
-          'seats': [
-            {
-              'position': 'SB',
-              'startingStack': 1000,
-              'stackInBigBlinds': 50,
-              'isHero': true,
-            },
-            {'position': 'BB', 'startingStack': 1000, 'stackInBigBlinds': 50},
-            {'position': 'BTN', 'startingStack': 1000, 'stackInBigBlinds': 50},
-          ],
-        },
         'summary': '整体偏被动',
         'decisions': [
           {
@@ -782,9 +765,8 @@ void main() {
       await tester.pump();
       expect(find.text('整体偏被动'), findsOneWidget);
       expect(find.text('最佳行动：加注到 60'), findsOneWidget);
-      // 局面与精确数字由服务端给出，估算明确标成 AI 估算
-      expect(find.byKey(const ValueKey('review-situation')), findsOneWidget);
-      expect(find.textContaining('3 人桌 · 盲注 10/20 · 你在 SB'), findsOneWidget);
+      // 精确数字由服务端给出，估算明确标成 AI 估算；不再单独列牌局概况
+      expect(find.byKey(const ValueKey('review-situation')), findsNothing);
       expect(find.textContaining('需跟注 10，至少要 25.0% 胜率'), findsOneWidget);
       expect(
         tester
@@ -969,6 +951,125 @@ void main() {
       await tester.pump(const Duration(seconds: 3));
     });
 
+    testWidgets('停在本人操作过的步上打开面板：滚到这一步的点评并高亮', (tester) async {
+      final api = HandReviewApi(
+        request: (_) async => throw StateError('不该重新发起'),
+        load: (_) async => HandReview.fromJson(doneJson),
+      );
+      await pumpWithReview(tester, api);
+      // 第 0 步不是本人的决策：从头看，不高亮
+      await tester.tap(find.byKey(const ValueKey('replay-review')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('review-focused')), findsNothing);
+      await tester.tap(find.byTooltip('关闭'));
+      await tester.pumpAndSettle();
+      // 走到第 2 步（本人跟注）再打开：这一步的卡片被高亮
+      await tester.tap(find.byKey(const ValueKey('replay-next')));
+      await tester.tap(find.byKey(const ValueKey('replay-next')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('replay-review')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('review-focused')), findsOneWidget);
+      final card = tester.getRect(
+        find.byKey(const ValueKey('review-decision-2')),
+      );
+      final panel = tester.getRect(find.byKey(const ValueKey('review-panel')));
+      expect(card.top, greaterThanOrEqualTo(panel.top));
+      expect(card.top, lessThan(panel.bottom), reason: '卡片要滚到看得见的地方');
+    });
+
+    testWidgets('只有旧版结果：先显示旧版并可用新版重新分析', (tester) async {
+      var requests = 0;
+      final api = HandReviewApi(
+        request: (handId) async {
+          requests++;
+          return HandReview.fromJson({'handId': handId, 'status': 'queued'});
+        },
+        load: (handId) async =>
+            HandReview.fromJson({...doneJson, 'outdated': true}),
+      );
+      await pumpWithReview(tester, api);
+      expect(find.text('查看 AI 复盘'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('replay-review')));
+      await tester.pumpAndSettle();
+      expect(requests, 0, reason: '有旧版结果时点按钮只是查看');
+      expect(find.byKey(const ValueKey('review-outdated')), findsOneWidget);
+      expect(find.text('整体偏被动'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('review-reanalyse')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(requests, 1);
+      expect(find.textContaining('正在分析'), findsOneWidget);
+    });
+
+    testWidgets('大模型服务繁忙、正在自动重试时说明重试次数', (tester) async {
+      final api = HandReviewApi(
+        request: (_) async => throw StateError('unused'),
+        load: (handId) async => HandReview.fromJson({
+          'handId': handId,
+          'status': 'queued',
+          'attempts': 2,
+        }),
+      );
+      await pumpWithReview(tester, api);
+      await tester.tap(find.byKey(const ValueKey('replay-review')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(
+        tester.widget<Text>(find.byKey(const ValueKey('review-progress'))).data,
+        contains('正在自动重试（第 2 次）'),
+      );
+    });
+
+    testWidgets('用新版重新分析被拒：旧结果照样显示，重试会再次发起', (tester) async {
+      var requests = 0;
+      final api = HandReviewApi(
+        request: (handId) async {
+          requests++;
+          if (requests == 1) {
+            throw const GameApiException('review_daily_limit', statusCode: 429);
+          }
+          return HandReview.fromJson({'handId': handId, 'status': 'queued'});
+        },
+        load: (handId) async =>
+            HandReview.fromJson({...doneJson, 'outdated': true}),
+      );
+      await pumpWithReview(tester, api);
+      await tester.tap(find.byKey(const ValueKey('replay-review')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('review-reanalyse')));
+      await tester.pumpAndSettle();
+      expect(requests, 1);
+      expect(find.text(reviewErrorLabel('review_daily_limit')), findsOneWidget);
+      expect(find.text('整体偏被动'), findsOneWidget, reason: '旧结果不能被错误盖掉');
+      await tester.tap(find.byKey(const ValueKey('review-error-retry')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(requests, 2, reason: '重试要真的再发起一次');
+    });
+
+    testWidgets('新版分析中或失败时，下面接着显示旧版结果', (tester) async {
+      final previous = doneJson['result'];
+      for (final status in ['running', 'failed']) {
+        final api = HandReviewApi(
+          request: (_) async => throw StateError('unused'),
+          load: (handId) async => HandReview.fromJson({
+            'handId': handId,
+            'status': status,
+            'failure': status == 'failed' ? 'model_busy' : '',
+            'previous': previous,
+          }),
+        );
+        await pumpWithReview(tester, api);
+        await tester.tap(find.byKey(const ValueKey('replay-review')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        expect(find.byKey(const ValueKey('review-previous')), findsOneWidget);
+        expect(find.text('整体偏被动'), findsOneWidget, reason: status);
+        await tester.pumpWidget(const SizedBox());
+      }
+    });
+
     test('失败原因码都有中文说明', () {
       for (final code in [
         'review_unavailable',
@@ -983,6 +1084,11 @@ void main() {
         'review_no_decisions',
         'internal_error',
         'output_truncated',
+        'review_in_flight_limit',
+        'model_busy',
+        'model_timeout',
+        'model_insufficient_balance',
+        'model_unauthorized',
       ]) {
         expect(reviewErrorLabel(code), isNot('复盘失败，请稍后重试'), reason: code);
       }

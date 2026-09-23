@@ -144,13 +144,15 @@ class _HandReplayPageState extends State<HandReplayPage>
     }
   }
 
-  Future<void> _requestReview() async {
+  /// 点「AI 复盘」：有结果（包括旧版结果）就只打开面板；正在分析就接着查；
+  /// 都没有才发起。[reanalyse] 为真时是旧版结果上的「用新版重新分析」。
+  Future<void> _requestReview({bool reanalyse = false}) async {
     final api = _reviewApi;
     final replay = _replay;
     if (api == null || replay == null) return;
     _scaffoldKey.currentState?.openEndDrawer();
     final current = _review;
-    if (current != null && current.done) return;
+    if (current != null && current.done && !reanalyse) return;
     if (current != null && current.inProgress) {
       // 已经在分析：只是之前的查询出过错，清掉提示接着查
       setState(() => _reviewError = null);
@@ -256,6 +258,15 @@ class _HandReplayPageState extends State<HandReplayPage>
     if (_playing) _startTimer();
   }
 
+  /// 回放停在本人操作过、且有点评的那一步时，打开面板就定位到这一步。
+  int? _focusStep() {
+    final replay = _replay;
+    final review = _review;
+    if (replay == null || review == null || replay.steps.isEmpty) return null;
+    final step = replay.steps[_index.clamp(0, replay.steps.length - 1)];
+    return review.decisionAt(step.index) == null ? null : step.index;
+  }
+
   String _reviewButtonLabel() {
     final review = _review;
     if (review == null) return 'AI 复盘';
@@ -302,7 +313,9 @@ class _HandReplayPageState extends State<HandReplayPage>
                   busy: _reviewBusy,
                   error: _reviewError,
                   onStart: _requestReview,
+                  onReanalyse: () => _requestReview(reanalyse: true),
                   onJump: _jumpToStep,
+                  focusStep: _focusStep(),
                 ),
               ),
             ),
@@ -934,14 +947,16 @@ class VerdictChip extends StatelessWidget {
 }
 
 /// 复盘抽屉：分析中、失败、结果三种状态。点一条逐步点评就关抽屉并跳到那一步。
-class _ReviewPanel extends StatelessWidget {
+class _ReviewPanel extends StatefulWidget {
   const _ReviewPanel({
     required this.replay,
     required this.review,
     required this.busy,
     required this.error,
     required this.onStart,
+    required this.onReanalyse,
     required this.onJump,
+    this.focusStep,
   });
 
   final HandReplay replay;
@@ -949,158 +964,291 @@ class _ReviewPanel extends StatelessWidget {
   final bool busy;
   final String? error;
   final VoidCallback onStart;
+
+  /// 旧版结果上的「用新版重新分析」。
+  final VoidCallback onReanalyse;
   final ValueChanged<int> onJump;
+
+  /// 打开面板时回放停在本人操作过、且有点评的那一步：滚到这一步的点评并高亮。
+  final int? focusStep;
+
+  @override
+  State<_ReviewPanel> createState() => _ReviewPanelState();
+}
+
+class _ReviewPanelState extends State<_ReviewPanel> {
+  final _cardKeys = <int, GlobalKey>{};
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollToFocus();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ReviewPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 面板开着时结果才出来：出来那一刻再滚一次
+    if (oldWidget.review?.result == null && widget.review?.result != null) {
+      _scrollToFocus();
+    }
+  }
+
+  void _scrollToFocus() {
+    final step = widget.focusStep;
+    if (step == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final target = _cardKeys[step]?.currentContext;
+      if (!mounted || target == null) return;
+      Scrollable.ensureVisible(
+        target,
+        alignment: 0.1,
+        duration: const Duration(milliseconds: 250),
+      );
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    final review = this.review;
-    final result = review?.result;
-    return ListView(
+    final review = widget.review;
+    final busy = widget.busy;
+    final error = widget.error;
+    // 用 SingleChildScrollView 而不是 ListView：ListView 只建出看得见的那几张，
+    // 屏幕外的卡片拿不到位置，没法滚过去
+    return SingleChildScrollView(
       key: const ValueKey('review-panel'),
       padding: const EdgeInsets.all(16),
-      children: [
-        Row(
-          children: [
-            const Expanded(
-              child: Text(
-                'AI 复盘',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'AI 复盘',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                ),
               ),
-            ),
-            IconButton(
-              onPressed: () => Scaffold.of(context).closeEndDrawer(),
-              icon: const Icon(Icons.close),
-              tooltip: '关闭',
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        if (error != null) ...[
-          Text(error!, style: const TextStyle(color: Colors.redAccent)),
-          const SizedBox(height: 8),
-          OutlinedButton(
-            onPressed: busy ? null : onStart,
-            child: const Text('重试'),
-          ),
-        ] else if (busy || review == null) ...[
-          const Text(
-            '让 AI 以专业教练的视角点评你在这一手里的每个决策，并结合对手在你们同桌牌局里的打法倾向。',
-            style: TextStyle(color: Colors.white70),
-          ),
-          const SizedBox(height: 12),
-          FilledButton(
-            key: const ValueKey('review-start'),
-            onPressed: busy ? null : onStart,
-            child: Text(busy ? '正在提交…' : '开始分析'),
-          ),
-        ] else if (review.inProgress) ...[
-          const Center(child: CircularProgressIndicator()),
-          const SizedBox(height: 12),
-          const Text(
-            '正在分析，通常需要 30 秒到 2 分钟。可以先关掉这里继续看回放，结果出来后会自动显示。',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.white70),
-          ),
-        ] else if (review.failed || result == null) ...[
-          Text(
-            reviewErrorLabel(review.failure),
-            style: const TextStyle(color: Colors.redAccent),
+              IconButton(
+                onPressed: () => Scaffold.of(context).closeEndDrawer(),
+                icon: const Icon(Icons.close),
+                tooltip: '关闭',
+              ),
+            ],
           ),
           const SizedBox(height: 8),
-          OutlinedButton(
-            key: const ValueKey('review-retry'),
-            onPressed: onStart,
-            child: const Text('重新分析'),
-          ),
-        ] else ...[
-          if (result.situation case final situation?) ...[
-            _section('牌局概况'),
-            _SituationCard(situation: situation),
-          ],
-          _section('总评'),
-          Text(result.summary),
-          if (result.decisions.isNotEmpty) ...[
-            _section('逐步点评'),
-            for (final decision in result.decisions)
+          if (review != null && review.done) ...[
+            // 已有结果（包括旧版）：出错时照样显示结果，错误写在上面
+            if (error != null)
+              _errorLine(
+                error,
+                review.outdated ? widget.onReanalyse : widget.onStart,
+              ),
+            if (review.outdated)
               Card(
-                margin: const EdgeInsets.only(bottom: 8),
-                child: InkWell(
-                  key: ValueKey('review-decision-${decision.step}'),
-                  onTap: () => onJump(decision.step),
-                  child: Padding(
-                    padding: const EdgeInsets.all(10),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            VerdictChip(verdict: decision.verdict),
-                            const SizedBox(width: 6),
-                            Expanded(
-                              child: Text(
-                                '第 ${decision.step + 1} 步 · ${_stepLabel(decision.step)}',
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.white60,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        if (decision.facts case final facts?) ...[
-                          const SizedBox(height: 4),
-                          _DecisionNumbers(facts: facts),
-                        ],
-                        const SizedBox(height: 4),
-                        Text(decision.reasoning),
-                        if (decision.bestAction.isNotEmpty) ...[
-                          const SizedBox(height: 4),
-                          Text(
-                            '最佳行动：${decision.bestAction}',
-                            key: ValueKey('review-best-${decision.step}'),
-                            style: const TextStyle(color: Color(0xFFF6D986)),
-                          ),
-                        ],
-                        if (_estimateLine(decision) case final line?) ...[
-                          const SizedBox(height: 4),
-                          Text(
-                            line,
-                            key: ValueKey('review-estimate-${decision.step}'),
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: Colors.white70,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
+                key: const ValueKey('review-outdated'),
+                color: const Color(0x33F6D986),
+                child: Padding(
+                  padding: const EdgeInsets.all(10),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        '这是旧版复盘的结果。复盘已经升级，可以用新版重新分析（会占用一次次数）。',
+                        style: TextStyle(fontSize: 12),
+                      ),
+                      const SizedBox(height: 6),
+                      OutlinedButton(
+                        key: const ValueKey('review-reanalyse'),
+                        onPressed: busy ? null : widget.onReanalyse,
+                        child: const Text('用新版重新分析'),
+                      ),
+                    ],
                   ),
                 ),
               ),
+            ..._resultSections(review.result!, focusStep: widget.focusStep),
+            const SizedBox(height: 16),
+            Text(
+              '由 ${review.model.isEmpty ? 'AI' : review.model} 生成，仅供参考。',
+              style: const TextStyle(color: Colors.white38, fontSize: 11),
+            ),
+          ] else if (error != null) ...[
+            _errorLine(error, widget.onStart),
+            ..._previousSections(review),
+          ] else if (busy || review == null) ...[
+            const Text(
+              '让 AI 以专业教练的视角点评你在这一手里的每个决策，并结合对手在你们同桌牌局里的打法倾向。',
+              style: TextStyle(color: Colors.white70),
+            ),
+            const SizedBox(height: 12),
+            FilledButton(
+              key: const ValueKey('review-start'),
+              onPressed: busy ? null : widget.onStart,
+              child: Text(busy ? '正在提交…' : '开始分析'),
+            ),
+            // 失败后点「重新分析」、正在提交的这一下，旧版结果不要闪掉
+            ..._previousSections(review),
+          ] else if (review.inProgress) ...[
+            const Center(child: CircularProgressIndicator()),
+            const SizedBox(height: 12),
+            Text(
+              review.attempts > 0
+                  ? '大模型这次没有完成分析（服务繁忙或超时），正在自动重试（第 ${review.attempts} 次）。'
+                        '可以离开这里做别的，分析在服务器上继续，结果会保存下来。'
+                  : '正在分析，通常需要一到两分钟。可以离开这里做别的，'
+                        '分析在服务器上继续，结果会保存下来，下次打开这手回放就能看到。',
+              key: const ValueKey('review-progress'),
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white70),
+            ),
+            ..._previousSections(review),
+          ] else ...[
+            Text(
+              reviewErrorLabel(review.failure),
+              style: const TextStyle(color: Colors.redAccent),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton(
+              key: const ValueKey('review-retry'),
+              onPressed: widget.onStart,
+              child: const Text('重新分析'),
+            ),
+            ..._previousSections(review),
           ],
-          if (result.keyLessons.isNotEmpty) ...[
-            _section('要点'),
-            for (final lesson in result.keyLessons) Text('· $lesson'),
-          ],
-          if (result.opponentNotes.isNotEmpty) ...[
-            _section('对手倾向'),
-            for (final note in result.opponentNotes) Text('· $note'),
-          ],
-          if (result.hindsight.isNotEmpty) ...[
-            _section('结果回顾'),
-            Text(result.hindsight),
-          ],
-          const SizedBox(height: 16),
-          Text(
-            '由 ${review.model.isEmpty ? 'AI' : review.model} 生成，仅供参考。',
-            style: const TextStyle(color: Colors.white38, fontSize: 11),
-          ),
         ],
+      ),
+    );
+  }
+
+  Widget _errorLine(String error, VoidCallback onRetry) => Padding(
+    padding: const EdgeInsets.only(bottom: 8),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          error,
+          key: const ValueKey('review-error'),
+          style: const TextStyle(color: Colors.redAccent),
+        ),
+        const SizedBox(height: 6),
+        OutlinedButton(
+          key: const ValueKey('review-error-retry'),
+          onPressed: widget.busy ? null : onRetry,
+          child: const Text('重试'),
+        ),
       ],
+    ),
+  );
+
+  /// 新版还没有结果（排队、分析中、失败）时，下面接着显示旧版的结果。
+  List<Widget> _previousSections(HandReview? review) {
+    final previous = review?.previous;
+    if (previous == null) return const [];
+    return [
+      const SizedBox(height: 16),
+      const Text(
+        '以下是旧版复盘的结果',
+        key: ValueKey('review-previous'),
+        style: TextStyle(fontSize: 12, color: Colors.white60),
+      ),
+      ..._resultSections(previous),
+    ];
+  }
+
+  List<Widget> _resultSections(ReviewResult result, {int? focusStep}) => [
+    _section('总评'),
+    Text(result.summary),
+    if (result.decisions.isNotEmpty) ...[
+      _section('逐步点评'),
+      for (final decision in result.decisions)
+        _decisionCard(decision, decision.step == focusStep),
+    ],
+    if (result.keyLessons.isNotEmpty) ...[
+      _section('要点'),
+      for (final lesson in result.keyLessons) Text('· $lesson'),
+    ],
+    if (result.opponentNotes.isNotEmpty) ...[
+      _section('对手倾向'),
+      for (final note in result.opponentNotes) Text('· $note'),
+    ],
+    if (result.hindsight.isNotEmpty) ...[
+      _section('结果回顾'),
+      Text(result.hindsight),
+    ],
+  ];
+
+  Widget _decisionCard(ReviewDecision decision, bool focused) {
+    final key = _cardKeys.putIfAbsent(decision.step, GlobalKey.new);
+    return Card(
+      key: key,
+      margin: const EdgeInsets.only(bottom: 8),
+      shape: focused
+          ? RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: const BorderSide(color: Color(0xFFF6D986), width: 2),
+            )
+          : null,
+      child: InkWell(
+        key: ValueKey('review-decision-${decision.step}'),
+        onTap: () => widget.onJump(decision.step),
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  VerdictChip(verdict: decision.verdict),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      '第 ${decision.step + 1} 步 · ${_stepLabel(decision.step)}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.white60,
+                      ),
+                    ),
+                  ),
+                  if (focused)
+                    const Text(
+                      '当前步',
+                      key: ValueKey('review-focused'),
+                      style: TextStyle(fontSize: 11, color: Color(0xFFF6D986)),
+                    ),
+                ],
+              ),
+              if (decision.facts case final facts?) ...[
+                const SizedBox(height: 4),
+                _DecisionNumbers(facts: facts),
+              ],
+              const SizedBox(height: 4),
+              Text(decision.reasoning),
+              if (decision.bestAction.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  '最佳行动：${decision.bestAction}',
+                  key: ValueKey('review-best-${decision.step}'),
+                  style: const TextStyle(color: Color(0xFFF6D986)),
+                ),
+              ],
+              if (_estimateLine(decision) case final line?) ...[
+                const SizedBox(height: 4),
+                Text(
+                  line,
+                  key: ValueKey('review-estimate-${decision.step}'),
+                  style: const TextStyle(fontSize: 12, color: Colors.white70),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
     );
   }
 
   String _stepLabel(int step) {
+    final replay = widget.replay;
     if (step < 0 || step >= replay.steps.length) return '';
     return replayStepLabel(replay, replay.steps[step]);
   }
@@ -1135,56 +1283,6 @@ class _ReviewPanel extends StatelessWidget {
       ),
     ),
   );
-}
-
-/// 复盘开头的牌局概况：本人位置与底牌、人数、盲注、每家起始码量。
-class _SituationCard extends StatelessWidget {
-  const _SituationCard({required this.situation});
-
-  final ReviewSituation situation;
-
-  @override
-  Widget build(BuildContext context) {
-    String bigBlinds(double value) => value == value.roundToDouble()
-        ? value.toStringAsFixed(0)
-        : value.toStringAsFixed(1);
-    return Card(
-      key: const ValueKey('review-situation'),
-      child: Padding(
-        padding: const EdgeInsets.all(10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '${situation.players} 人桌 · 盲注 ${situation.smallBlind}/${situation.bigBlind} · '
-              '你在 ${situation.heroPosition}'
-              '${situation.holeCards.isEmpty ? '' : '，底牌 ${situation.holeCards.map(reviewCardLabel).join(' ')}'}',
-            ),
-            const SizedBox(height: 6),
-            Wrap(
-              spacing: 12,
-              runSpacing: 4,
-              children: [
-                for (final seat in situation.seats)
-                  Text(
-                    '${seat.position}${seat.isHero ? '（你）' : ''} ${seat.stack}（${bigBlinds(seat.stackInBigBlinds)}BB）',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: seat.isHero
-                          ? const Color(0xFFF6D986)
-                          : Colors.white70,
-                      fontWeight: seat.isHero
-                          ? FontWeight.w700
-                          : FontWeight.normal,
-                    ),
-                  ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 }
 
 /// 一个决策点的精确数字：底池、需跟注与所需胜率、SPR、牌力与对随机手牌胜率。
