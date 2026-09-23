@@ -667,6 +667,14 @@ func TestSettlementRetryDoesNotOverwriteARebuyMadeInBetween(t *testing.T) {
 	if _, err := manager.Rebuy(ctx, rebuyer, created.RoomID, "rebuy-in-between", 500); ruleCodeOf(err) != "settlement_not_persisted" {
 		t.Fatalf("rebuy must be refused until the settlement is persisted, err=%v", err)
 	}
+	// 同一个窗口里也不能改座位与参与者：进观战会把人移出引擎，补做时少了他，
+	// 守恒校验永远失败、牌桌再也开不了；换座会让牌谱座位与盲注座位对不上。
+	if _, err := manager.EnterSpectate(ctx, rebuyer, created.RoomID); ruleCodeOf(err) != "settlement_not_persisted" {
+		t.Fatalf("spectating must be refused until the settlement is persisted, err=%v", err)
+	}
+	if _, err := manager.RequestSeatChange(ctx, rebuyer, created.RoomID, 9, "seat-in-between"); ruleCodeOf(err) != "settlement_not_persisted" {
+		t.Fatalf("seat changes must be refused until the settlement is persisted, err=%v", err)
+	}
 	// 有人准备触发补做，之后补码照常，成员记录与账户一致
 	if _, err := manager.SetReady(ctx, rebuyer, true); err != nil {
 		t.Fatalf("retry on ready: %v", err)

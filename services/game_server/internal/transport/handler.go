@@ -79,7 +79,7 @@ func NewHandler(logger *slog.Logger, options Options) http.Handler {
 		mux, options.Accounts, options.Rooms, options.Tables, options.Bankroll,
 		guard, webSockets.disconnectUsers,
 	)
-	registerHistoryRoutes(mux, options.Accounts, options.History)
+	registerHistoryRoutes(mux, logger, options.Accounts, options.History)
 	mux.Handle("GET /ws", webSockets)
 	mux.Handle("POST /v1/trtc/credentials", trtcCredentialsHandler(options, guard))
 	if options.Metrics != nil && options.MetricsToken != "" {

@@ -58,11 +58,12 @@ func (store *PostgresStore) Append(hand Hand) error {
 		ctx,
 		`INSERT INTO hands (
 		 hand_id, room_id, room_code, dealer_seat, board_cards, pot_awards,
-		 revealed_hands, runout_boards, showdown, started_at, ended_at, rake
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		 revealed_hands, runout_boards, showdown, started_at, ended_at, rake,
+		 small_blind, big_blind, small_blind_seat, big_blind_seat
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
 		hand.HandID, hand.RoomID, hand.RoomCode, persistentDealerSeat(hand), board,
 		string(potAwards), string(revealedHands), string(runoutBoards), hand.Showdown, hand.StartedAt, hand.EndedAt,
-		hand.Rake,
+		hand.Rake, hand.SmallBlind, hand.BigBlind, hand.SmallBlindSeat, hand.BigBlindSeat,
 	)
 	if err != nil {
 		_ = transaction.Rollback()
@@ -92,10 +93,10 @@ func (store *PostgresStore) Append(hand Hand) error {
 			ctx,
 			`INSERT INTO hand_actions (
 			 action_id, hand_id, user_id, sequence_number, street,
-			 action_type, committed, raise_to, created_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			 action_type, committed, raise_to, created_at, timed_out
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 			action.ActionID, hand.HandID, action.UserID, action.Sequence,
-			action.Street, action.Type, action.Committed, action.RaiseTo, action.CreatedAt,
+			action.Street, action.Type, action.Committed, action.RaiseTo, action.CreatedAt, action.TimedOut,
 		)
 		if err != nil {
 			_ = transaction.Rollback()
@@ -140,6 +141,10 @@ func (store *PostgresStore) RecentForPlayer(userID string, limit int) []Hand {
 		}
 		ids = append(ids, handID)
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil
+	}
 	if err := rows.Close(); err != nil {
 		return nil
 	}
@@ -154,19 +159,111 @@ func (store *PostgresStore) RecentForPlayer(userID string, limit int) []Hand {
 	return result
 }
 
+// PageForPlayer 见 Store。游标用 (ended_at, hand_id)：同一时刻结束的两手也能
+// 分清先后，翻页不会重复或漏掉。
+func (store *PostgresStore) PageForPlayer(userID, beforeHandID string, limit int) ([]Hand, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), postgresOperationTimeout)
+	defer cancel()
+	var rows *sql.Rows
+	var err error
+	if beforeHandID == "" {
+		rows, err = store.database.QueryContext(
+			ctx,
+			`SELECT h.hand_id FROM hands h
+			 JOIN hand_players p ON p.hand_id = h.hand_id
+			 WHERE p.user_id = $1 ORDER BY h.ended_at DESC, h.hand_id DESC LIMIT $2`,
+			userID, limit,
+		)
+	} else {
+		var cursorEnded time.Time
+		err = store.database.QueryRowContext(
+			ctx,
+			`SELECT h.ended_at FROM hands h
+			 JOIN hand_players p ON p.hand_id = h.hand_id
+			 WHERE h.hand_id = $1 AND p.user_id = $2`,
+			beforeHandID, userID,
+		).Scan(&cursorEnded)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrHandNotFound
+		}
+		if err != nil {
+			return nil, err
+		}
+		rows, err = store.database.QueryContext(
+			ctx,
+			`SELECT h.hand_id FROM hands h
+			 JOIN hand_players p ON p.hand_id = h.hand_id
+			 WHERE p.user_id = $1 AND (h.ended_at, h.hand_id) < ($2, $3)
+			 ORDER BY h.ended_at DESC, h.hand_id DESC LIMIT $4`,
+			userID, cursorEnded, beforeHandID, limit,
+		)
+	}
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, limit)
+	for rows.Next() {
+		var handID string
+		if err := rows.Scan(&handID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, handID)
+	}
+	// 遍历中途出错（例如超时）时 Next 只会提前返回 false：不查 Err 就会把半页
+	// 当成整页，客户端据此以为已经翻到头
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	result := make([]Hand, 0, len(ids))
+	for _, handID := range ids {
+		hand, err := store.loadHand(ctx, handID)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, forRecipient(hand, userID))
+	}
+	return result, nil
+}
+
+// HandForPlayer 见 Store。
+func (store *PostgresStore) HandForPlayer(userID, handID string) (Hand, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), postgresOperationTimeout)
+	defer cancel()
+	hand, err := store.loadHand(ctx, handID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Hand{}, ErrHandNotFound
+	}
+	if err != nil {
+		return Hand{}, err
+	}
+	if !containsPlayer(hand, userID) {
+		return Hand{}, ErrHandNotFound
+	}
+	return forRecipient(hand, userID), nil
+}
+
 func (store *PostgresStore) loadHand(ctx context.Context, handID string) (Hand, error) {
 	var value Hand
 	var boardCards, potAwards, revealedHands, runoutBoards []byte
 	err := store.database.QueryRowContext(
 		ctx,
 		`SELECT hand_id, room_id, trim(room_code), dealer_seat, to_json(board_cards), pot_awards,
-		 revealed_hands, runout_boards, showdown, started_at, ended_at, rake
+		 revealed_hands, runout_boards, showdown, started_at, ended_at, rake,
+		 small_blind, big_blind, small_blind_seat, big_blind_seat
 		 FROM hands WHERE hand_id = $1`,
 		handID,
 	).Scan(
 		&value.HandID, &value.RoomID, &value.RoomCode, &value.DealerSeat, &boardCards,
 		&potAwards, &revealedHands, &runoutBoards, &value.Showdown, &value.StartedAt, &value.EndedAt,
-		&value.Rake,
+		&value.Rake, &value.SmallBlind, &value.BigBlind, &value.SmallBlindSeat, &value.BigBlindSeat,
 	)
 	if err != nil {
 		return Hand{}, err
@@ -214,7 +311,7 @@ func (store *PostgresStore) loadHand(ctx context.Context, handID string) (Hand, 
 	actionRows, err := store.database.QueryContext(
 		ctx,
 		`SELECT action_id, user_id, sequence_number, street, action_type,
-		 committed, raise_to, created_at FROM hand_actions
+		 committed, raise_to, created_at, timed_out FROM hand_actions
 		 WHERE hand_id = $1 ORDER BY sequence_number`,
 		handID,
 	)
@@ -226,7 +323,7 @@ func (store *PostgresStore) loadHand(ctx context.Context, handID string) (Hand, 
 		var action Action
 		if err := actionRows.Scan(
 			&action.ActionID, &action.UserID, &action.Sequence, &action.Street,
-			&action.Type, &action.Committed, &action.RaiseTo, &action.CreatedAt,
+			&action.Type, &action.Committed, &action.RaiseTo, &action.CreatedAt, &action.TimedOut,
 		); err != nil {
 			return Hand{}, err
 		}

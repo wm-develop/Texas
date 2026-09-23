@@ -130,7 +130,8 @@ git tag --list --sort=version:refname
 - `internal/game/holdem`：纯规则引擎、牌型、底池、动作合法性和结算。
 - `internal/game/tablemanager`：运行中牌桌的单写者管理。
 - `internal/chat`：消息、历史和禁言。
-- `internal/history`：最近牌局。
+- `internal/history`：牌谱存储与按接收者裁剪（最近牌局、翻页、单手读取）。
+- `internal/replay`：把裁剪后的牌谱推成逐步回放的时间轴，并用结束筹码自检。输入必须是已裁剪的牌谱，生成器因此拿不到没亮过的底牌；改动时跑 `tablemanager` 的 `TestReplayRebuildsEveryRandomHandFromEverySeat`，它会从每个座位回放随机打出的几百手。
 - `internal/postgres`：生产仓储和事务实现。
 - `internal/protocol/messages.go`：WebSocket 消息类型常量。
 - `migrations`：嵌入式版本化 SQL。

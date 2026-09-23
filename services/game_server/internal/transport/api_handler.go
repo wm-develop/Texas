@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"texas/services/game_server/internal/chat"
 	"texas/services/game_server/internal/game/tablemanager"
 	"texas/services/game_server/internal/history"
+	"texas/services/game_server/internal/replay"
 	"texas/services/game_server/internal/room"
 )
 
@@ -820,7 +822,7 @@ func registerRoomRoutes(
 	})
 }
 
-func registerHistoryRoutes(mux *http.ServeMux, accounts *account.Service, hands history.Store) {
+func registerHistoryRoutes(mux *http.ServeMux, logger *slog.Logger, accounts *account.Service, hands history.Store) {
 	mux.HandleFunc("GET /v1/hands/recent", func(writer http.ResponseWriter, request *http.Request) {
 		user, ok := authenticateRequest(writer, request, accounts)
 		if !ok {
@@ -839,9 +841,54 @@ func registerHistoryRoutes(mux *http.ServeMux, accounts *account.Service, hands 
 			}
 			limit = parsed
 		}
-		writeJSON(writer, http.StatusOK, map[string]any{
-			"hands": hands.RecentForPlayer(user.UserID, limit),
-		})
+		// before 是上一页最后一手的手号，据此接着往更早的翻。
+		page, err := hands.PageForPlayer(user.UserID, request.URL.Query().Get("before"), limit)
+		if errors.Is(err, history.ErrHandNotFound) {
+			writeJSONError(writer, http.StatusNotFound, "hand_not_found")
+			return
+		}
+		if err != nil {
+			if logger != nil {
+				logger.Error("hand history page could not be read", "userId", user.UserID, "error", err)
+			}
+			writeJSONError(writer, http.StatusInternalServerError, "internal_error")
+			return
+		}
+		writeJSON(writer, http.StatusOK, map[string]any{"hands": page})
+	})
+
+	// 回放：只有这手牌的参与者能看，时间轴按请求者裁剪——本人的底牌每一帧都有，
+	// 别人的底牌只有摊牌亮出之后才有。不是参与者与手号不存在一律 404。
+	mux.HandleFunc("GET /v1/hands/{handID}/replay", func(writer http.ResponseWriter, request *http.Request) {
+		user, ok := authenticateRequest(writer, request, accounts)
+		if !ok {
+			return
+		}
+		if hands == nil {
+			writeJSONError(writer, http.StatusServiceUnavailable, "service_unavailable")
+			return
+		}
+		hand, err := hands.HandForPlayer(user.UserID, request.PathValue("handID"))
+		if errors.Is(err, history.ErrHandNotFound) {
+			writeJSONError(writer, http.StatusNotFound, "hand_not_found")
+			return
+		}
+		if err != nil {
+			if logger != nil {
+				logger.Error("hand could not be read for replay", "userId", user.UserID, "error", err)
+			}
+			writeJSONError(writer, http.StatusInternalServerError, "internal_error")
+			return
+		}
+		timeline, err := replay.Build(hand, user.UserID)
+		if err != nil {
+			if logger != nil {
+				logger.Error("hand replay could not be rebuilt", "handId", hand.HandID, "userId", user.UserID, "error", err)
+			}
+			writeJSONError(writer, http.StatusUnprocessableEntity, "replay_unavailable")
+			return
+		}
+		writeJSON(writer, http.StatusOK, timeline)
 	})
 }
 

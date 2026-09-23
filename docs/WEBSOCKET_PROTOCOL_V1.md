@@ -393,11 +393,13 @@
 | `invalid_action` | 动作名称不合法 |
 | `invalid_amount` | `raiseTo` 不合法（越界或非小盲整数倍） |
 | `hand_in_progress` | 补码和换位仅允许在两手之间；未弃牌的参局玩家不能中途离桌（已弃牌或未参局玩家可以） |
-| `settlement_not_persisted` | 上一手的结算尚未入账，暂不能补码；下一次有人准备会先补做入账 |
+| `settlement_not_persisted` | 上一手的结算尚未入账，暂不能补码、换座、接受换座或进观战（0.8.0 起后三项也拦）；下一次有人准备会先补做入账。离开牌桌与等结算的离开者回房时服务端会先补做，补做失败时返回补做的错误 |
 | `not_enough_ready_players` | 已准备玩家不足以开局 |
 | `no_time_extensions` | 本手的两张加时卡已用完 |
 | `time_extension_expired` | 当前行动已超时，不能再主动加时 |
 | `runout_choice_not_available` | 当前不在发牌次数选择阶段，或玩家无权选择 |
+| `hand_not_found` | 手号不存在，或请求者不是这手牌的参与者（两种情况不区分）。`GET /v1/hands/{handId}/replay` 与 `GET /v1/hands/recent?before=` 返回，状态码 404 |
+| `replay_unavailable` | 这手牌的记录无法还原成可信的回放（推出的结束筹码与牌谱不符等）。`GET /v1/hands/{handId}/replay` 返回，状态码 422，服务端同时写 Error 日志 |
 
 ### 7.4 亮牌与换位
 

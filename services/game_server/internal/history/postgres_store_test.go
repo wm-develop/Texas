@@ -62,4 +62,34 @@ func TestPostgresStoreRedactsRecentHands(t *testing.T) {
 		t.Fatalf("NewPostgresStore: %v", err)
 	}
 	runRecentForPlayerContract(t, store)
+	runPaginationContract(t, store)
+
+	// 迁移 000013 给旧牌谱补盲注额：退回到 000012、按旧结构写一手，再升上去
+	if _, err := migrator.Down(ctx, database, 1); err != nil {
+		t.Fatalf("migrate down: %v", err)
+	}
+	if _, err := database.ExecContext(ctx,
+		`INSERT INTO rooms (room_id, room_code, owner_user_id, preset, max_players,
+		 small_blind, big_blind, max_buy_in, action_seconds, status)
+		 VALUES ('room_legacy', '222222', 'me', 'standard', 6, 25, 50, 5000, 30, 'closed')`); err != nil {
+		t.Fatalf("legacy room: %v", err)
+	}
+	if _, err := database.ExecContext(ctx,
+		`INSERT INTO hands (hand_id, room_id, room_code, dealer_seat, showdown, started_at, ended_at)
+		 VALUES ('legacy_hand', 'room_legacy', '222222', 1, false, now(), now())`); err != nil {
+		t.Fatalf("legacy hand: %v", err)
+	}
+	if _, err := migrator.Up(ctx, database); err != nil {
+		t.Fatalf("migrate up again: %v", err)
+	}
+	var smallBlind, bigBlind int64
+	var smallSeat, bigSeat int
+	if err := database.QueryRowContext(ctx,
+		`SELECT small_blind, big_blind, small_blind_seat, big_blind_seat FROM hands WHERE hand_id = 'legacy_hand'`,
+	).Scan(&smallBlind, &bigBlind, &smallSeat, &bigSeat); err != nil {
+		t.Fatalf("read legacy hand: %v", err)
+	}
+	if smallBlind != 25 || bigBlind != 50 || smallSeat != 0 || bigSeat != 0 {
+		t.Fatalf("旧牌谱的盲注应当从已关闭的房间补上、座位留 0：%d/%d seats %d/%d", smallBlind, bigBlind, smallSeat, bigSeat)
+	}
 }

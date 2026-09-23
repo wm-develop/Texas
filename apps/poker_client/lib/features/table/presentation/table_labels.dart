@@ -32,6 +32,9 @@ String actionLabel(String action, int actionTo) => switch (action) {
   'bet' => '下注至 $actionTo',
   'raise' => '加注至 $actionTo',
   'all_in' => '全下至 $actionTo',
+  // 只在牌局回放里出现：盲注不是动作，回放第一帧用它标出谁下了盲注
+  'small_blind' => '小盲 $actionTo',
+  'big_blind' => '大盲 $actionTo',
   _ => action,
 };
 
@@ -119,7 +122,7 @@ String gameErrorLabel(String code) => switch (code) {
   'hole_card_view_already_granted' => '你本手已经看过对方的牌',
   'invalid_decline_scope' => '这种拒绝方式不可用',
   'table_chips_not_conserved' => '上一手结算未能入账，服务端会在下次准备时重试；反复出现请联系管理员',
-  'settlement_not_persisted' => '上一手结算还没入账，暂时不能补码，请先点一次准备',
+  'settlement_not_persisted' => '上一手结算还没入账，暂时不能补码、换座或进观战，请先点一次准备',
   'invalid_table_balance' => '上一手结算未能入账，服务端会在下次准备时重试；反复出现请联系管理员',
   'runout_choice_not_available' => '当前不在发牌次数选择阶段',
   'invalid_player_interaction' => '请选择同桌的其他玩家进行互动',
@@ -197,6 +200,8 @@ String phaseLabel(String? phase) => switch (phase) {
   'RIVER' => '河牌圈',
   'RUNOUT_CHOICE' => '全下，等待选择发牌次数',
   'SHOWDOWN' => '摊牌',
+  // 只在牌局回放的最后一帧出现：引擎的结算阶段不会下发给客户端
+  'SETTLEMENT' => '本手结算',
   _ => phase,
 };
 

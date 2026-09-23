@@ -32,8 +32,12 @@ class TableCanvas extends StatelessWidget {
   final TableSnapshot? snapshot;
   final Duration actionRemaining;
   final ValueChanged<TableSeat> onSeatTap;
-  final ValueChanged<TableSeat> onAvatarTap;
-  final VoidCallback onUseTimeExtension;
+
+  /// 点头像发赞赏或嘲讽；为空时（牌局回放）头像不可点，也不提示。
+  final ValueChanged<TableSeat>? onAvatarTap;
+
+  /// 用加时卡；为空时（牌局回放）本人座位不显示加时按钮。
+  final VoidCallback? onUseTimeExtension;
   final List<TablePlayerInteraction> interactions;
 
   /// 发牌演出的瞬时状态。
@@ -108,7 +112,9 @@ class TableCanvas extends StatelessWidget {
                   actionRemaining: actionRemaining,
                   showReadyStatus: showReadyStatus,
                   winnerAmount: winnerAmounts[seats[index].userId] ?? 0,
-                  onAvatarTap: () => onAvatarTap(seats[index]),
+                  onAvatarTap: onAvatarTap == null
+                      ? null
+                      : () => onAvatarTap!(seats[index]),
                   onUseTimeExtension: onUseTimeExtension,
                 ),
               ),

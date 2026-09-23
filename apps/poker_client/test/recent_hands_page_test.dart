@@ -42,7 +42,7 @@ Future<void> _pump(WidgetTester tester, RecentHand hand) async {
     MaterialApp(
       home: RecentHandsPage(
         userId: 'me',
-        loadHands: () async => [hand],
+        loadHands: ({before}) async => [hand],
       ),
     ),
   );

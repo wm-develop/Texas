@@ -11,6 +11,7 @@ import 'package:poker_client/features/bankroll/domain/bankroll_entry.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
 import 'package:poker_client/features/table/domain/room_result.dart';
+import 'package:poker_client/features/history/domain/hand_replay.dart';
 import 'package:poker_client/features/history/domain/recent_hand.dart';
 
 /// 服务端要求更高版本的客户端（HTTP 426）。
@@ -468,18 +469,32 @@ class GameApiClient {
     await _request('v1/rooms/leave', token: accessToken, body: const {});
   }
 
+  /// 牌局记录，新的在前。[before] 是上一页最后一手的手号，据此往更早的翻。
   Future<List<RecentHand>> recentHands({
     required String accessToken,
     int limit = 20,
+    String? before,
   }) async {
     final payload = await _get(
-      'v1/hands/recent?limit=$limit',
+      'v1/hands/recent?limit=$limit'
+      '${before == null || before.isEmpty ? '' : '&before=${Uri.encodeQueryComponent(before)}'}',
       token: accessToken,
     );
     return (payload['hands'] as List<dynamic>? ?? const [])
         .map((value) => RecentHand.fromJson(value as Map<String, dynamic>))
         .toList(growable: false);
   }
+
+  /// 某一手的回放时间轴，已按本人裁剪。
+  Future<HandReplay> handReplay({
+    required String accessToken,
+    required String handId,
+  }) async => HandReplay.fromJson(
+    await _get(
+      'v1/hands/${Uri.encodeComponent(handId)}/replay',
+      token: accessToken,
+    ),
+  );
 
   Future<Map<String, dynamic>> _request(
     String path, {

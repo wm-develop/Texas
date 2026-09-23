@@ -340,6 +340,16 @@ func (manager *Manager) Join(ctx context.Context, userID string, roomID string) 
 	if err != nil {
 		return Snapshot{}, err
 	}
+	if _, leaving := runtime.pendingCashOuts[userID]; leaving && betweenHandsLocked(runtime) {
+		// 这一手已经打完、但结算还没入账（落盘失败，等补做）：引擎在结算时已经把他
+		// 移出了，这时再「撤销离开」只会按数据库里这一手之前的筹码把他加回引擎，
+		// 引擎与账户从此对不上，之后每一手都结算失败。先把结算补做完——他的离开
+		// 随之完成、筹码按结算后的数退还——再让他像新玩家一样重新加入。
+		if _, err := manager.finishPendingSettlementLocked(ctx, runtime, roomValue); err != nil {
+			return Snapshot{}, err
+		}
+		return Snapshot{}, room.Error{Code: "room_not_found"}
+	}
 	runtime.online[userID] = true
 	if _, leaving := runtime.pendingCashOuts[userID]; leaving {
 		// 弃牌中途离开、本手还没打完又回来了：他仍是成员、筹码原样在桌上，
@@ -822,6 +832,9 @@ func (manager *Manager) RequestSeatChange(
 	if runtime.engine.Phase() != holdem.PhaseWaiting && runtime.engine.Phase() != holdem.PhaseWaitingNextHand {
 		return Snapshot{}, holdem.RuleError{Code: "hand_in_progress"}
 	}
+	if settlementPendingLocked(runtime) {
+		return Snapshot{}, holdem.RuleError{Code: "settlement_not_persisted"}
+	}
 	// 观战者没有座位可换，也不能成为换座目标：座位号 0 是观战位的占位，
 	// 不校验的话「换到 0 号位」会匹配到第一个观战者。
 	if targetSeat < 1 || targetSeat > roomValue.MaxPlayers {
@@ -913,6 +926,9 @@ func (manager *Manager) RespondSeatSwap(
 	if accept {
 		if runtime.engine.Phase() != holdem.PhaseWaiting && runtime.engine.Phase() != holdem.PhaseWaitingNextHand {
 			return Snapshot{}, nil, holdem.RuleError{Code: "hand_in_progress"}
+		}
+		if settlementPendingLocked(runtime) {
+			return Snapshot{}, nil, holdem.RuleError{Code: "settlement_not_persisted"}
 		}
 		roomValue, err = manager.rooms.SwapSeats(ctx, pending.RequesterUserID, targetUserID)
 		if err != nil {
@@ -1007,6 +1023,42 @@ func (manager *Manager) applyRakeForNextHandLocked(ctx context.Context, runtime 
 	}
 }
 
+// settlementPendingLocked 报告上一手的结算是否还没入账（落盘失败，等下一次有人
+// 准备时补做）。这期间不能改变座位与参与者：补做时要按这一手当时的座位写牌谱、
+// 对这一手的参与者做筹码守恒校验。有人进观战会被移出引擎，补做时少了他，
+// 守恒校验永远失败、牌桌再也开不了局；换座会让牌谱里的座位与盲注座位对不上，
+// 这一手的回放随之不可用。
+//
+// 从观战上桌不受影响：新座位不在上一手的结算名单里，补做不看它。
+func settlementPendingLocked(runtime *runtime) bool {
+	last := runtime.engine.LastSettlement()
+	return last.HandID != "" && runtime.persistedHandID != last.HandID
+}
+
+func betweenHandsLocked(runtime *runtime) bool {
+	return runtime.engine.Phase() == holdem.PhaseWaiting || runtime.engine.Phase() == holdem.PhaseWaitingNextHand
+}
+
+// finishPendingSettlementLocked 在手间把没入账的上一手补做完（与有人点准备时的
+// 补做是同一段逻辑），没有待补做的就原样返回。roomValue 必须是持锁期间取到的。
+func (manager *Manager) finishPendingSettlementLocked(
+	ctx context.Context, runtime *runtime, roomValue room.Room,
+) (room.Room, error) {
+	if !betweenHandsLocked(runtime) || !settlementPendingLocked(runtime) {
+		return roomValue, nil
+	}
+	roomValue, err := manager.persistSettlementLocked(runtime, roomValue)
+	if err != nil {
+		return room.Room{}, err
+	}
+	roomValue, err = manager.resetReadyLocked(ctx, runtime, roomValue)
+	if err != nil {
+		return room.Room{}, err
+	}
+	manager.scheduleAutoReadyLocked(runtime)
+	return roomValue, nil
+}
+
 // clearHandScopedRequestsLocked 清掉只在一手之内有效的看牌申请、私下看牌授权与
 // 本手屏蔽。四条结束一手的路径（行动、行动超时、发牌次数选择、选择超时）都要
 // 调用，否则结算展示期里还挂着上一手的私下看牌，而屏蔽虽有 HandID 守卫也会一直
@@ -1093,7 +1145,7 @@ func (manager *Manager) Rebuy(
 	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
-	if last := runtime.engine.LastSettlement(); last.HandID != "" && runtime.persistedHandID != last.HandID {
+	if settlementPendingLocked(runtime) {
 		// 上一手的结算还没入账，成员记录里的筹码是上一手之前的数：这时补码会把钱
 		// 转到一个即将被结算覆盖的余额上，之后的对账永远差这一笔，牌桌再也开不了。
 		// 等下一次有人准备把上一手补做完再补码。
@@ -1169,6 +1221,22 @@ func (manager *Manager) Leave(ctx context.Context, userID string) (bool, error) 
 	if runtime != nil {
 		runtime.mu.Lock()
 		defer runtime.mu.Unlock()
+		if betweenHandsLocked(runtime) && settlementPendingLocked(runtime) {
+			// 上一手的结算还没入账时离开（包括被房主请出、被管理员移出）：此时退还
+			// 的是这一手之前的筹码，而他一离开引擎，补做结算就少了一个人，守恒校验
+			// 永远失败、牌桌再也开不了局。先把结算补做完再走。
+			current, err := manager.rooms.Current(ctx, userID)
+			if err != nil {
+				return false, err
+			}
+			if _, err := manager.finishPendingSettlementLocked(ctx, runtime, current); err != nil {
+				return false, err
+			}
+			// 他自己可能正是等结算的离开者：补做时已经退还并移出，到此为止
+			if roomValue, err = manager.rooms.Current(ctx, userID); err != nil {
+				return false, nil
+			}
+		}
 		if runtime.engine.Phase() != holdem.PhaseWaiting && runtime.engine.Phase() != holdem.PhaseWaitingNextHand {
 			var player *holdem.Player
 			players := runtime.engine.Players()
@@ -1557,7 +1625,7 @@ func (manager *Manager) handleTimeout(roomID string, generation uint64) {
 			runtime.actions = append(runtime.actions, history.Action{
 				ActionID: result.ActionID, UserID: actorUserID, Sequence: len(runtime.actions) + 1,
 				Street: strings.ToLower(string(street)), Type: string(result.Action), Committed: result.Committed,
-				CreatedAt: manager.now(),
+				CreatedAt: manager.now(), TimedOut: true,
 			})
 			runtime.lastAction = &ConfirmedActionSnapshot{
 				ActionID: result.ActionID, HandID: runtime.engine.HandID(), UserID: actorUserID,
@@ -1672,6 +1740,9 @@ func (manager *Manager) persistSettlementLocked(runtime *runtime, roomValue room
 			PotAwards: settlement.PotAwards, RevealedHands: settlement.RevealedHands,
 			RunoutBoards: settlement.RunoutBoards, Rake: settlement.Rake,
 			Actions: append([]history.Action(nil), runtime.actions...),
+			// 引擎在下一手开局前不会清掉这手的盲注座位，结算时读到的就是这手的
+			SmallBlind: roomValue.Rules.SmallBlind, BigBlind: roomValue.Rules.BigBlind,
+			SmallBlindSeat: runtime.engine.SmallBlindSeat(), BigBlindSeat: runtime.engine.BigBlindSeat(),
 		}
 		for _, card := range runtime.engine.Board() {
 			record.Board = append(record.Board, card.String())
@@ -2352,6 +2423,10 @@ func (manager *Manager) EnterSpectate(ctx context.Context, userID string, roomID
 			return snapshotForRuntime(runtime, roomValue, userID)
 		}
 	}
+	if settlementPendingLocked(runtime) {
+		return Snapshot{}, holdem.RuleError{Code: "settlement_not_persisted"}
+	}
+
 	participating := false
 	for _, player := range runtime.engine.Players() {
 		if player.PlayerID == userID {

@@ -157,10 +157,7 @@ void main() {
         tester.view.physicalSize.height - tester.view.viewInsets.bottom;
     expect(field.hitTestable(), findsOneWidget);
     expect(find.text('带入并加入').hitTestable(), findsOneWidget);
-    expect(
-      tester.getBottomRight(field).dy,
-      lessThanOrEqualTo(visibleBottom),
-    );
+    expect(tester.getBottomRight(field).dy, lessThanOrEqualTo(visibleBottom));
     expect(tester.takeException(), isNull);
   });
 
@@ -233,7 +230,7 @@ class _LobbyHarnessState extends State<_LobbyHarness> {
       bankroll: _bankroll,
       onCreateRoom: (_) => Future.error(UnimplementedError()),
       onJoinRoom: (_, _, _) => Future.error(UnimplementedError()),
-      onLoadRecentHands: () async => const [],
+      onLoadRecentHands: ({before}) async => const [],
       onTopUp: (amount) async {
         final next = BankrollSnapshot(
           userId: 'user_1',

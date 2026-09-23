@@ -17,6 +17,7 @@ import (
 	"texas/services/game_server/internal/chat"
 	"texas/services/game_server/internal/game/holdem"
 	"texas/services/game_server/internal/game/tablemanager"
+	"texas/services/game_server/internal/history"
 	"texas/services/game_server/internal/room"
 )
 
@@ -26,6 +27,7 @@ type ownerFixture struct {
 	rooms    *room.Service
 	tables   *tablemanager.Manager
 	chips    *bankroll.Service
+	hands    *history.InMemoryStore
 	created  room.Room
 	owner    account.AuthResult
 	guest    account.AuthResult
@@ -68,8 +70,9 @@ func newOwnerFixture(t *testing.T) ownerFixture {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	hands := history.NewInMemoryStore()
 	tables, err := tablemanager.NewWithConfig(rooms, transportZeroRandom{}, tablemanager.ManagerConfig{
-		Bankroll: chips,
+		Bankroll: chips, History: hands,
 		// 与生产接线一致：抽水打进最早创建的在用管理员钱包；没有管理员时不抽。
 		RakeRecipient: func(ctx context.Context) (string, error) {
 			admin, err := accounts.EarliestActiveAdmin(ctx)
@@ -95,11 +98,11 @@ func newOwnerFixture(t *testing.T) ownerFixture {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(NewHandler(testLogger(), Options{
-		Accounts: accounts, Rooms: rooms, Tables: tables, Bankroll: chips, Chat: chatService,
+		Accounts: accounts, Rooms: rooms, Tables: tables, Bankroll: chips, Chat: chatService, History: hands,
 	}))
 	t.Cleanup(server.Close)
 	return ownerFixture{
-		server: server, accounts: accounts, rooms: rooms, tables: tables, chips: chips,
+		server: server, accounts: accounts, rooms: rooms, tables: tables, chips: chips, hands: hands,
 		created: created, owner: owner, guest: guest,
 	}
 }

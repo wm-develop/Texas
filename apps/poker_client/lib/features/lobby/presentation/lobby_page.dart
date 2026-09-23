@@ -7,6 +7,7 @@ import 'package:poker_client/core/widgets/platform_number_field.dart';
 import 'package:poker_client/features/admin/presentation/admin_page.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_entry.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
+import 'package:poker_client/features/history/domain/hand_replay.dart';
 import 'package:poker_client/features/history/domain/recent_hand.dart';
 import 'package:poker_client/features/history/presentation/recent_hands_page.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
@@ -19,6 +20,7 @@ class LobbyPage extends StatefulWidget {
     required this.onCreateRoom,
     required this.onJoinRoom,
     required this.onLoadRecentHands,
+    this.onLoadHandReplay,
     required this.onTopUp,
     required this.onLoadBankrollEntries,
     required this.onPreviewRoom,
@@ -37,7 +39,10 @@ class LobbyPage extends StatefulWidget {
   final Future<FriendRoom> Function(CreateRoomInput input) onCreateRoom;
   final Future<FriendRoom> Function(String code, String password, int buyIn)
   onJoinRoom;
-  final Future<List<RecentHand>> Function() onLoadRecentHands;
+  final Future<List<RecentHand>> Function({String? before}) onLoadRecentHands;
+
+  /// 取某一手的回放时间轴。
+  final Future<HandReplay> Function(String handId)? onLoadHandReplay;
   final Future<BankrollSnapshot> Function(int amount) onTopUp;
   final Future<List<BankrollEntry>> Function() onLoadBankrollEntries;
   final Future<RoomPreview> Function(String code) onPreviewRoom;
@@ -112,7 +117,7 @@ class _LobbyPageState extends State<LobbyPage> {
           IconButton(
             onPressed: _busy ? null : _openRecentHands,
             icon: const Icon(Icons.history),
-            tooltip: '最近牌局',
+            tooltip: '牌局记录',
           ),
           TextButton.icon(
             onPressed: _busy ? null : _openProfile,
@@ -432,6 +437,7 @@ class _LobbyPageState extends State<LobbyPage> {
         builder: (context) => RecentHandsPage(
           userId: widget.session.user.userId,
           loadHands: widget.onLoadRecentHands,
+          loadReplay: widget.onLoadHandReplay,
         ),
       ),
     );

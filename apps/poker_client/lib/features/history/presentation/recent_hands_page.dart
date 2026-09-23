@@ -1,24 +1,41 @@
 import 'package:flutter/material.dart';
+import 'package:poker_client/features/history/domain/hand_replay.dart';
 import 'package:poker_client/features/history/domain/recent_hand.dart';
+import 'package:poker_client/features/history/presentation/hand_replay_page.dart';
 import 'package:poker_client/features/table/presentation/table_card_widgets.dart';
 import 'package:poker_client/features/table/presentation/table_labels.dart';
 
+/// 牌局记录：本人打过的每一手，新的在前，可以往前翻页，每一手都能回放。
 class RecentHandsPage extends StatefulWidget {
   const RecentHandsPage({
     required this.userId,
     required this.loadHands,
+    this.loadReplay,
     super.key,
   });
 
+  /// 每页的手数，与服务端默认一致。
+  static const pageSize = 20;
+
   final String userId;
-  final Future<List<RecentHand>> Function() loadHands;
+
+  /// 取一页牌局记录；[before] 是上一页最后一手的手号，为空时取最新一页。
+  final Future<List<RecentHand>> Function({String? before}) loadHands;
+
+  /// 取某一手的回放；为空时不显示回放入口。
+  final Future<HandReplay> Function(String handId)? loadReplay;
 
   @override
   State<RecentHandsPage> createState() => _RecentHandsPageState();
 }
 
 class _RecentHandsPageState extends State<RecentHandsPage> {
-  late Future<List<RecentHand>> _hands;
+  final List<RecentHand> _hands = [];
+  bool _loading = true;
+  bool _loadingMore = false;
+  bool _hasMore = false;
+  bool _failed = false;
+  String? _moreError;
 
   @override
   void initState() {
@@ -26,16 +43,73 @@ class _RecentHandsPageState extends State<RecentHandsPage> {
     _reload();
   }
 
-  void _reload() => _hands = widget.loadHands();
+  Future<void> _reload() async {
+    setState(() {
+      _loading = true;
+      _failed = false;
+      _moreError = null;
+    });
+    try {
+      final page = await widget.loadHands();
+      if (!mounted) return;
+      setState(() {
+        _hands
+          ..clear()
+          ..addAll(page);
+        _hasMore = page.length >= RecentHandsPage.pageSize;
+      });
+    } on Object {
+      if (mounted) setState(() => _failed = true);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _loadMore() async {
+    if (_loadingMore || _hands.isEmpty) return;
+    setState(() {
+      _loadingMore = true;
+      _moreError = null;
+    });
+    try {
+      final page = await widget.loadHands(before: _hands.last.handId);
+      if (!mounted) return;
+      setState(() {
+        // 翻页期间刚好又结算了一手不会造成重复，但防御一下总没错
+        final known = {for (final hand in _hands) hand.handId};
+        _hands.addAll(page.where((hand) => !known.contains(hand.handId)));
+        _hasMore = page.length >= RecentHandsPage.pageSize;
+      });
+    } on Object {
+      if (mounted) setState(() => _moreError = '加载失败，请重试');
+    } finally {
+      if (mounted) setState(() => _loadingMore = false);
+    }
+  }
+
+  void _openReplay(RecentHand hand) {
+    final loadReplay = widget.loadReplay;
+    if (loadReplay == null) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => HandReplayPage(
+          userId: widget.userId,
+          loadReplay: () => loadReplay(hand.handId),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('最近牌局'),
+        title: const Text('牌局记录'),
         actions: [
           IconButton(
-            onPressed: () => setState(_reload),
+            // 翻页请求还没回来时刷新，旧的翻页结果会接到新列表后面，
+            // 期间若刚好结算了一手，列表会漏掉一手
+            onPressed: _loading || _loadingMore ? null : _reload,
             tooltip: '刷新',
             icon: const Icon(Icons.refresh),
           ),
@@ -48,45 +122,60 @@ class _RecentHandsPageState extends State<RecentHandsPage> {
             radius: 1.2,
           ),
         ),
-        child: FutureBuilder<List<RecentHand>>(
-          future: _hands,
-          builder: (context, snapshot) {
-            if (snapshot.connectionState != ConnectionState.done) {
-              return const Center(child: CircularProgressIndicator());
-            }
-            if (snapshot.hasError) {
-              return _EmptyState(
+        child: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : _failed
+            ? _EmptyState(
                 icon: Icons.cloud_off,
-                message: '暂时无法读取最近牌局',
-                onRetry: () => setState(_reload),
-              );
-            }
-            final hands = snapshot.data ?? const [];
-            if (hands.isEmpty) {
-              return const _EmptyState(
+                message: '暂时无法读取牌局记录',
+                onRetry: _reload,
+              )
+            : _hands.isEmpty
+            ? const _EmptyState(
                 icon: Icons.style_outlined,
                 message: '完成第一手牌后，这里会显示牌局记录',
-              );
-            }
-            return ListView.separated(
-              padding: const EdgeInsets.all(20),
-              itemCount: hands.length,
-              separatorBuilder: (_, _) => const SizedBox(height: 12),
-              itemBuilder: (context, index) =>
-                  _HandCard(hand: hands[index], userId: widget.userId),
-            );
-          },
-        ),
+              )
+            : ListView.separated(
+                padding: const EdgeInsets.all(20),
+                itemCount:
+                    _hands.length + (_hasMore || _moreError != null ? 1 : 0),
+                separatorBuilder: (_, _) => const SizedBox(height: 12),
+                itemBuilder: (context, index) {
+                  if (index == _hands.length) {
+                    return Center(
+                      child: _loadingMore
+                          ? const Padding(
+                              padding: EdgeInsets.all(8),
+                              child: CircularProgressIndicator(),
+                            )
+                          : OutlinedButton(
+                              key: const ValueKey('recent-hands-more'),
+                              onPressed: _loadMore,
+                              child: Text(_moreError ?? '加载更早的牌局'),
+                            ),
+                    );
+                  }
+                  final hand = _hands[index];
+                  return _HandCard(
+                    hand: hand,
+                    userId: widget.userId,
+                    onReplay: widget.loadReplay == null
+                        ? null
+                        : () => _openReplay(hand),
+                  );
+                },
+              ),
       ),
     );
   }
 }
 
 class _HandCard extends StatelessWidget {
-  const _HandCard({required this.hand, required this.userId});
+  const _HandCard({required this.hand, required this.userId, this.onReplay});
 
   final RecentHand hand;
   final String userId;
+  final VoidCallback? onReplay;
 
   @override
   Widget build(BuildContext context) {
@@ -129,6 +218,19 @@ class _HandCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 const Divider(),
+                if (onReplay != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: FilledButton.tonalIcon(
+                        key: ValueKey('replay-${hand.handId}'),
+                        onPressed: onReplay,
+                        icon: const Icon(Icons.play_circle_outline),
+                        label: const Text('回放这一手'),
+                      ),
+                    ),
+                  ),
                 for (var index = 0; index < boards.length; index++)
                   Padding(
                     padding: EdgeInsets.only(top: index == 0 ? 0 : 8),
@@ -217,7 +319,10 @@ class _HandCard extends StatelessWidget {
 List<String> _streetsOf(RecentHand hand) {
   const order = ['preflop', 'flop', 'turn', 'river'];
   final present = hand.actions.map((action) => action.street).toSet();
-  return [for (final street in order) if (present.contains(street)) street];
+  return [
+    for (final street in order)
+      if (present.contains(street)) street,
+  ];
 }
 
 String _streetLabel(String street) => switch (street) {

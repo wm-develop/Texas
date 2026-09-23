@@ -27,8 +27,8 @@ class TableSeatCard extends StatelessWidget {
   final Duration actionRemaining;
   final bool showReadyStatus;
   final int winnerAmount;
-  final VoidCallback onAvatarTap;
-  final VoidCallback onUseTimeExtension;
+  final VoidCallback? onAvatarTap;
+  final VoidCallback? onUseTimeExtension;
 
   /// 本座位的发牌演出状态。
   final SeatDealState deal;
@@ -84,7 +84,7 @@ class TableSeatCard extends StatelessWidget {
             behavior: HitTestBehavior.opaque,
             onTap: seat.isEmpty || seat.isCurrentUser ? null : onAvatarTap,
             child: Tooltip(
-              message: seat.isEmpty || seat.isCurrentUser
+              message: seat.isEmpty || seat.isCurrentUser || onAvatarTap == null
                   ? ''
                   : '点击赞赏或嘲讽 ${seat.displayName}',
               child: CircleAvatar(
@@ -345,7 +345,7 @@ class TableCurrentSeatSummary extends StatelessWidget {
 
   final TableSeat seat;
   final bool showReadyStatus;
-  final VoidCallback onUseTimeExtension;
+  final VoidCallback? onUseTimeExtension;
 
   /// 本座位的发牌演出状态。
   final SeatDealState deal;
@@ -400,18 +400,22 @@ class TableCurrentSeatSummary extends StatelessWidget {
               ],
               const Spacer(),
             ],
-            IconButton(
-              key: const ValueKey('seat-time-extension'),
-              onPressed: canExtend ? onUseTimeExtension : null,
-              tooltip: '加时 +30秒（剩余 ${seat.timeExtensions} 张）',
-              padding: EdgeInsets.zero,
-              visualDensity: VisualDensity.compact,
-              constraints: const BoxConstraints.tightFor(width: 30, height: 30),
-              icon: Badge(
-                label: Text('${seat.timeExtensions}'),
-                child: const Icon(Icons.timer_outlined, size: 17),
+            if (onUseTimeExtension != null)
+              IconButton(
+                key: const ValueKey('seat-time-extension'),
+                onPressed: canExtend ? onUseTimeExtension : null,
+                tooltip: '加时 +30秒（剩余 ${seat.timeExtensions} 张）',
+                padding: EdgeInsets.zero,
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints.tightFor(
+                  width: 30,
+                  height: 30,
+                ),
+                icon: Badge(
+                  label: Text('${seat.timeExtensions}'),
+                  child: const Icon(Icons.timer_outlined, size: 17),
+                ),
               ),
-            ),
           ],
         ),
         const SizedBox(height: 2),

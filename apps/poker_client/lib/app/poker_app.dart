@@ -12,6 +12,7 @@ import 'package:poker_client/core/settings/app_settings.dart';
 import 'package:poker_client/features/auth/presentation/auth_page.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_entry.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
+import 'package:poker_client/features/history/domain/hand_replay.dart';
 import 'package:poker_client/features/history/domain/recent_hand.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
 import 'package:poker_client/features/lobby/presentation/lobby_page.dart';
@@ -176,6 +177,7 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
         onCreateRoom: _createRoom,
         onJoinRoom: _joinRoom,
         onLoadRecentHands: _loadRecentHands,
+        onLoadHandReplay: _loadHandReplay,
         onTopUp: _topUp,
         onLoadBankrollEntries: _loadBankrollEntries,
         onPreviewRoom: _previewRoom,
@@ -294,8 +296,13 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
     }
   }
 
-  Future<List<RecentHand>> _loadRecentHands() =>
-      _authorized((token) => _api.recentHands(accessToken: token));
+  Future<List<RecentHand>> _loadRecentHands({String? before}) => _authorized(
+    (token) => _api.recentHands(accessToken: token, before: before),
+  );
+
+  Future<HandReplay> _loadHandReplay(String handId) => _authorized(
+    (token) => _api.handReplay(accessToken: token, handId: handId),
+  );
 
   Future<List<BankrollEntry>> _loadBankrollEntries() =>
       _authorized((token) => _api.bankrollEntries(accessToken: token));
