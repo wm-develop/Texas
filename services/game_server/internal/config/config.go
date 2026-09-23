@@ -135,7 +135,7 @@ func Load() (Config, error) {
 		APIKey:   strings.TrimSpace(os.Getenv("REVIEW_API_KEY")),
 		JSONMode: true,
 	}
-	if config.Review.Workers, err = intFromEnv("REVIEW_WORKERS", 2, 1, 16); err != nil {
+	if config.Review.Workers, err = intFromEnv("REVIEW_WORKERS", 2, 1); err != nil {
 		return Config{}, err
 	}
 	if config.Review.Timeout, err = durationFromSeconds(
@@ -407,15 +407,15 @@ func loadEnvironmentFile(path string) error {
 	return scanner.Err()
 }
 
-// intFromEnv 读一个整数环境变量；没设时用默认值，超出范围时报错。
-func intFromEnv(key string, fallback, minimum, maximum int) (int, error) {
+// intFromEnv 读一个整数环境变量；没设时用默认值，小于下限时报错，没有上限。
+func intFromEnv(key string, fallback, minimum int) (int, error) {
 	raw := strings.TrimSpace(os.Getenv(key))
 	if raw == "" {
 		return fallback, nil
 	}
 	value, err := strconv.Atoi(raw)
-	if err != nil || value < minimum || value > maximum {
-		return 0, fmt.Errorf("%s must be an integer between %d and %d", key, minimum, maximum)
+	if err != nil || value < minimum {
+		return 0, fmt.Errorf("%s must be an integer of at least %d", key, minimum)
 	}
 	return value, nil
 }

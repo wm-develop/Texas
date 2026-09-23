@@ -129,7 +129,7 @@ func TestLoadReviewConfiguration(t *testing.T) {
 	t.Setenv("REVIEW_MAX_TOKENS", "8000")
 	t.Setenv("REVIEW_THINKING", "none")
 	t.Setenv("REVIEW_REASONING_EFFORT", "none")
-	t.Setenv("REVIEW_WORKERS", "4")
+	t.Setenv("REVIEW_WORKERS", "40") // 没有上限
 	if config, err = Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestLoadReviewConfiguration(t *testing.T) {
 	if !config.ReviewEnabled() || config.Review.BaseURL != "https://llm.example.com/v1" || config.Review.Model != "qwen-plus" ||
 		config.Review.JSONMode || config.Review.Timeout != 10*time.Minute || config.Review.MaxTokens != 8000 ||
 		config.Review.Thinking != "" || config.Review.ReasoningEffort != "" || config.Review.SendUserID ||
-		config.Review.Workers != 4 {
+		config.Review.Workers != 40 {
 		t.Fatalf("configured=%+v", config.Review)
 	}
 	t.Setenv("REVIEW_SEND_USER_ID", "true")
