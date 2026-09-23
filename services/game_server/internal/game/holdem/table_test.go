@@ -211,6 +211,79 @@ func TestShortAllInDoesNotReopenRaise(t *testing.T) {
 	}
 }
 
+func TestCannotRaiseWhenEveryOpponentIsAllIn(t *testing.T) {
+	table := mustTable(t, Config{MaxSeats: 2, SmallBlind: 5, BigBlind: 10})
+	mustAddReady(t, table, "short", 1, 40)
+	mustAddReady(t, table, "deep", 2, 1000)
+	if err := table.StartHand(zeroRandom{}); err != nil {
+		t.Fatalf("StartHand: %v", err)
+	}
+	mustAct(t, table, "short-all-in", ActionAllIn, 0)
+
+	options, err := table.CurrentActionOptions()
+	if err != nil {
+		t.Fatalf("CurrentActionOptions: %v", err)
+	}
+	if options.ToCall != 30 || !options.CanCall || !options.CanFold ||
+		options.CanRaise || options.CanBet || options.CanAllIn || options.CanCheck {
+		t.Fatalf("options facing the only opponent's all-in = %#v", options)
+	}
+	for _, request := range []ActionRequest{
+		{ActionID: "deep-raise", Action: ActionRaise, RaiseTo: 100},
+		{ActionID: "deep-all-in", Action: ActionAllIn},
+	} {
+		request.PlayerID = "deep"
+		request.HandID = table.HandID()
+		request.TableRevision = table.Revision()
+		if _, err := table.SubmitAction(request); err == nil {
+			t.Fatalf("%s accepted while every opponent is all-in", request.Action)
+		}
+	}
+	mustAct(t, table, "deep-call", ActionCall, 0)
+	if deep := table.players[2]; deep.Stack != 960 {
+		t.Fatalf("deep stack after call = %d, want 960", deep.Stack)
+	}
+}
+
+func TestShortStackFacingAllInMayStillCallAllIn(t *testing.T) {
+	table := mustTable(t, Config{MaxSeats: 2, SmallBlind: 5, BigBlind: 10})
+	mustAddReady(t, table, "deep", 1, 1000)
+	mustAddReady(t, table, "short", 2, 60)
+	if err := table.StartHand(zeroRandom{}); err != nil {
+		t.Fatalf("StartHand: %v", err)
+	}
+	mustAct(t, table, "deep-all-in", ActionAllIn, 0)
+
+	// 筹码不够跟满时，全下就是跟注的唯一方式
+	options, err := table.CurrentActionOptions()
+	if err != nil {
+		t.Fatalf("CurrentActionOptions: %v", err)
+	}
+	if options.CanCall || !options.CanAllIn || options.CanRaise {
+		t.Fatalf("short options facing a bigger all-in = %#v", options)
+	}
+}
+
+func TestRaiseStaysOpenWhileAnotherOpponentCanStillAct(t *testing.T) {
+	table := mustTable(t, Config{MaxSeats: 3, SmallBlind: 5, BigBlind: 10})
+	mustAddReady(t, table, "dealer", 1, 100)
+	mustAddReady(t, table, "small", 2, 40)
+	mustAddReady(t, table, "big", 3, 100)
+	if err := table.StartHand(zeroRandom{}); err != nil {
+		t.Fatalf("StartHand: %v", err)
+	}
+	mustAct(t, table, "dealer-call", ActionCall, 0)
+	mustAct(t, table, "small-all-in", ActionAllIn, 0)
+
+	options, err := table.CurrentActionOptions()
+	if err != nil {
+		t.Fatalf("CurrentActionOptions: %v", err)
+	}
+	if !options.CanRaise || !options.CanAllIn {
+		t.Fatalf("big options with the dealer still able to act = %#v", options)
+	}
+}
+
 func TestShortStackCannotCallAndMustFoldOrGoAllIn(t *testing.T) {
 	table := mustTable(t, Config{MaxSeats: 2, SmallBlind: 5, BigBlind: 10})
 	mustAddReady(t, table, "short", 1, 7)

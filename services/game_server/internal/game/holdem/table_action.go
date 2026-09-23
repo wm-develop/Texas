@@ -82,6 +82,9 @@ func (table *Table) actionOptions(player *Player) ActionOptions {
 	}
 	allInRaiseTo := player.StreetBet + player.Stack
 	maxRaiseTo := roundDownToUnit(allInRaiseTo, table.config.SmallBlind)
+	// 其他未弃牌的人都已全下时，再加注没有人能跟，多出的部分只会原样退回：
+	// 这时只能跟注（筹码不够就全下跟）或弃牌。
+	raiseAllowed := player.RaiseAllowed && table.hasOtherActivePlayer(player)
 	options := ActionOptions{
 		ToCall: toCall,
 		// Folding is always a legal choice while it is the player's turn,
@@ -89,17 +92,27 @@ func (table *Table) actionOptions(player *Player) ActionOptions {
 		CanFold:    true,
 		CanCheck:   toCall == 0,
 		CanCall:    toCall > 0 && player.Stack >= toCall,
-		CanAllIn:   player.Stack > 0 && (allInRaiseTo <= table.currentBet || player.RaiseAllowed),
+		CanAllIn:   player.Stack > 0 && (allInRaiseTo <= table.currentBet || raiseAllowed),
 		MaxRaiseTo: maxRaiseTo,
 	}
 	if table.currentBet == 0 {
 		options.MinRaiseTo = roundUpToUnit(table.config.BigBlind, table.config.SmallBlind)
-		options.CanBet = player.RaiseAllowed && maxRaiseTo >= options.MinRaiseTo
+		options.CanBet = raiseAllowed && maxRaiseTo >= options.MinRaiseTo
 	} else {
 		options.MinRaiseTo = roundUpToUnit(table.currentBet+table.minRaiseIncrement, table.config.SmallBlind)
-		options.CanRaise = player.RaiseAllowed && maxRaiseTo >= options.MinRaiseTo
+		options.CanRaise = raiseAllowed && maxRaiseTo >= options.MinRaiseTo
 	}
 	return options
+}
+
+// hasOtherActivePlayer 报告除 player 外是否还有未弃牌、未全下、能继续下注的人。
+func (table *Table) hasOtherActivePlayer(player *Player) bool {
+	for _, other := range table.players {
+		if other != nil && other != player && other.Participating && !other.Folded && !other.AllIn {
+			return true
+		}
+	}
+	return false
 }
 
 func (table *Table) applyAction(player *Player, request ActionRequest, options ActionOptions) (int64, error) {
