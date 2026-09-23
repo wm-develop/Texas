@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
 import 'package:poker_client/features/history/domain/hand_replay.dart';
@@ -528,17 +527,26 @@ void main() {
       );
     }
 
-    testWidgets('手机横屏：不占标题栏，返回键在栏内，按钮不跟牌桌一起缩小', (tester) async {
+    testWidgets('手机横屏：不占标题栏，返回键在栏内，两侧栏随牌桌一起缩放', (tester) async {
       await _pumpReplay(tester, size: const Size(740, 340));
       expect(find.byType(AppBar), findsNothing);
       expect(find.byKey(const ValueKey('replay-back')), findsOneWidget);
-      final play = tester.getSize(find.byKey(const ValueKey('replay-play')));
-      expect(play.width, greaterThanOrEqualTo(40));
-      expect(play.height, greaterThanOrEqualTo(40));
-      final text = tester.renderObject<RenderParagraph>(
-        find.byKey(const ValueKey('replay-step-text')),
+      // 标题与房间号分两行，都不省略
+      expect(find.text('牌局回放'), findsOneWidget);
+      expect(find.textContaining('房间 '), findsOneWidget);
+      // 手机画布高 620，缩到 340 高：两栏与牌桌同一个比例，按钮仍点得中
+      const scale = 340 / 620;
+      final play = tester.getRect(find.byKey(const ValueKey('replay-play')));
+      expect(play.height, closeTo(60 * scale, 0.5));
+      expect(play.height, greaterThanOrEqualTo(32));
+      final panel = tester.getRect(
+        find.byKey(const ValueKey('replay-controls-panel')),
       );
-      expect(text.text.style?.fontSize ?? 14, greaterThanOrEqualTo(12));
+      expect(panel.width, closeTo((216 - 16) * scale, 0.5));
+      final info = tester.getRect(
+        find.byKey(const ValueKey('replay-info-panel')),
+      );
+      expect(info.width, lessThanOrEqualTo((168 - 16) * scale + 0.5));
       expect(tester.takeException(), isNull);
     });
 
@@ -612,7 +620,7 @@ void main() {
               find.byKey(const ValueKey('replay-step-review')),
               findsOneWidget,
             );
-            final review = tester.getSize(
+            final review = tester.getRect(
               find.byKey(const ValueKey('replay-review')),
             );
             expect(review.height, greaterThanOrEqualTo(32), reason: '按钮要点得中');

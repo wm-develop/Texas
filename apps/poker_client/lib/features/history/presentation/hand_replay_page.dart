@@ -19,8 +19,9 @@ import 'package:poker_client/features/table/presentation/table_viewport_layout.d
 /// 牌桌画面直接复用对局时的 [TableCanvas] 与同一套画布几何，每一帧把服务端
 /// 给的桌面状态换成一份 [TableSnapshot]，外观与真实牌桌一致。
 ///
-/// 控件不跟着牌桌一起缩放：手机横屏时牌桌会缩到一半左右，按钮若一起缩就
-/// 小得点不中。它们放在牌桌两侧对局时信息栏与下注区所在的位置。
+/// 说明与控件放在牌桌两侧对局时信息栏与下注区所在的位置，和牌桌画在同一张
+/// 画布里、一起缩放，字号和按钮尺寸与牌桌页的两栏一致；按钮按画布尺寸定得
+/// 够大，手机横屏缩到一半左右时仍点得中。
 class HandReplayPage extends StatefulWidget {
   const HandReplayPage({
     required this.userId,
@@ -336,14 +337,18 @@ class _HandReplayPageState extends State<HandReplayPage>
                     message: _error ?? '这手牌没有可以回放的内容',
                     onRetry: _load,
                   )
-                : _buildReplay(context, replay, shortScreen ? title : null),
+                : _buildReplay(context, replay, showHeader: shortScreen),
           ),
         ),
       ),
     );
   }
 
-  Widget _buildReplay(BuildContext context, HandReplay replay, String? title) {
+  Widget _buildReplay(
+    BuildContext context,
+    HandReplay replay, {
+    required bool showHeader,
+  }) {
     final step = replay.steps[_index];
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -363,20 +368,11 @@ class _HandReplayPageState extends State<HandReplayPage>
         );
         final left = (available.width - canvas.width * scale) / 2;
         final top = (available.height - canvas.height * scale) / 2;
-        // 两侧栏在屏幕上的实际宽度；牌桌居中后两边若有空白也一并用上。面板
-        // 宽度只取栏宽，不设下限：栏再窄也不能伸进牌桌压住玩家框
-        final rightRail =
-            (compact
-                ? TableViewportLayout.compactRightRailWidth
-                : TableViewportLayout.betRailWidth) *
-            scale;
-        final leftRail = compact
-            ? TableViewportLayout.compactLeftRailWidth * scale
-            : 0.0;
         final seats = replaySeats(replay, _index, widget.userId);
         final anchor = seats.indexWhere((seat) => seat.isCurrentUser);
         final info = _ReplayInfo(
-          title: title,
+          title: showHeader ? '牌局回放' : null,
+          subtitle: showHeader ? '房间 ${replay.roomCode}' : null,
           stepText: replayStepLabel(replay, step),
           position: _index,
           count: replay.steps.length,
@@ -436,37 +432,44 @@ class _HandReplayPageState extends State<HandReplayPage>
                           interactions: const [],
                         ),
                       ),
+                      // 两侧栏与牌桌画在同一张画布里、随牌桌一起缩放，与牌桌页
+                      // 的两栏同一套尺寸：放在画布外面时字号和按钮不缩，手机上
+                      // 会比玩家框里的字大出一截。手机：说明在左栏，操作在右栏；
+                      // 大屏：都在右栏，说明在上、操作贴底。
+                      if (compact) ...[
+                        Positioned(
+                          left: 8,
+                          top: 8,
+                          bottom: 8,
+                          width: TableViewportLayout.compactLeftRailWidth - 16,
+                          child: info,
+                        ),
+                        Positioned(
+                          right: 8,
+                          bottom: 8,
+                          width: TableViewportLayout.compactRightRailWidth - 16,
+                          child: controls,
+                        ),
+                      ] else
+                        Positioned(
+                          right: 16,
+                          top: 16,
+                          bottom: 18,
+                          width: TableViewportLayout.betRailWidth - 32,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Expanded(child: info),
+                              const SizedBox(height: 8),
+                              controls,
+                            ],
+                          ),
+                        ),
                     ],
                   ),
                 ),
               ),
             ),
-            if (compact) ...[
-              // 手机：说明在左栏，操作在右栏
-              Positioned(
-                left: 6,
-                top: 6,
-                bottom: 6,
-                width: left + leftRail - 10,
-                child: info,
-              ),
-              Positioned(
-                right: 6,
-                bottom: 6,
-                width: left + rightRail - 10,
-                child: controls,
-              ),
-            ] else
-              Positioned(
-                right: 12,
-                bottom: 12,
-                width: left + rightRail - 24,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [info, const SizedBox(height: 8), controls],
-                ),
-              ),
           ],
         );
       },
@@ -483,6 +486,7 @@ const _panelDecoration = BoxDecoration(
 class _ReplayInfo extends StatelessWidget {
   const _ReplayInfo({
     required this.title,
+    required this.subtitle,
     required this.stepText,
     required this.position,
     required this.count,
@@ -496,6 +500,7 @@ class _ReplayInfo extends StatelessWidget {
 
   /// 没有标题栏时（手机横屏）才有：连同返回按钮放在这里。
   final String? title;
+  final String? subtitle;
   final String stepText;
   final int position;
   final int count;
@@ -506,34 +511,51 @@ class _ReplayInfo extends StatelessWidget {
       alignment: Alignment.topLeft,
       child: Container(
         key: const ValueKey('replay-info-panel'),
-        padding: const EdgeInsets.all(8),
+        padding: const EdgeInsets.all(9),
         decoration: _panelDecoration,
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // 字号与牌桌页左栏的房间信息一致
               if (title != null) ...[
                 Row(
                   children: [
                     IconButton(
                       key: const ValueKey('replay-back'),
                       onPressed: () => Navigator.of(context).maybePop(),
-                      icon: const Icon(Icons.arrow_back),
+                      icon: const Icon(Icons.arrow_back, size: 22),
                       tooltip: '返回',
                       visualDensity: VisualDensity.compact,
+                      constraints: const BoxConstraints.tightFor(
+                        width: 36,
+                        height: 36,
+                      ),
+                      padding: EdgeInsets.zero,
                     ),
+                    const SizedBox(width: 4),
                     Expanded(
                       child: Text(
                         title!,
-                        maxLines: 2,
+                        maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 12),
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                        ),
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 4),
+                if (subtitle case final subtitle?)
+                  Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                const Divider(height: 14),
               ],
               Text(
                 '第 ${position + 1} / $count 步',
@@ -614,8 +636,9 @@ class _ReplayControls extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       key: const ValueKey('replay-controls-panel'),
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+      padding: const EdgeInsets.all(8),
       decoration: _panelDecoration,
+      // 尺寸按牌桌页右栏的下注按钮（高 56、字号 14）来定，随牌桌一起缩放
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -632,18 +655,22 @@ class _ReplayControls extends StatelessWidget {
               final previous = IconButton(
                 key: const ValueKey('replay-previous'),
                 onPressed: onPrevious,
+                iconSize: 30,
                 icon: const Icon(Icons.skip_previous),
                 tooltip: '上一步',
               );
               final play = IconButton.filled(
                 key: const ValueKey('replay-play'),
                 onPressed: onTogglePlay,
+                iconSize: 32,
+                style: IconButton.styleFrom(minimumSize: const Size.square(60)),
                 icon: Icon(playing ? Icons.pause : Icons.play_arrow),
                 tooltip: playing ? '暂停' : '播放',
               );
               final next = IconButton(
                 key: const ValueKey('replay-next'),
                 onPressed: onNext,
+                iconSize: 30,
                 icon: const Icon(Icons.skip_next),
                 tooltip: '下一步',
               );
@@ -676,13 +703,19 @@ class _ReplayControls extends StatelessWidget {
               '速度 ${speed == speed.roundToDouble() ? speed.toInt() : speed}×',
             ),
           ),
-          if (reviewLabel case final label?)
+          if (reviewLabel case final label?) ...[
+            const SizedBox(height: 6),
             FilledButton.tonalIcon(
               key: const ValueKey('replay-review'),
               onPressed: onReview,
-              icon: const Icon(Icons.psychology_alt_outlined, size: 18),
+              style: FilledButton.styleFrom(
+                minimumSize: const Size(0, 60),
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+              ),
+              icon: const Icon(Icons.psychology_alt_outlined, size: 20),
               label: FittedBox(fit: BoxFit.scaleDown, child: Text(label)),
             ),
+          ],
         ],
       ),
     );
