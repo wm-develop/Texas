@@ -13,6 +13,7 @@ import 'package:poker_client/features/auth/presentation/auth_page.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_entry.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/history/domain/hand_replay.dart';
+import 'package:poker_client/features/history/domain/hand_review.dart';
 import 'package:poker_client/features/history/domain/recent_hand.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
 import 'package:poker_client/features/lobby/presentation/lobby_page.dart';
@@ -178,6 +179,7 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
         onJoinRoom: _joinRoom,
         onLoadRecentHands: _loadRecentHands,
         onLoadHandReplay: _loadHandReplay,
+        onLoadReviewApi: _loadReviewApi,
         onTopUp: _topUp,
         onLoadBankrollEntries: _loadBankrollEntries,
         onPreviewRoom: _previewRoom,
@@ -303,6 +305,20 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
   Future<HandReplay> _loadHandReplay(String handId) => _authorized(
     (token) => _api.handReplay(accessToken: token, handId: handId),
   );
+
+  /// 每次打开回放时问一次服务端：管理员随时可能开通或收回。
+  Future<HandReviewApi?> _loadReviewApi() async {
+    final available = await _authorized((token) => _api.reviewAvailable(token));
+    if (!available) return null;
+    return HandReviewApi(
+      request: (handId) => _authorized(
+        (token) => _api.requestHandReview(accessToken: token, handId: handId),
+      ),
+      load: (handId) => _authorized(
+        (token) => _api.handReview(accessToken: token, handId: handId),
+      ),
+    );
+  }
 
   Future<List<BankrollEntry>> _loadBankrollEntries() =>
       _authorized((token) => _api.bankrollEntries(accessToken: token));

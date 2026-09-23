@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
 import 'package:poker_client/core/platform/native_display_cutout.dart';
 import 'package:poker_client/features/history/domain/hand_replay.dart';
+import 'package:poker_client/features/history/domain/hand_review.dart';
+import 'package:poker_client/features/table/domain/hand_category_label.dart';
 import 'package:poker_client/features/table/domain/table_seat.dart';
 import 'package:poker_client/features/table/domain/table_snapshot.dart';
 import 'package:poker_client/features/table/presentation/table_canvas.dart';
@@ -23,11 +25,15 @@ class HandReplayPage extends StatefulWidget {
   const HandReplayPage({
     required this.userId,
     required this.loadReplay,
+    this.loadReviewApi,
     super.key,
   });
 
   final String userId;
   final Future<HandReplay> Function() loadReplay;
+
+  /// 取 AI 复盘接口；返回 null（没开通或服务端没配置）时不显示复盘入口。
+  final Future<HandReviewApi?> Function()? loadReviewApi;
 
   @override
   State<HandReplayPage> createState() => _HandReplayPageState();
@@ -44,6 +50,16 @@ class _HandReplayPageState extends State<HandReplayPage>
   Timer? _timer;
   int _speedIndex = 0;
   NativeScreenInsets _nativeScreenInsets = NativeScreenInsets.zero;
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
+  HandReviewApi? _reviewApi;
+  HandReview? _review;
+  bool _reviewBusy = false;
+  String? _reviewError;
+  Timer? _reviewPoll;
+
+  /// 每次发起复盘加一：打开回放时那次查询若在发起之后才返回，结果已经过时，
+  /// 不能把刚拿到的「排队中」盖回「还没分析」。
+  int _reviewEpoch = 0;
 
   bool get _playing => _timer != null;
 
@@ -70,6 +86,7 @@ class _HandReplayPageState extends State<HandReplayPage>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
+    _reviewPoll?.cancel();
     super.dispose();
   }
 
@@ -92,11 +109,112 @@ class _HandReplayPageState extends State<HandReplayPage>
         _replay = replay;
         _index = 0;
       });
+      unawaited(_loadReview(replay));
     } on Object catch (error) {
       if (mounted) setState(() => _error = replayErrorMessage(error));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  /// 打开回放时看看有没有复盘入口、这一手之前有没有分析过。取不到就当没有：
+  /// 复盘是附加功能，不能让它挡住回放本身。
+  Future<void> _loadReview(HandReplay replay) async {
+    final loadApi = widget.loadReviewApi;
+    // 本人这一手一个决定都没做（例如大盲时所有人弃牌）就没有可点评的，不给入口
+    final decided = replay.steps.any(
+      (step) =>
+          step.index > 0 &&
+          step.kind == 'action' &&
+          step.actorId == widget.userId,
+    );
+    if (loadApi == null || !decided) return;
+    final handId = replay.handId;
+    try {
+      final api = await loadApi();
+      if (!mounted || api == null) return;
+      setState(() => _reviewApi = api);
+      final epoch = _reviewEpoch;
+      final existing = await api.load(handId);
+      if (!mounted || epoch != _reviewEpoch) return;
+      setState(() => _review = existing);
+      if (existing != null && existing.inProgress) _pollReview(handId);
+    } on Object {
+      // 忽略：入口不显示或显示为「AI 复盘」，点了再报具体原因
+    }
+  }
+
+  Future<void> _requestReview() async {
+    final api = _reviewApi;
+    final replay = _replay;
+    if (api == null || replay == null) return;
+    _scaffoldKey.currentState?.openEndDrawer();
+    final current = _review;
+    if (current != null && current.done) return;
+    if (current != null && current.inProgress) {
+      // 已经在分析：只是之前的查询出过错，清掉提示接着查
+      setState(() => _reviewError = null);
+      _pollReview(replay.handId);
+      return;
+    }
+    _reviewEpoch++;
+    setState(() {
+      _reviewBusy = true;
+      _reviewError = null;
+    });
+    try {
+      final review = await api.request(replay.handId);
+      if (!mounted) return;
+      setState(() => _review = review);
+      if (review.inProgress) _pollReview(replay.handId);
+    } on GameApiException catch (error) {
+      if (mounted) setState(() => _reviewError = reviewErrorLabel(error.code));
+    } on Object {
+      if (mounted) setState(() => _reviewError = '无法连接游戏服务');
+    } finally {
+      if (mounted) setState(() => _reviewBusy = false);
+    }
+  }
+
+  /// 分析要几十秒到一两分钟，期间每 3 秒问一次，出结果或失败就停。上一次
+  /// 问完才排下一次：网络慢时不会同时挂着好几个请求、结果乱序覆盖。
+  void _pollReview(String handId) {
+    final api = _reviewApi;
+    if (api == null) return;
+    _reviewPoll?.cancel();
+    final epoch = _reviewEpoch;
+    _reviewPoll = Timer(const Duration(seconds: 3), () async {
+      var keepPolling = true;
+      try {
+        final latest = await api.load(handId);
+        // 途中又发起了一次：这次的结果已经过时，交给新的轮询
+        if (!mounted || epoch != _reviewEpoch) return;
+        setState(() => _review = latest);
+        keepPolling = latest != null && latest.inProgress;
+      } on GameApiException catch (error) {
+        // 服务端明确拒绝（权限被收回、总开关关了）：再问也一样，停下并说明。
+        // 5xx 多半是部署重启时反代的 502；反代返回的是 HTML 或空页，解析不了时
+        // 状态码记为 0，这两种都下一轮再问
+        final refused = error.statusCode >= 400 && error.statusCode < 500;
+        if (refused || error.code == 'review_unavailable') {
+          keepPolling = false;
+          if (mounted) {
+            setState(() => _reviewError = reviewErrorLabel(error.code));
+          }
+        }
+      } on Object {
+        // 网络抖动时下一轮再问
+      }
+      if (mounted && keepPolling && epoch == _reviewEpoch) {
+        _pollReview(handId);
+      }
+    });
+  }
+
+  void _jumpToStep(int step) {
+    _scaffoldKey.currentState?.closeEndDrawer();
+    _pause();
+    _goTo(step);
   }
 
   void _goTo(int index) {
@@ -138,6 +256,14 @@ class _HandReplayPageState extends State<HandReplayPage>
     if (_playing) _startTimer();
   }
 
+  String _reviewButtonLabel() {
+    final review = _review;
+    if (review == null) return 'AI 复盘';
+    if (review.done) return '查看 AI 复盘';
+    if (review.inProgress) return 'AI 分析中…';
+    return 'AI 复盘（重试）';
+  }
+
   void _step(int delta) {
     _pause();
     _goTo(_index + delta);
@@ -157,7 +283,29 @@ class _HandReplayPageState extends State<HandReplayPage>
     );
     final title = replay == null ? '牌局回放' : '牌局回放 · 房间 ${replay.roomCode}';
     return Scaffold(
-      appBar: shortScreen && replay != null ? null : AppBar(title: Text(title)),
+      key: _scaffoldKey,
+      appBar: shortScreen && replay != null
+          ? null
+          // 有复盘抽屉时 AppBar 会自己加一个菜单键，入口已经在控制栏里了
+          : AppBar(title: Text(title), automaticallyImplyActions: false),
+      // 手机横屏时右侧是控制栏，从右边缘滑动很容易误开抽屉
+      endDrawerEnableOpenDragGesture: false,
+      // 复盘结果放在右侧抽屉里：手机横屏高度紧，底部面板放不下几段分析
+      endDrawer: _reviewApi == null || replay == null
+          ? null
+          : Drawer(
+              width: math.min(440, mediaSize.width * 0.9),
+              child: SafeArea(
+                child: _ReviewPanel(
+                  replay: replay,
+                  review: _review,
+                  busy: _reviewBusy,
+                  error: _reviewError,
+                  onStart: _requestReview,
+                  onJump: _jumpToStep,
+                ),
+              ),
+            ),
       body: DecoratedBox(
         decoration: const BoxDecoration(
           gradient: RadialGradient(
@@ -219,6 +367,8 @@ class _HandReplayPageState extends State<HandReplayPage>
           stepText: replayStepLabel(replay, step),
           position: _index,
           count: replay.steps.length,
+          decision: _review?.decisionAt(step.index),
+          onOpenReview: () => _scaffoldKey.currentState?.openEndDrawer(),
         );
         final controls = _ReplayControls(
           position: _index,
@@ -233,6 +383,8 @@ class _HandReplayPageState extends State<HandReplayPage>
           onCycleSpeed: _cycleSpeed,
           onPrevious: _index > 0 ? () => _step(-1) : null,
           onNext: _index < replay.steps.length - 1 ? () => _step(1) : null,
+          reviewLabel: _reviewApi == null ? null : _reviewButtonLabel(),
+          onReview: _requestReview,
         );
         return Stack(
           children: [
@@ -321,7 +473,13 @@ class _ReplayInfo extends StatelessWidget {
     required this.stepText,
     required this.position,
     required this.count,
+    this.decision,
+    this.onOpenReview,
   });
+
+  /// 这一步的 AI 点评；没有时为空。
+  final ReviewDecision? decision;
+  final VoidCallback? onOpenReview;
 
   /// 没有标题栏时（手机横屏）才有：连同返回按钮放在这里。
   final String? title;
@@ -379,6 +537,29 @@ class _ReplayInfo extends StatelessWidget {
                   color: Color(0xFFF6D986),
                 ),
               ),
+              if (decision case final decision?) ...[
+                const SizedBox(height: 6),
+                InkWell(
+                  key: const ValueKey('replay-step-review'),
+                  onTap: onOpenReview,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      VerdictChip(verdict: decision.verdict),
+                      const SizedBox(height: 2),
+                      Text(
+                        decision.reasoning,
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.white70,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -398,7 +579,13 @@ class _ReplayControls extends StatelessWidget {
     required this.onCycleSpeed,
     required this.onPrevious,
     required this.onNext,
+    this.reviewLabel,
+    this.onReview,
   });
+
+  /// 复盘入口的文字；为空时不显示入口。
+  final String? reviewLabel;
+  final VoidCallback? onReview;
 
   final int position;
   final int count;
@@ -476,6 +663,13 @@ class _ReplayControls extends StatelessWidget {
               '速度 ${speed == speed.roundToDouble() ? speed.toInt() : speed}×',
             ),
           ),
+          if (reviewLabel case final label?)
+            FilledButton.tonalIcon(
+              key: const ValueKey('replay-review'),
+              onPressed: onReview,
+              icon: const Icon(Icons.psychology_alt_outlined, size: 18),
+              label: FittedBox(fit: BoxFit.scaleDown, child: Text(label)),
+            ),
         ],
       ),
     );
@@ -704,4 +898,321 @@ String replayStepLabel(HandReplay replay, ReplayStep step) {
       return '结算$result${replay.rake > 0 ? '（本手抽水 ${replay.rake}）' : ''}';
   }
   return step.kind;
+}
+
+/// 点评结论的色块：好、合理、有争议、失误。
+class VerdictChip extends StatelessWidget {
+  const VerdictChip({required this.verdict, super.key});
+
+  final String verdict;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (verdict) {
+      '好' => const Color(0xFF6DE0A4),
+      '合理' => const Color(0xFF8EC5FF),
+      '失误' => const Color(0xFFE07A72),
+      _ => const Color(0xFFF6C35B),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.18),
+        border: Border.all(color: color),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        'AI：$verdict',
+        style: TextStyle(
+          color: color,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
+/// 复盘抽屉：分析中、失败、结果三种状态。点一条逐步点评就关抽屉并跳到那一步。
+class _ReviewPanel extends StatelessWidget {
+  const _ReviewPanel({
+    required this.replay,
+    required this.review,
+    required this.busy,
+    required this.error,
+    required this.onStart,
+    required this.onJump,
+  });
+
+  final HandReplay replay;
+  final HandReview? review;
+  final bool busy;
+  final String? error;
+  final VoidCallback onStart;
+  final ValueChanged<int> onJump;
+
+  @override
+  Widget build(BuildContext context) {
+    final review = this.review;
+    final result = review?.result;
+    return ListView(
+      key: const ValueKey('review-panel'),
+      padding: const EdgeInsets.all(16),
+      children: [
+        Row(
+          children: [
+            const Expanded(
+              child: Text(
+                'AI 复盘',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+              ),
+            ),
+            IconButton(
+              onPressed: () => Scaffold.of(context).closeEndDrawer(),
+              icon: const Icon(Icons.close),
+              tooltip: '关闭',
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (error != null) ...[
+          Text(error!, style: const TextStyle(color: Colors.redAccent)),
+          const SizedBox(height: 8),
+          OutlinedButton(
+            onPressed: busy ? null : onStart,
+            child: const Text('重试'),
+          ),
+        ] else if (busy || review == null) ...[
+          const Text(
+            '让 AI 以专业教练的视角点评你在这一手里的每个决策，并结合对手在你们同桌牌局里的打法倾向。',
+            style: TextStyle(color: Colors.white70),
+          ),
+          const SizedBox(height: 12),
+          FilledButton(
+            key: const ValueKey('review-start'),
+            onPressed: busy ? null : onStart,
+            child: Text(busy ? '正在提交…' : '开始分析'),
+          ),
+        ] else if (review.inProgress) ...[
+          const Center(child: CircularProgressIndicator()),
+          const SizedBox(height: 12),
+          const Text(
+            '正在分析，通常需要 30 秒到 2 分钟。可以先关掉这里继续看回放，结果出来后会自动显示。',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.white70),
+          ),
+        ] else if (review.failed || result == null) ...[
+          Text(
+            reviewErrorLabel(review.failure),
+            style: const TextStyle(color: Colors.redAccent),
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton(
+            key: const ValueKey('review-retry'),
+            onPressed: onStart,
+            child: const Text('重新分析'),
+          ),
+        ] else ...[
+          if (result.situation case final situation?) ...[
+            _section('牌局概况'),
+            _SituationCard(situation: situation),
+          ],
+          _section('总评'),
+          Text(result.summary),
+          if (result.decisions.isNotEmpty) ...[
+            _section('逐步点评'),
+            for (final decision in result.decisions)
+              Card(
+                margin: const EdgeInsets.only(bottom: 8),
+                child: InkWell(
+                  key: ValueKey('review-decision-${decision.step}'),
+                  onTap: () => onJump(decision.step),
+                  child: Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            VerdictChip(verdict: decision.verdict),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                '第 ${decision.step + 1} 步 · ${_stepLabel(decision.step)}',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.white60,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (decision.facts case final facts?) ...[
+                          const SizedBox(height: 4),
+                          _DecisionNumbers(facts: facts),
+                        ],
+                        const SizedBox(height: 4),
+                        Text(decision.reasoning),
+                        if (decision.bestAction.isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            '最佳行动：${decision.bestAction}',
+                            key: ValueKey('review-best-${decision.step}'),
+                            style: const TextStyle(color: Color(0xFFF6D986)),
+                          ),
+                        ],
+                        if (_estimateLine(decision) case final line?) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            line,
+                            key: ValueKey('review-estimate-${decision.step}'),
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.white70,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+          ],
+          if (result.keyLessons.isNotEmpty) ...[
+            _section('要点'),
+            for (final lesson in result.keyLessons) Text('· $lesson'),
+          ],
+          if (result.opponentNotes.isNotEmpty) ...[
+            _section('对手倾向'),
+            for (final note in result.opponentNotes) Text('· $note'),
+          ],
+          if (result.hindsight.isNotEmpty) ...[
+            _section('结果回顾'),
+            Text(result.hindsight),
+          ],
+          const SizedBox(height: 16),
+          Text(
+            '由 ${review.model.isEmpty ? 'AI' : review.model} 生成，仅供参考。',
+            style: const TextStyle(color: Colors.white38, fontSize: 11),
+          ),
+        ],
+      ],
+    );
+  }
+
+  String _stepLabel(int step) {
+    if (step < 0 || step >= replay.steps.length) return '';
+    return replayStepLabel(replay, replay.steps[step]);
+  }
+
+  /// 模型估算的胜率与期望收益，明确标成估算。
+  String? _estimateLine(ReviewDecision decision) {
+    final parts = <String>[];
+    if (decision.equityVsRange case final equity?) {
+      parts.add('对对手范围胜率约 ${equity.toStringAsFixed(0)}%');
+    }
+    final taken = decision.evTaken;
+    final best = decision.evBest;
+    if (taken != null && best != null) {
+      parts.add('本次 EV ${reviewEvLabel(taken)}');
+      if (best - taken >= 0.05) {
+        parts.add(
+          '最佳 EV ${reviewEvLabel(best)}（多 ${reviewEvLabel(best - taken)}）',
+        );
+      }
+    }
+    if (parts.isEmpty) return null;
+    return 'AI 估算：${parts.join(' · ')}';
+  }
+
+  Widget _section(String title) => Padding(
+    padding: const EdgeInsets.only(top: 14, bottom: 6),
+    child: Text(
+      title,
+      style: const TextStyle(
+        fontWeight: FontWeight.w800,
+        color: Color(0xFFF6D986),
+      ),
+    ),
+  );
+}
+
+/// 复盘开头的牌局概况：本人位置与底牌、人数、盲注、每家起始码量。
+class _SituationCard extends StatelessWidget {
+  const _SituationCard({required this.situation});
+
+  final ReviewSituation situation;
+
+  @override
+  Widget build(BuildContext context) {
+    String bigBlinds(double value) => value == value.roundToDouble()
+        ? value.toStringAsFixed(0)
+        : value.toStringAsFixed(1);
+    return Card(
+      key: const ValueKey('review-situation'),
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '${situation.players} 人桌 · 盲注 ${situation.smallBlind}/${situation.bigBlind} · '
+              '你在 ${situation.heroPosition}'
+              '${situation.holeCards.isEmpty ? '' : '，底牌 ${situation.holeCards.map(reviewCardLabel).join(' ')}'}',
+            ),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 12,
+              runSpacing: 4,
+              children: [
+                for (final seat in situation.seats)
+                  Text(
+                    '${seat.position}${seat.isHero ? '（你）' : ''} ${seat.stack}（${bigBlinds(seat.stackInBigBlinds)}BB）',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: seat.isHero
+                          ? const Color(0xFFF6D986)
+                          : Colors.white70,
+                      fontWeight: seat.isHero
+                          ? FontWeight.w700
+                          : FontWeight.normal,
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 一个决策点的精确数字：底池、需跟注与所需胜率、SPR、牌力与对随机手牌胜率。
+class _DecisionNumbers extends StatelessWidget {
+  const _DecisionNumbers({required this.facts});
+
+  final ReviewDecisionFacts facts;
+
+  @override
+  Widget build(BuildContext context) {
+    final pot = facts.winnablePot > 0
+        ? '底池 ${facts.potBefore}（你最多能赢 ${facts.winnablePot}）'
+        : '底池 ${facts.potBefore}';
+    final call = facts.toCall > 0
+        ? '需跟注 ${facts.toCall}，至少要 ${facts.potOdds?.toStringAsFixed(1) ?? '—'}% 胜率'
+        : '无需跟注';
+    final lines = [
+      '$pot · $call · SPR ${facts.stackToPotRatio.toStringAsFixed(1)}',
+      if (facts.madeHand.isNotEmpty)
+        '牌力：${handCategoryLabel(facts.madeHand)}（${facts.bestFive.map(reviewCardLabel).join(' ')}）'
+            '${facts.boardPlays ? '，公共牌本身就是这个牌力' : '，用到底牌 ${facts.holeCardsUsed.map(reviewCardLabel).join(' ')}'}'
+            ' · 对随机手牌胜率 ${facts.equityVsRandom.toStringAsFixed(0)}%'
+      else
+        '对随机手牌胜率 ${facts.equityVsRandom.toStringAsFixed(0)}%',
+    ];
+    return Text(
+      lines.join('\n'),
+      style: const TextStyle(fontSize: 12, color: Colors.white60, height: 1.4),
+    );
+  }
 }

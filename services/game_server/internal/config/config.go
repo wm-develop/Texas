@@ -33,7 +33,22 @@ type Config struct {
 	// ShutdownDrainTimeout 是收到停机信号后等待所有牌桌打完当前手的上限；
 	// 到期仍在进行的手会随进程退出而作废。为 0 时不等待。
 	ShutdownDrainTimeout time.Duration
+	// Review 是 AI 复盘所用的大模型，兼容 OpenAI Chat Completions 接口即可。
+	// APIKey 为空时功能整体关闭。
+	Review ReviewConfig
 }
+
+type ReviewConfig struct {
+	BaseURL   string
+	Model     string
+	APIKey    string
+	Timeout   time.Duration
+	JSONMode  bool
+	MaxTokens int
+}
+
+// ReviewEnabled 报告是否配置了 AI 复盘的大模型。
+func (config Config) ReviewEnabled() bool { return config.Review.APIKey != "" }
 
 // RateLimit 表示「每 Window 内最多 Burst 次」。
 type RateLimit struct {
@@ -103,6 +118,38 @@ func Load() (Config, error) {
 	)
 	if err != nil {
 		return Config{}, err
+	}
+	// AI 复盘：默认接 DeepSeek 的推理模型；换任何兼容 OpenAI 接口的服务只改这三项。
+	config.Review = ReviewConfig{
+		BaseURL:  valueOrDefault("REVIEW_BASE_URL", "https://api.deepseek.com"),
+		Model:    valueOrDefault("REVIEW_MODEL", "deepseek-reasoner"),
+		APIKey:   strings.TrimSpace(os.Getenv("REVIEW_API_KEY")),
+		JSONMode: true,
+	}
+	if config.Review.Timeout, err = durationFromSeconds(
+		"REVIEW_TIMEOUT_SECONDS", 5*time.Minute, 10*time.Second, 15*time.Minute,
+	); err != nil {
+		return Config{}, err
+	}
+	if raw := strings.TrimSpace(os.Getenv("REVIEW_JSON_MODE")); raw != "" {
+		enabled, parseErr := strconv.ParseBool(raw)
+		if parseErr != nil {
+			return Config{}, errors.New("REVIEW_JSON_MODE must be true or false")
+		}
+		config.Review.JSONMode = enabled
+	}
+	if raw := strings.TrimSpace(os.Getenv("REVIEW_MAX_TOKENS")); raw != "" {
+		value, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || value < 0 || value > 200_000 {
+			return Config{}, errors.New("REVIEW_MAX_TOKENS must be an integer between 0 and 200000")
+		}
+		config.Review.MaxTokens = value
+	}
+	// 地址写错（例如漏了 https://）要在启动时就拒绝，而不是每次复盘都以「大模型
+	// 服务暂时不可用」失败
+	if parsed, parseErr := url.Parse(config.Review.BaseURL); parseErr != nil ||
+		(parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
+		return Config{}, errors.New("REVIEW_BASE_URL must be an http or https URL")
 	}
 	config.ShutdownDrainTimeout = drainTimeout
 	if origins := strings.TrimSpace(os.Getenv("ALLOWED_ORIGINS")); origins != "" {

@@ -21,6 +21,7 @@ import (
 	"texas/services/game_server/internal/game/tablemanager"
 	"texas/services/game_server/internal/history"
 	"texas/services/game_server/internal/metrics"
+	"texas/services/game_server/internal/review"
 	"texas/services/game_server/internal/room"
 	"texas/services/game_server/internal/trtc"
 )
@@ -35,6 +36,8 @@ type Options struct {
 	Tables         *tablemanager.Manager
 	Chat           *chat.Service
 	History        history.Store
+	// Review 是 AI 复盘；为空时相关接口返回 service_unavailable。
+	Review         *review.Service
 	Readiness      func(context.Context) error
 	AllowedOrigins []string
 	// TrustedProxies 见 config.Config.TrustedProxies。
@@ -80,6 +83,7 @@ func NewHandler(logger *slog.Logger, options Options) http.Handler {
 		guard, webSockets.disconnectUsers,
 	)
 	registerHistoryRoutes(mux, logger, options.Accounts, options.History)
+	registerReviewRoutes(mux, logger, options.Accounts, options.Review)
 	mux.Handle("GET /ws", webSockets)
 	mux.Handle("POST /v1/trtc/credentials", trtcCredentialsHandler(options, guard))
 	if options.Metrics != nil && options.MetricsToken != "" {

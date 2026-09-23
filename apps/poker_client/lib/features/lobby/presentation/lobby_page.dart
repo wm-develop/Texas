@@ -8,6 +8,7 @@ import 'package:poker_client/features/admin/presentation/admin_page.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_entry.dart';
 import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/history/domain/hand_replay.dart';
+import 'package:poker_client/features/history/domain/hand_review.dart';
 import 'package:poker_client/features/history/domain/recent_hand.dart';
 import 'package:poker_client/features/history/presentation/recent_hands_page.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
@@ -21,6 +22,7 @@ class LobbyPage extends StatefulWidget {
     required this.onJoinRoom,
     required this.onLoadRecentHands,
     this.onLoadHandReplay,
+    this.onLoadReviewApi,
     required this.onTopUp,
     required this.onLoadBankrollEntries,
     required this.onPreviewRoom,
@@ -43,6 +45,9 @@ class LobbyPage extends StatefulWidget {
 
   /// 取某一手的回放时间轴。
   final Future<HandReplay> Function(String handId)? onLoadHandReplay;
+
+  /// 取 AI 复盘接口；本账号没开通时返回 null。
+  final Future<HandReviewApi?> Function()? onLoadReviewApi;
   final Future<BankrollSnapshot> Function(int amount) onTopUp;
   final Future<List<BankrollEntry>> Function() onLoadBankrollEntries;
   final Future<RoomPreview> Function(String code) onPreviewRoom;
@@ -438,6 +443,7 @@ class _LobbyPageState extends State<LobbyPage> {
           userId: widget.session.user.userId,
           loadHands: widget.onLoadRecentHands,
           loadReplay: widget.onLoadHandReplay,
+          loadReviewApi: widget.onLoadReviewApi,
         ),
       ),
     );

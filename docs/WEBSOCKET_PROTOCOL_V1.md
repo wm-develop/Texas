@@ -398,7 +398,7 @@
 | `no_time_extensions` | 本手的两张加时卡已用完 |
 | `time_extension_expired` | 当前行动已超时，不能再主动加时 |
 | `runout_choice_not_available` | 当前不在发牌次数选择阶段，或玩家无权选择 |
-| `hand_not_found` | 手号不存在，或请求者不是这手牌的参与者（两种情况不区分）。`GET /v1/hands/{handId}/replay` 与 `GET /v1/hands/recent?before=` 返回，状态码 404 |
+| `hand_not_found` | 手号不存在，或请求者不是这手牌的参与者（两种情况不区分）。`GET /v1/hands/{handId}/replay`、`GET /v1/hands/recent?before=` 与 `POST /v1/hands/{handId}/review` 返回，状态码 404 |
 | `replay_unavailable` | 这手牌的记录无法还原成可信的回放（推出的结束筹码与牌谱不符等）。`GET /v1/hands/{handId}/replay` 返回，状态码 422，服务端同时写 Error 日志 |
 
 ### 7.4 亮牌与换位
@@ -446,6 +446,32 @@
 | `spectator_chat_disabled` | 房主已关闭观战者的文字聊天 |
 | `spectator_emote_disabled` | 房主已关闭观战者的赞赏与嘲讽 |
 | `spectator_voice_disabled` | 房主已关闭观战者的麦克风。TRTC 的推流在客户端，服务端只能拒绝状态广播，客户端须配合关麦 |
+
+### 7.8 AI 复盘（HTTP，0.9.0）
+
+| 接口 | 说明 |
+|---|---|
+| `GET /v1/review/access` | 当前账号能不能用复盘：`{"available": bool}`。服务端没配置模型、总开关关着或不在名单里都是 `false`；客户端据此决定显不显示入口，老服务端返回 404 时客户端也当作 `false` |
+| `POST /v1/hands/{handId}/review` | 为本人这一手发起复盘，请求体为 `{}`。已有结果或正在分析时直接返回那一条（不重复计次），失败过的重新排队。返回复盘对象 |
+| `GET /v1/hands/{handId}/review` | 查看本人这一手的复盘；没发起过返回 404 `review_not_found` |
+| `GET /v1/admin/review` | 管理员：设置、开通名单、用量（`requests24h`、`requests30d`、`tokens30d`）、`modelConfigured` 与模型名 |
+| `POST /v1/admin/review/settings` | 管理员：`enabled`、`dailyLimitPerUser`、`monthlyTokenBudget` 三个字段必须都传，漏传返回 `invalid_review_settings`；0 表示不限 |
+| `POST /v1/admin/review/access` | 管理员：`{"userId", "granted"}` 开通或收回，记审计 `admin.review_access_changed`（设置变更记 `admin.review_settings_changed`）。漏传字段返回 400 `invalid_request`，账号不存在返回 404 `user_not_found` |
+
+复盘对象：`reviewId`、`handId`、`status`（`queued` / `running` / `done` / `failed`）、`model`、`failure`（失败原因码）、`result`，以及 token 用量与时间。`result` 为 `situation`（服务端填写：`heroPosition`、`holeCards`、`players`、`smallBlind`、`bigBlind`、`seats[]` 各家位置与起始码量）、`summary`、`decisions[]`、`keyLessons[]`、`opponentNotes[]`、`hindsight`。`decisions[]` 每一项：`step` 对应回放时间轴的步号；`verdict` 为「好」「合理」「有争议」「失误」之一；`reasoning`；`bestAction`（最佳行动，每一项都有）；模型估算的 `equityVsRangePercent`（对对手这条行动线范围的胜率）、`evTakenBB` 与 `evBestBB`（本次与最佳行动从这一步起的期望收益，大盲计、弃牌为 0，两者成对出现且最佳不低于本次，拿不准时省略）；以及服务端填写的 `facts`（这一步的底池、需跟注、所需胜率、本人最多能赢到的底池、SPR、有效筹码、最好的五张与用到的底牌、对随机手牌胜率等精确数字）。分析在后台进行，客户端每 3 秒查一次直到结束；查询遇到 4xx 或 `review_unavailable` 就停下并说明原因，其他 5xx 和解析不了的响应（例如部署重启时反代返回的 502 页面）下一轮接着查。库里是 `running`、但后台协程并没有在处理的那一条（上次结果没存进数据库，或是进程重启前留下的），`GET` 返回 `failed` / `internal_error`，再 `POST` 会重新排队，不占每人次数。
+
+| 错误码 | 含义 |
+|---|---|
+| `review_unavailable` | 服务端没配置模型或总开关关着，状态码 503 |
+| `review_not_allowed` | 当前账号不在开通名单里，状态码 403 |
+| `review_daily_limit` | 本人最近 24 小时的次数用完，状态码 429。只数排队、进行中和已完成的，失败的不占次数 |
+| `review_budget_exhausted` | 全服最近 30 天的 token 总额用完，状态码 429 |
+| `review_not_found` | 这一手还没有发起过复盘，状态码 404 |
+| `review_no_decisions` | 本人在这一手里没有行动过（例如大盲时所有人弃牌），没有可点评的，状态码 422 |
+| `replay_unavailable` | 发起复盘时这手牌无法还原成回放，状态码 422 |
+| `invalid_review_settings` | 管理员设置漏传字段、额度为负数或超过上限（每人次数 100 万、token 总额 1 万亿），状态码 400 |
+
+`failure` 的取值：`model_error`（模型服务出错或超时）、`invalid_output`（两次输出都不合格式，包括漏写或写了认不出的结论）、`output_truncated`（输出到了长度上限，见 `REVIEW_MAX_TOKENS`）、`replay_unavailable`、`hand_not_found`、`history_unavailable`、`invalid_input`、`internal_error`（结果存不进数据库）；排队期间管理员关了总开关、收回权限或全服额度用完时，不再调用模型，分别记为 `review_unavailable`、`review_not_allowed`、`review_budget_exhausted`。只返回原因码，模型服务的报错原文只写服务端日志 `hand review failed`。
 
 ### 7.7 已废弃的文档错误码
 

@@ -7,6 +7,7 @@ import 'package:poker_client/features/admin/presentation/minimum_client_version_
 import 'package:poker_client/features/admin/domain/managed_user.dart';
 import 'package:poker_client/features/admin/presentation/admin_audit_page.dart';
 import 'package:poker_client/features/admin/presentation/admin_rake_page.dart';
+import 'package:poker_client/features/admin/presentation/admin_review_page.dart';
 
 class AdminPage extends StatefulWidget {
   const AdminPage({required this.accessTokenProvider, super.key});
@@ -70,6 +71,11 @@ class _AdminPageState extends State<AdminPage> {
             onPressed: _openRake,
             icon: const Icon(Icons.percent),
             tooltip: '抽水管理',
+          ),
+          IconButton(
+            onPressed: _openReview,
+            icon: const Icon(Icons.psychology_alt_outlined),
+            tooltip: 'AI 复盘管理',
           ),
           IconButton(
             onPressed: _openAudit,
@@ -754,6 +760,30 @@ class _AdminPageState extends State<AdminPage> {
               accessToken: token,
               roomId: roomId,
               settings: settings,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _openReview() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => AdminReviewPage(
+          loadOverview: () => _withAccessToken(_api.adminReviewOverview),
+          loadUsers: () => _withAccessToken(_api.adminUsers),
+          saveSettings: (settings) => _withAccessToken(
+            (token) => _api.adminSetReviewSettings(
+              accessToken: token,
+              settings: settings,
+            ),
+          ),
+          setAccess: (userId, granted) => _withAccessToken(
+            (token) => _api.adminSetReviewAccess(
+              accessToken: token,
+              userId: userId,
+              granted: granted,
             ),
           ),
         ),

@@ -64,8 +64,15 @@ func TestPostgresStoreRedactsRecentHands(t *testing.T) {
 	runRecentForPlayerContract(t, store)
 	runPaginationContract(t, store)
 
-	// 迁移 000013 给旧牌谱补盲注额：退回到 000012、按旧结构写一手，再升上去
-	if _, err := migrator.Down(ctx, database, 1); err != nil {
+	// 迁移 000013 给旧牌谱补盲注额：退回到 000012、按旧结构写一手，再升上去。
+	// 退几步按之后又加了多少迁移算，不能写死成 1
+	steps := 0
+	for _, version := range migrator.Versions() {
+		if version > 12 {
+			steps++
+		}
+	}
+	if _, err := migrator.Down(ctx, database, steps); err != nil {
 		t.Fatalf("migrate down: %v", err)
 	}
 	if _, err := database.ExecContext(ctx,

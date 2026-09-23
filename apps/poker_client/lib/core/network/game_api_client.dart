@@ -12,6 +12,7 @@ import 'package:poker_client/features/bankroll/domain/bankroll_snapshot.dart';
 import 'package:poker_client/features/lobby/domain/friend_room.dart';
 import 'package:poker_client/features/table/domain/room_result.dart';
 import 'package:poker_client/features/history/domain/hand_replay.dart';
+import 'package:poker_client/features/history/domain/hand_review.dart';
 import 'package:poker_client/features/history/domain/recent_hand.dart';
 
 /// 服务端要求更高版本的客户端（HTTP 426）。
@@ -495,6 +496,76 @@ class GameApiClient {
       token: accessToken,
     ),
   );
+
+  /// 当前账号能不能用 AI 复盘。旧服务端没有这个接口时按不能用处理。
+  Future<bool> reviewAvailable(String accessToken) async {
+    try {
+      return (await _get('v1/review/access', token: accessToken))['available']
+              as bool? ??
+          false;
+    } on GameApiException catch (error) {
+      if (error.statusCode == 404) return false;
+      rethrow;
+    }
+  }
+
+  /// 为本人某一手发起 AI 复盘；已有结果或正在分析时服务端直接返回那一条。
+  Future<HandReview> requestHandReview({
+    required String accessToken,
+    required String handId,
+  }) async => HandReview.fromJson(
+    await _request(
+      'v1/hands/${Uri.encodeComponent(handId)}/review',
+      token: accessToken,
+      body: const {},
+    ),
+  );
+
+  /// 查看本人某一手的 AI 复盘；没发起过时返回 null。
+  Future<HandReview?> handReview({
+    required String accessToken,
+    required String handId,
+  }) async {
+    try {
+      return HandReview.fromJson(
+        await _get(
+          'v1/hands/${Uri.encodeComponent(handId)}/review',
+          token: accessToken,
+        ),
+      );
+    } on GameApiException catch (error) {
+      if (error.code == 'review_not_found') return null;
+      rethrow;
+    }
+  }
+
+  Future<ReviewOverview> adminReviewOverview(String accessToken) async =>
+      ReviewOverview.fromJson(
+        await _get('v1/admin/review', token: accessToken),
+      );
+
+  Future<ReviewSettings> adminSetReviewSettings({
+    required String accessToken,
+    required ReviewSettings settings,
+  }) async => ReviewSettings.fromJson(
+    await _request(
+      'v1/admin/review/settings',
+      token: accessToken,
+      body: settings.toJson(),
+    ),
+  );
+
+  Future<void> adminSetReviewAccess({
+    required String accessToken,
+    required String userId,
+    required bool granted,
+  }) async {
+    await _request(
+      'v1/admin/review/access',
+      token: accessToken,
+      body: {'userId': userId, 'granted': granted},
+    );
+  }
 
   Future<Map<String, dynamic>> _request(
     String path, {

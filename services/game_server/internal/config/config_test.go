@@ -97,3 +97,52 @@ func TestLoadRejectsInvalidAuthenticationTokenTTLs(t *testing.T) {
 		t.Fatal("Load should reject a refresh TTL that is not longer than the access TTL")
 	}
 }
+
+// AI 复盘：不配密钥就不启用；默认接 DeepSeek；超时、JSON 模式与输出上限写错时拒绝启动，
+// 免得管理员以为改好了却悄悄用了默认值。
+func TestLoadReviewConfiguration(t *testing.T) {
+	t.Setenv("TRTC_SDK_APP_ID", "")
+	t.Setenv("TRTC_SECRET_KEY", "")
+	for _, key := range []string{
+		"REVIEW_API_KEY", "REVIEW_BASE_URL", "REVIEW_MODEL", "REVIEW_TIMEOUT_SECONDS", "REVIEW_JSON_MODE", "REVIEW_MAX_TOKENS",
+	} {
+		t.Setenv(key, "")
+	}
+	config, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if config.ReviewEnabled() || config.Review.BaseURL != "https://api.deepseek.com" ||
+		config.Review.Model != "deepseek-reasoner" || !config.Review.JSONMode ||
+		config.Review.Timeout != 5*time.Minute || config.Review.MaxTokens != 0 {
+		t.Fatalf("defaults=%+v", config.Review)
+	}
+
+	t.Setenv("REVIEW_API_KEY", "test-key")
+	t.Setenv("REVIEW_BASE_URL", "https://llm.example.com/v1")
+	t.Setenv("REVIEW_MODEL", "qwen-plus")
+	t.Setenv("REVIEW_TIMEOUT_SECONDS", "600")
+	t.Setenv("REVIEW_JSON_MODE", "false")
+	t.Setenv("REVIEW_MAX_TOKENS", "8000")
+	if config, err = Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !config.ReviewEnabled() || config.Review.BaseURL != "https://llm.example.com/v1" || config.Review.Model != "qwen-plus" ||
+		config.Review.JSONMode || config.Review.Timeout != 10*time.Minute || config.Review.MaxTokens != 8000 {
+		t.Fatalf("configured=%+v", config.Review)
+	}
+
+	for key, value := range map[string]string{
+		"REVIEW_TIMEOUT_SECONDS": "5",
+		"REVIEW_JSON_MODE":       "maybe",
+		"REVIEW_MAX_TOKENS":      "-1",
+		"REVIEW_BASE_URL":        "api.deepseek.com",
+	} {
+		t.Run(key, func(t *testing.T) {
+			t.Setenv(key, value)
+			if _, err := Load(); err == nil {
+				t.Fatalf("%s=%s must be rejected", key, value)
+			}
+		})
+	}
+}

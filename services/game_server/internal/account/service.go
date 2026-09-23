@@ -421,6 +421,24 @@ func (service *Service) RecordManagedRakeChange(
 	return service.recordAudit(ctx, actor.UserID, "admin.rake_changed", metadata)
 }
 
+// RecordReviewSettingsChange 记下管理员对 AI 复盘全局设置的修改。
+func (service *Service) RecordReviewSettingsChange(ctx context.Context, actor User, settings map[string]any) error {
+	if err := requireAdmin(actor); err != nil {
+		return err
+	}
+	return service.recordAudit(ctx, actor.UserID, "admin.review_settings_changed", settings)
+}
+
+// RecordReviewAccessChange 记下管理员开通或收回某人的 AI 复盘。
+func (service *Service) RecordReviewAccessChange(ctx context.Context, actor User, targetUserID string, granted bool) error {
+	if err := requireAdmin(actor); err != nil {
+		return err
+	}
+	return service.recordAudit(ctx, actor.UserID, "admin.review_access_changed", map[string]any{
+		"targetUserId": targetUserID, "granted": granted,
+	})
+}
+
 func (service *Service) RecordManagedRoomRemoval(
 	ctx context.Context,
 	actor User,

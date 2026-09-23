@@ -144,10 +144,11 @@ TEST_DATABASE_URL=postgres://texas:<数据库密码>@texas-postgres:5432/texas_t
      -e GOMAXPROCS=2 \
      "texas-game-server-test:${IMAGE_TAG}" \
      go test -p 1 -count=1 -v -run 'Postgres' \
-       ./internal/account/ ./internal/chat/ ./internal/postgres/ ./internal/room/
+       ./internal/account/ ./internal/chat/ ./internal/history/ ./internal/postgres/ \
+       ./internal/review/ ./internal/room/
    ```
 
-   输出里应出现 `--- PASS: TestPostgresPhase3PersistenceFlow`、`--- PASS: TestMigratorUpgradeRepeatAndRollbackAgainstPostgres` 等。若看到 `--- SKIP` 加上 `TEST_DATABASE_URL is not configured`，说明变量没传进容器，结果不算数。
+   输出里应出现 `--- PASS: TestPostgresPhase3PersistenceFlow`、`--- PASS: TestMigratorUpgradeRepeatAndRollbackAgainstPostgres`、`--- PASS: TestPostgresReviewStore` 等。若看到 `--- SKIP` 加上 `TEST_DATABASE_URL is not configured`，说明变量没传进容器，结果不算数。
 
 4. 再跑全量：
 

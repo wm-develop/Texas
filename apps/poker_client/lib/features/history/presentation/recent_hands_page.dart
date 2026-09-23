@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:poker_client/features/history/domain/hand_replay.dart';
+import 'package:poker_client/features/history/domain/hand_review.dart';
 import 'package:poker_client/features/history/domain/recent_hand.dart';
 import 'package:poker_client/features/history/presentation/hand_replay_page.dart';
 import 'package:poker_client/features/table/presentation/table_card_widgets.dart';
@@ -11,6 +12,7 @@ class RecentHandsPage extends StatefulWidget {
     required this.userId,
     required this.loadHands,
     this.loadReplay,
+    this.loadReviewApi,
     super.key,
   });
 
@@ -24,6 +26,9 @@ class RecentHandsPage extends StatefulWidget {
 
   /// 取某一手的回放；为空时不显示回放入口。
   final Future<HandReplay> Function(String handId)? loadReplay;
+
+  /// 取 AI 复盘接口，传给回放页；为空或返回 null 时回放页不显示复盘入口。
+  final Future<HandReviewApi?> Function()? loadReviewApi;
 
   @override
   State<RecentHandsPage> createState() => _RecentHandsPageState();
@@ -95,6 +100,7 @@ class _RecentHandsPageState extends State<RecentHandsPage> {
         builder: (_) => HandReplayPage(
           userId: widget.userId,
           loadReplay: () => loadReplay(hand.handId),
+          loadReviewApi: widget.loadReviewApi,
         ),
       ),
     );

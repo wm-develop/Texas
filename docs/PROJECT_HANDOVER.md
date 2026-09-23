@@ -132,6 +132,7 @@ git tag --list --sort=version:refname
 - `internal/chat`：消息、历史和禁言。
 - `internal/history`：牌谱存储与按接收者裁剪（最近牌局、翻页、单手读取）。
 - `internal/replay`：把裁剪后的牌谱推成逐步回放的时间轴，并用结束筹码自检。输入必须是已裁剪的牌谱，生成器因此拿不到没亮过的底牌；改动时跑 `tablemanager` 的 `TestReplayRebuildsEveryRandomHandFromEverySeat`，它会从每个座位回放随机打出的几百手。
+- `internal/review`：AI 复盘。`facts.go` 在服务端算好局面数字与对手倾向，`prompt.go` 是提示词（改提示词要同时升 `PromptVersion`，旧结果按版本缓存，不会被新版本覆盖），`client.go` 是兼容 OpenAI 接口的客户端，`service.go` 是排队、额度与后台处理。喂给模型的数据只能来自裁剪后的牌谱，`TestPromptCarriesNoIdentityOrHiddenCards` 守着不泄露名字、账号与没亮过的牌。调提示词时用 `internal/game/tablemanager/review_live_test.go`：它用真实牌桌管理层让几种风格的机器人打两百多手，挑本人八类有代表性的手交给真实模型，把提示词与原始输出写进 `REVIEW_LIVE_OUT` 目录；只从 `REVIEW_LIVE_ENV` 指向的 env 文件读 `REVIEW_*` 几项，默认跳过，运行会产生费用。
 - `internal/postgres`：生产仓储和事务实现。
 - `internal/protocol/messages.go`：WebSocket 消息类型常量。
 - `migrations`：嵌入式版本化 SQL。

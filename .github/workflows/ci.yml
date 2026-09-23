@@ -71,7 +71,7 @@ jobs:
           # 会在测试失败时立刻终止脚本，下面的诊断一句都打不出来，日志里只剩
           # 一个 exit 1。
           status=0
-          if ! output="$(go test ./internal/account/ ./internal/chat/ ./internal/history/             ./internal/postgres/ ./internal/room/ -count=1 -v -run 'Postgres|Migrator' 2>&1)"; then
+          if ! output="$(go test ./internal/account/ ./internal/chat/ ./internal/history/             ./internal/postgres/ ./internal/review/ ./internal/room/ -count=1 -v -run 'Postgres|Migrator' 2>&1)"; then
             status=1
           fi
           echo "$output"
@@ -83,7 +83,7 @@ jobs:
             echo "::error::集成测试被跳过，TEST_DATABASE_URL 没有生效"
             exit 1
           fi
-          for wanted in TestPostgresPhase3PersistenceFlow TestPostgresStoreRedactsRecentHands; do
+          for wanted in TestPostgresPhase3PersistenceFlow TestPostgresStoreRedactsRecentHands TestPostgresReviewStore; do
             if ! echo "$output" | grep -q "PASS: $wanted"; then
               echo "::error::没有跑到 $wanted"
               exit 1

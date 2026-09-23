@@ -204,6 +204,8 @@ IconData auditEventIcon(String eventType) => switch (eventType) {
   'account.self_deleted' => Icons.person_remove_outlined,
   'admin.wallet_changed' => Icons.toll,
   'admin.rake_changed' => Icons.percent,
+  'admin.review_settings_changed' ||
+  'admin.review_access_changed' => Icons.psychology_alt_outlined,
   'admin.user_removed_from_room' => Icons.exit_to_app,
   'admin.user_status_changed' => Icons.manage_accounts_outlined,
   'admin.user_created' => Icons.person_add_alt_1,
@@ -234,6 +236,16 @@ String describeAuditEvent(AuditEvent event, AuditLog log) {
     case 'admin.rake_changed':
       final rake = RakeSettings.fromJson(metadata);
       return '把房间 ${metadata['roomCode'] ?? ''} 的抽水设为：${rake.summary}';
+    case 'admin.review_settings_changed':
+      String limit(Object? value, String unit) =>
+          value == 0 || value == null ? '不限' : '$value$unit';
+      return '${metadata['enabled'] == false ? '关闭' : '开放'} AI 复盘，'
+          '每人 24 小时 ${limit(metadata['dailyLimitPerUser'], ' 次')}，'
+          '30 天 token ${limit(metadata['monthlyTokenBudget'], '')}';
+    case 'admin.review_access_changed':
+      return metadata['granted'] == true
+          ? '为 ${user('targetUserId')} 开通 AI 复盘'
+          : '收回 ${user('targetUserId')} 的 AI 复盘';
     case 'admin.user_removed_from_room':
       return '把 ${user('targetUserId')} 请出房间 ${metadata['roomCode'] ?? ''}';
     case 'admin.registration_changed':

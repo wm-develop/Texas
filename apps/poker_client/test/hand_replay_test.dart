@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
 import 'package:poker_client/features/history/domain/hand_replay.dart';
+import 'package:poker_client/features/history/domain/hand_review.dart';
 import 'package:poker_client/features/history/domain/recent_hand.dart';
 import 'package:poker_client/features/history/presentation/hand_replay_page.dart';
 import 'package:poker_client/features/history/presentation/recent_hands_page.dart';
@@ -550,44 +553,93 @@ void main() {
       Size(1280, 720),
       Size(480, 900),
     ]) {
-      testWidgets('九人桌 ${size.width.toInt()}x${size.height.toInt()} 面板不压玩家框', (
-        tester,
-      ) async {
-        tester.view.devicePixelRatio = 1;
-        tester.view.physicalSize = size;
-        addTearDown(tester.view.reset);
-        await tester.pumpWidget(
-          MaterialApp(
-            home: HandReplayPage(
-              userId: 'p1',
-              loadReplay: () async => HandReplay.fromJson(_nineHandedJson()),
+      // 开通复盘后控制面板多一个按钮、说明面板多一段点评，同样不能压住玩家框
+      for (final withReview in const [false, true]) {
+        testWidgets('九人桌 ${size.width.toInt()}x${size.height.toInt()}'
+            '${withReview ? '（带复盘）' : ''} 面板不压玩家框', (tester) async {
+          tester.view.devicePixelRatio = 1;
+          tester.view.physicalSize = size;
+          addTearDown(tester.view.reset);
+          await tester.pumpWidget(
+            MaterialApp(
+              home: HandReplayPage(
+                userId: 'p1',
+                loadReplay: () async {
+                  final json = _nineHandedJson();
+                  if (withReview) {
+                    // 复盘入口只给本人行动过的手：补一步本人的过牌
+                    final steps = json['steps'] as List<dynamic>;
+                    json['steps'] = <dynamic>[
+                      ...steps,
+                      <String, dynamic>{
+                        ...(steps.first as Map<String, dynamic>),
+                        'index': 1,
+                        'kind': 'action',
+                        'actorId': 'p1',
+                        'action': 'check',
+                      },
+                    ];
+                  }
+                  return HandReplay.fromJson(json);
+                },
+                loadReviewApi: withReview
+                    ? () async => HandReviewApi(
+                        request: (_) async => throw StateError('unused'),
+                        load: (handId) async => HandReview.fromJson({
+                          'handId': handId,
+                          'status': 'done',
+                          'result': {
+                            'summary': '总评',
+                            'decisions': [
+                              {
+                                'step': 0,
+                                'verdict': '有争议',
+                                'reasoning': '很长的点评' * 30,
+                              },
+                            ],
+                          },
+                        }),
+                      )
+                    : null,
+              ),
             ),
-          ),
-        );
-        await tester.pumpAndSettle();
-        expect(tester.takeException(), isNull);
-        final panels = [
-          for (final key in const [
-            'replay-info-panel',
-            'replay-controls-panel',
-          ])
-            tester.getRect(find.byKey(ValueKey(key))),
-        ];
-        final seats = find.byType(TableSeatCard).evaluate().toList();
-        expect(seats, hasLength(9));
-        for (final element in seats) {
-          final seat = tester.getRect(find.byWidget(element.widget));
-          for (final panel in panels) {
+          );
+          await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull);
+          if (withReview) {
+            expect(find.byKey(const ValueKey('replay-review')), findsOneWidget);
             expect(
-              seat.intersect(panel).isEmpty ||
-                  seat.intersect(panel).width <= 0 ||
-                  seat.intersect(panel).height <= 0,
-              isTrue,
-              reason: 'seat $seat overlaps panel $panel',
+              find.byKey(const ValueKey('replay-step-review')),
+              findsOneWidget,
             );
+            final review = tester.getSize(
+              find.byKey(const ValueKey('replay-review')),
+            );
+            expect(review.height, greaterThanOrEqualTo(32), reason: '按钮要点得中');
           }
-        }
-      });
+          final panels = [
+            for (final key in const [
+              'replay-info-panel',
+              'replay-controls-panel',
+            ])
+              tester.getRect(find.byKey(ValueKey(key))),
+          ];
+          final seats = find.byType(TableSeatCard).evaluate().toList();
+          expect(seats, hasLength(9));
+          for (final element in seats) {
+            final seat = tester.getRect(find.byWidget(element.widget));
+            for (final panel in panels) {
+              expect(
+                seat.intersect(panel).isEmpty ||
+                    seat.intersect(panel).width <= 0 ||
+                    seat.intersect(panel).height <= 0,
+                isTrue,
+                reason: 'seat $seat overlaps panel $panel',
+              );
+            }
+          }
+        });
+      }
     }
 
     testWidgets('播放会自动逐步前进，放到最后自己停下', (tester) async {
@@ -625,6 +677,315 @@ void main() {
       await tester.tap(find.text('重试'));
       await tester.pumpAndSettle();
       expect(find.byType(TableCanvas), findsOneWidget);
+    });
+  });
+
+  group('AI 复盘', () {
+    const doneJson = {
+      'handId': 'hand_1',
+      'status': 'done',
+      'model': 'deepseek-reasoner',
+      'result': {
+        'situation': {
+          'heroPosition': 'SB',
+          'holeCards': ['As', 'Kd'],
+          'players': 3,
+          'smallBlind': 10,
+          'bigBlind': 20,
+          'seats': [
+            {
+              'position': 'SB',
+              'startingStack': 1000,
+              'stackInBigBlinds': 50,
+              'isHero': true,
+            },
+            {'position': 'BB', 'startingStack': 1000, 'stackInBigBlinds': 50},
+            {'position': 'BTN', 'startingStack': 1000, 'stackInBigBlinds': 50},
+          ],
+        },
+        'summary': '整体偏被动',
+        'decisions': [
+          {
+            'step': 2,
+            'verdict': '失误',
+            'reasoning': 'AKo 在小盲只跟注太被动',
+            'bestAction': '加注到 60',
+            'equityVsRangePercent': 58.4,
+            'evTakenBB': 0.4,
+            'evBestBB': 1.2,
+            'facts': {
+              'potBefore': 30,
+              'toCall': 10,
+              'potOddsPercent': 25,
+              'stackToPotRatio': 33,
+              'equityVsRandomHandsPercent': 64.2,
+            },
+          },
+        ],
+        'keyLessons': ['小盲拿强牌要主动'],
+        'opponentNotes': ['BB 翻前很少 3bet'],
+        'hindsight': '对手摊牌亮出一对 Q',
+      },
+    };
+
+    Future<void> pumpWithReview(WidgetTester tester, HandReviewApi? api) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1280, 720);
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: HandReplayPage(
+            userId: 'me',
+            loadReplay: () async => _replay(),
+            loadReviewApi: () async => api,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('没开通时不显示复盘入口', (tester) async {
+      await pumpWithReview(tester, null);
+      expect(find.byKey(const ValueKey('replay-review')), findsNothing);
+      await _pumpReplay(tester);
+      expect(find.byKey(const ValueKey('replay-review')), findsNothing);
+    });
+
+    testWidgets('发起后排队、轮询出结果，点一条点评跳到那一步', (tester) async {
+      var requests = 0;
+      var loads = 0;
+      final api = HandReviewApi(
+        request: (handId) async {
+          requests++;
+          return HandReview.fromJson({'handId': handId, 'status': 'queued'});
+        },
+        load: (handId) async {
+          loads++;
+          // 第一次是打开回放时问有没有旧结果；之后是轮询
+          if (loads == 1) return null;
+          if (loads == 2) {
+            return HandReview.fromJson({'handId': handId, 'status': 'running'});
+          }
+          return HandReview.fromJson(doneJson);
+        },
+      );
+      await pumpWithReview(tester, api);
+      expect(find.text('AI 复盘'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('replay-review')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(requests, 1);
+      expect(find.textContaining('正在分析'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 3));
+      expect(find.textContaining('正在分析'), findsOneWidget, reason: '还在分析');
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pump();
+      expect(find.text('整体偏被动'), findsOneWidget);
+      expect(find.text('最佳行动：加注到 60'), findsOneWidget);
+      // 局面与精确数字由服务端给出，估算明确标成 AI 估算
+      expect(find.byKey(const ValueKey('review-situation')), findsOneWidget);
+      expect(find.textContaining('3 人桌 · 盲注 10/20 · 你在 SB'), findsOneWidget);
+      expect(find.textContaining('需跟注 10，至少要 25.0% 胜率'), findsOneWidget);
+      expect(
+        tester
+            .widget<Text>(find.byKey(const ValueKey('review-estimate-2')))
+            .data,
+        'AI 估算：对对手范围胜率约 58% · 本次 EV +0.4 BB · 最佳 EV +1.2 BB（多 +0.8 BB）',
+      );
+      expect(find.text('对手摊牌亮出一对 Q'), findsOneWidget);
+      final loadsWhenDone = loads;
+      await tester.pump(const Duration(seconds: 10));
+      expect(loads, loadsWhenDone, reason: '出结果后停止轮询');
+
+      await tester.tap(find.byKey(const ValueKey('review-decision-2')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('review-panel')), findsNothing);
+      expect(_stepText(tester), contains('跟注'));
+      expect(find.text('AI：失误'), findsOneWidget, reason: '当前一步显示点评结论');
+      expect(find.text('查看 AI 复盘'), findsOneWidget);
+
+      // 再点入口只打开结果，不重复发起
+      await tester.tap(find.byKey(const ValueKey('replay-review')));
+      await tester.pumpAndSettle();
+      expect(requests, 1);
+      expect(find.text('整体偏被动'), findsOneWidget);
+    });
+
+    testWidgets('打开回放时已有结果：直接可看，其他步骤不显示点评', (tester) async {
+      final api = HandReviewApi(
+        request: (_) async => throw StateError('不该重新发起'),
+        load: (_) async => HandReview.fromJson(doneJson),
+      );
+      await pumpWithReview(tester, api);
+      expect(find.text('查看 AI 复盘'), findsOneWidget);
+      expect(find.byKey(const ValueKey('replay-step-review')), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('replay-next')));
+      await tester.tap(find.byKey(const ValueKey('replay-next')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('replay-step-review')), findsOneWidget);
+      // 点摘要打开完整复盘，关闭只关抽屉、不退出回放
+      await tester.tap(find.byKey(const ValueKey('replay-step-review')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('review-panel')), findsOneWidget);
+      await tester.tap(find.byTooltip('关闭'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('review-panel')), findsNothing);
+      expect(find.byType(TableCanvas), findsOneWidget);
+    });
+
+    testWidgets('额度用完时说明原因；分析失败可以重新分析', (tester) async {
+      var requests = 0;
+      final api = HandReviewApi(
+        request: (handId) async {
+          requests++;
+          if (requests == 1) {
+            throw const GameApiException('review_daily_limit', statusCode: 429);
+          }
+          return HandReview.fromJson(doneJson);
+        },
+        load: (handId) async => HandReview.fromJson({
+          'handId': handId,
+          'status': 'failed',
+          'failure': 'model_error',
+        }),
+      );
+      await pumpWithReview(tester, api);
+      expect(find.text('AI 复盘（重试）'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('replay-review')));
+      await tester.pumpAndSettle();
+      expect(requests, 1);
+      expect(find.text(reviewErrorLabel('review_daily_limit')), findsOneWidget);
+      await tester.tap(find.text('重试'));
+      await tester.pumpAndSettle();
+      expect(requests, 2);
+      expect(find.text('整体偏被动'), findsOneWidget);
+    });
+
+    testWidgets('本人没做过决定的手不显示复盘入口', (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1280, 720);
+      addTearDown(tester.view.reset);
+      var asked = false;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: HandReplayPage(
+            // 「弃牌者」只有一个弃牌动作；换一个完全没行动过的人来看
+            userId: 'nobody',
+            loadReplay: () async => _replay(),
+            loadReviewApi: () async {
+              asked = true;
+              return HandReviewApi(
+                request: (_) async => throw StateError('unused'),
+                load: (_) async => null,
+              );
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('replay-review')), findsNothing);
+      expect(asked, isFalse);
+    });
+
+    testWidgets('分析中被收回权限：停止轮询并说明原因，AppBar 不多出菜单键', (tester) async {
+      var loads = 0;
+      final api = HandReviewApi(
+        request: (handId) async =>
+            HandReview.fromJson({'handId': handId, 'status': 'queued'}),
+        load: (handId) async {
+          loads++;
+          if (loads == 1) return null;
+          throw const GameApiException('review_not_allowed', statusCode: 403);
+        },
+      );
+      await pumpWithReview(tester, api);
+      expect(find.byType(EndDrawerButton), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('replay-review')));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pump();
+      expect(find.text(reviewErrorLabel('review_not_allowed')), findsOneWidget);
+      final loadsAfterError = loads;
+      await tester.pump(const Duration(seconds: 12));
+      expect(loads, loadsAfterError, reason: '服务端明确拒绝后不再轮询');
+    });
+
+    testWidgets('部署重启时的 502 不停止轮询，恢复后照常出结果', (tester) async {
+      var loads = 0;
+      final api = HandReviewApi(
+        request: (handId) async =>
+            HandReview.fromJson({'handId': handId, 'status': 'queued'}),
+        load: (handId) async {
+          loads++;
+          if (loads == 1) return null;
+          if (loads == 2) {
+            // 反代的 502 是 HTML 页，客户端解析不了，记为状态码 0
+            throw const GameApiException(
+              'invalid_server_response',
+              statusCode: 0,
+            );
+          }
+          if (loads == 3) {
+            throw const GameApiException('bad_gateway', statusCode: 502);
+          }
+          return HandReview.fromJson(doneJson);
+        },
+      );
+      await pumpWithReview(tester, api);
+      await tester.tap(find.byKey(const ValueKey('replay-review')));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pump();
+      expect(find.textContaining('正在分析'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pump();
+      expect(find.textContaining('正在分析'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pump();
+      expect(find.text('整体偏被动'), findsOneWidget);
+    });
+
+    testWidgets('打开时的查询比发起还晚返回：不能把排队中盖回没分析', (tester) async {
+      final initial = Completer<HandReview?>();
+      var loads = 0;
+      final api = HandReviewApi(
+        request: (handId) async =>
+            HandReview.fromJson({'handId': handId, 'status': 'queued'}),
+        load: (handId) {
+          loads++;
+          if (loads == 1) return initial.future;
+          return Future.value(
+            HandReview.fromJson({'handId': handId, 'status': 'running'}),
+          );
+        },
+      );
+      await pumpWithReview(tester, api);
+      await tester.tap(find.byKey(const ValueKey('replay-review')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      initial.complete(null);
+      await tester.pump();
+      expect(find.text('AI 分析中…'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 3));
+    });
+
+    test('失败原因码都有中文说明', () {
+      for (final code in [
+        'review_unavailable',
+        'review_not_allowed',
+        'review_daily_limit',
+        'review_budget_exhausted',
+        'model_error',
+        'invalid_output',
+        'replay_unavailable',
+        'history_unavailable',
+        'hand_not_found',
+        'review_no_decisions',
+        'internal_error',
+        'output_truncated',
+      ]) {
+        expect(reviewErrorLabel(code), isNot('复盘失败，请稍后重试'), reason: code);
+      }
     });
   });
 

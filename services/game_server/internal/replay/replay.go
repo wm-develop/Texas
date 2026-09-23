@@ -417,12 +417,29 @@ func indexOf(street string) int {
 // blindSeats 优先用牌谱记录的盲注座位；0.8.0 之前的牌谱没记，按引擎 StartHand
 // 的规则从庄位推出：两人时庄位下小盲，否则庄位之后依次是小盲、大盲。
 func blindSeats(hand history.Hand, seats []*seat) (int, int) {
-	if hand.SmallBlindSeat > 0 && hand.BigBlindSeat > 0 {
-		return hand.SmallBlindSeat, hand.BigBlindSeat
-	}
 	numbers := make([]int, 0, len(seats))
 	for _, value := range seats {
 		numbers = append(numbers, value.player.Seat)
+	}
+	return inferBlindSeats(hand, numbers)
+}
+
+// BlindSeats 给别的包用：统计对手倾向时要知道谁下了盲注，旧牌谱同样按庄位推出。
+func BlindSeats(hand history.Hand) (int, int) {
+	numbers := make([]int, 0, len(hand.Players))
+	for _, player := range hand.Players {
+		numbers = append(numbers, player.Seat)
+	}
+	sort.Ints(numbers)
+	return inferBlindSeats(hand, numbers)
+}
+
+func inferBlindSeats(hand history.Hand, numbers []int) (int, int) {
+	if hand.SmallBlindSeat > 0 && hand.BigBlindSeat > 0 {
+		return hand.SmallBlindSeat, hand.BigBlindSeat
+	}
+	if len(numbers) == 0 {
+		return 0, 0
 	}
 	if len(numbers) == 2 {
 		return hand.DealerSeat, nextSeat(hand.DealerSeat, numbers)

@@ -23,6 +23,7 @@ import (
 	"texas/services/game_server/internal/ledger"
 	"texas/services/game_server/internal/metrics"
 	"texas/services/game_server/internal/postgres"
+	"texas/services/game_server/internal/review"
 	"texas/services/game_server/internal/room"
 	"texas/services/game_server/internal/security"
 	"texas/services/game_server/internal/tablestate"
@@ -55,6 +56,7 @@ func main() {
 		// 进行中牌局的状态。内存实现无法跨进程恢复，只是让不接数据库的
 		// 部署与生产走同一条代码路径。
 		tableStates tablestate.Store = tablestate.NewMemoryStore()
+		reviewStore review.Store     = review.NewMemoryStore()
 	)
 	if appConfig.DatabaseEnabled() {
 		connectContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -99,6 +101,9 @@ func main() {
 		}
 		if err == nil {
 			tableStates, err = tablestate.NewPostgresStore(database)
+		}
+		if err == nil {
+			reviewStore, err = review.NewPostgresStore(database)
 		}
 		if err != nil {
 			logger.Error("postgres repository initialization failed", "error", err)
@@ -168,6 +173,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	// AI 复盘：配置了大模型密钥才启用；没配置时名单与设置照常可管理，玩家看不到入口。
+	var reviewModel review.Model
+	if appConfig.ReviewEnabled() {
+		client, err := review.NewOpenAIClient(review.OpenAIConfig{
+			BaseURL: appConfig.Review.BaseURL, Model: appConfig.Review.Model, APIKey: appConfig.Review.APIKey,
+			Timeout: appConfig.Review.Timeout, JSONMode: appConfig.Review.JSONMode, MaxTokens: appConfig.Review.MaxTokens,
+		})
+		if err != nil {
+			logger.Error("review model initialization failed", "error", err)
+			os.Exit(1)
+		}
+		reviewModel = client
+		logger.Info("hand review enabled", "model", appConfig.Review.Model)
+	}
+	reviewService, err := review.NewService(reviewStore, historyStore, reviewModel, time.Now, logger)
+	if err != nil {
+		logger.Error("review service initialization failed", "error", err)
+		os.Exit(1)
+	}
+
 	var credentialIssuer trtc.CredentialIssuer
 	if appConfig.TRTCEnabled() {
 		credentialIssuer = trtc.NewTencentIssuer(
@@ -196,6 +221,7 @@ func main() {
 			Tables:         tableManager,
 			Chat:           chatService,
 			History:        historyStore,
+			Review:         reviewService,
 			AllowedOrigins: appConfig.AllowedOrigins,
 			TrustedProxies: appConfig.TrustedProxies,
 			RateLimits:     appConfig.RateLimits,
@@ -221,6 +247,13 @@ func main() {
 		syscall.SIGTERM,
 	)
 	defer stop()
+	// 复盘工作协程在停机时做完手上那一条再退出（模型已经在生成的内容不能白付钱），
+	// 下面在排空牌桌的同一个时限里等它
+	reviewWorkerDone := make(chan struct{})
+	go func() {
+		defer close(reviewWorkerDone)
+		reviewService.Run(shutdownContext)
+	}()
 
 	go func() {
 		<-shutdownContext.Done()
@@ -235,6 +268,12 @@ func main() {
 				"tablesInHand", tableManager.TablesInHand())
 		} else {
 			logger.Info("all tables between hands, shutting down")
+		}
+		select {
+		case <-reviewWorkerDone:
+		case <-drainContext.Done():
+			// 没做完的那一条留在「进行中」，重启后放回队列重做
+			logger.Warn("drain timeout reached while a hand review was still running")
 		}
 		cancelDrain()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
