@@ -36,6 +36,9 @@ class RecentHandsPage extends StatefulWidget {
 
 class _RecentHandsPageState extends State<RecentHandsPage> {
   final List<RecentHand> _hands = [];
+
+  /// 在回放页里刚分析完的手：不用刷新列表也显示标识。
+  final Set<String> _reviewedNow = {};
   bool _loading = true;
   bool _loadingMore = false;
   bool _hasMore = false;
@@ -101,6 +104,9 @@ class _RecentHandsPageState extends State<RecentHandsPage> {
           userId: widget.userId,
           loadReplay: () => loadReplay(hand.handId),
           loadReviewApi: widget.loadReviewApi,
+          onReviewDone: () {
+            if (mounted && _reviewedNow.add(hand.handId)) setState(() {});
+          },
         ),
       ),
     );
@@ -165,6 +171,8 @@ class _RecentHandsPageState extends State<RecentHandsPage> {
                   return _HandCard(
                     hand: hand,
                     userId: widget.userId,
+                    aiReviewed:
+                        hand.aiReviewed || _reviewedNow.contains(hand.handId),
                     onReplay: widget.loadReplay == null
                         ? null
                         : () => _openReplay(hand),
@@ -177,10 +185,16 @@ class _RecentHandsPageState extends State<RecentHandsPage> {
 }
 
 class _HandCard extends StatelessWidget {
-  const _HandCard({required this.hand, required this.userId, this.onReplay});
+  const _HandCard({
+    required this.hand,
+    required this.userId,
+    required this.aiReviewed,
+    this.onReplay,
+  });
 
   final RecentHand hand;
   final String userId;
+  final bool aiReviewed;
   final VoidCallback? onReplay;
 
   @override
@@ -215,7 +229,14 @@ class _HandCard extends StatelessWidget {
         ),
         trailing: Wrap(
           spacing: 4,
-          children: [for (final card in own.holeCards) _PlayingCard(card)],
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            if (aiReviewed) ...[
+              _ReviewedBadge(key: ValueKey('reviewed-${hand.handId}')),
+              const SizedBox(width: 8),
+            ],
+            for (final card in own.holeCards) _PlayingCard(card),
+          ],
         ),
         children: [
           Padding(
@@ -362,6 +383,46 @@ String _actionLabel(RecentHandAction action) => switch (action.type) {
   'post_big_blind' => '大盲 ${action.committed}',
   _ => action.type,
 };
+
+/// 本人已有 AI 复盘结果的标识，配色与回放页的复盘入口一致。窄屏（手机浏览器
+/// 竖屏）上只留图标，否则会把标题挤成一个字一行。
+class _ReviewedBadge extends StatelessWidget {
+  const _ReviewedBadge({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    const gold = Color(0xFFF6D986);
+    final compact = MediaQuery.sizeOf(context).width < 600;
+    return Tooltip(
+      message: '这一手有 AI 复盘，回放里可以查看',
+      child: Container(
+        padding: EdgeInsets.symmetric(horizontal: compact ? 5 : 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: const Color(0x33D9B85F),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: const Color(0x99D9B85F)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.psychology_alt_outlined, size: 15, color: gold),
+            if (!compact) ...[
+              const SizedBox(width: 4),
+              const Text(
+                'AI 已复盘',
+                style: TextStyle(
+                  color: gold,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class _PlayingCard extends StatelessWidget {
   const _PlayingCard(this.card);

@@ -27,11 +27,16 @@ class HandReplayPage extends StatefulWidget {
     required this.userId,
     required this.loadReplay,
     this.loadReviewApi,
+    this.onReviewDone,
     super.key,
   });
 
   final String userId;
   final Future<HandReplay> Function() loadReplay;
+
+  /// 这一手有了复盘结果时调用（打开时已有、或在这里分析完成），牌局记录据此
+  /// 加标识，不用回去再刷新。
+  final VoidCallback? onReviewDone;
 
   /// 取 AI 复盘接口；返回 null（没开通或服务端没配置）时不显示复盘入口。
   final Future<HandReviewApi?> Function()? loadReviewApi;
@@ -138,7 +143,7 @@ class _HandReplayPageState extends State<HandReplayPage>
       final epoch = _reviewEpoch;
       final existing = await api.load(handId);
       if (!mounted || epoch != _reviewEpoch) return;
-      setState(() => _review = existing);
+      _setReview(existing);
       if (existing != null && existing.inProgress) _pollReview(handId);
     } on Object {
       // 忽略：入口不显示或显示为「AI 复盘」，点了再报具体原因
@@ -168,7 +173,7 @@ class _HandReplayPageState extends State<HandReplayPage>
     try {
       final review = await api.request(replay.handId);
       if (!mounted) return;
-      setState(() => _review = review);
+      _setReview(review);
       if (review.inProgress) _pollReview(replay.handId);
     } on GameApiException catch (error) {
       if (mounted) setState(() => _reviewError = reviewErrorLabel(error.code));
@@ -192,7 +197,7 @@ class _HandReplayPageState extends State<HandReplayPage>
         final latest = await api.load(handId);
         // 途中又发起了一次：这次的结果已经过时，交给新的轮询
         if (!mounted || epoch != _reviewEpoch) return;
-        setState(() => _review = latest);
+        _setReview(latest);
         keepPolling = latest != null && latest.inProgress;
       } on GameApiException catch (error) {
         // 服务端明确拒绝（权限被收回、总开关关了）：再问也一样，停下并说明。
@@ -212,6 +217,14 @@ class _HandReplayPageState extends State<HandReplayPage>
         _pollReview(handId);
       }
     });
+  }
+
+  void _setReview(HandReview? value) {
+    setState(() => _review = value);
+    // 有结果（包括旧版结果、新版失败时带着的旧版）就告诉牌局记录加标识
+    if (value != null && (value.done || value.previous != null)) {
+      widget.onReviewDone?.call();
+    }
   }
 
   void _jumpToStep(int step) {

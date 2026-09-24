@@ -9,9 +9,14 @@ class RecentHand {
     this.runoutBoards = const [],
     this.actions = const [],
     this.rake = 0,
+    this.aiReviewed = false,
   });
 
-  factory RecentHand.fromJson(Map<String, dynamic> json) => RecentHand(
+  /// [aiReviewed] 来自同一次响应里的 `reviewedHandIds`，不在单手的 JSON 里。
+  factory RecentHand.fromJson(
+    Map<String, dynamic> json, {
+    bool aiReviewed = false,
+  }) => RecentHand(
     handId: json['handId'] as String,
     roomCode: json['roomCode'] as String? ?? '',
     endedAt: DateTime.parse(json['endedAt'] as String),
@@ -29,6 +34,7 @@ class RecentHand {
         .map((value) => RecentHandAction.fromJson(value as Map<String, dynamic>))
         .toList(growable: false),
     rake: json['rake'] as int? ?? 0,
+    aiReviewed: aiReviewed,
   );
 
   final String handId;
@@ -44,6 +50,9 @@ class RecentHand {
 
   /// 本手从底池里抽走的筹码；各人输赢之和加上它等于 0。
   final int rake;
+
+  /// 本人对这一手已有 AI 复盘结果（任意版本），并且现在能打开它。
+  final bool aiReviewed;
 }
 
 /// 一手牌里的一个动作。服务端一直在记录，此前客户端没有解析。

@@ -95,6 +95,8 @@ type Store interface {
 	Find(ctx context.Context, userID, handID, promptVersion string) (Review, error)
 	// FindLatestDone 返回某人某手任意版本里最近完成的一条。
 	FindLatestDone(ctx context.Context, userID, handID string) (Review, error)
+	// DoneHands 返回 handIDs 里这个人有已完成复盘（任意版本）的手号。
+	DoneHands(ctx context.Context, userID string, handIDs []string) (map[string]bool, error)
 	// Create 新建一条排队中的复盘；已存在时返回 ErrExists。
 	Create(ctx context.Context, value Review) error
 	// Requeue 把失败的复盘重新排队，requested_at 更新为 now，重试次数清零。
@@ -229,6 +231,22 @@ func (store *MemoryStore) FindLatestDone(_ context.Context, userID, handID strin
 		return Review{}, ErrNotFound
 	}
 	return cloneReview(*latest), nil
+}
+
+func (store *MemoryStore) DoneHands(_ context.Context, userID string, handIDs []string) (map[string]bool, error) {
+	wanted := make(map[string]bool, len(handIDs))
+	for _, handID := range handIDs {
+		wanted[handID] = true
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	result := map[string]bool{}
+	for _, value := range store.reviews {
+		if value.UserID == userID && value.Status == StatusDone && wanted[value.HandID] {
+			result[value.HandID] = true
+		}
+	}
+	return result, nil
 }
 
 func (store *MemoryStore) Create(_ context.Context, value Review) error {

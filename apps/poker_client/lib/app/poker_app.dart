@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:poker_client/core/auth/auth_session.dart';
 import 'package:poker_client/core/auth/session_store.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
@@ -19,6 +20,13 @@ import 'package:poker_client/features/lobby/domain/friend_room.dart';
 import 'package:poker_client/features/lobby/presentation/lobby_page.dart';
 import 'package:poker_client/features/table/presentation/table_prototype_page.dart';
 import 'package:poker_client/features/update/presentation/update_required_page.dart';
+
+/// 界面语言：简体中文（中国）。
+const appLocale = Locale.fromSubtags(
+  languageCode: 'zh',
+  scriptCode: 'Hans',
+  countryCode: 'CN',
+);
 
 class PokerApp extends StatefulWidget {
   const PokerApp({super.key, this.apiClient, this.sessionStore});
@@ -132,6 +140,12 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
       navigatorKey: _navigatorKey,
       title: '好友德州',
       debugShowCheckedModeBanner: false,
+      // 界面固定为简体中文。除了系统控件的文字（返回、粘贴等）变成中文，更要紧的
+      // 是字体：Flutter 按界面语言给汉字挑后备字体，默认的英文界面在 Windows 上
+      // 会挑到日文字体，「复」「误」「说」等字写法不对。Web 由浏览器挑字体，没有这个问题。
+      locale: appLocale,
+      supportedLocales: const [appLocale],
+      localizationsDelegates: GlobalMaterialLocalizations.delegates,
       theme: ThemeData(
         brightness: Brightness.dark,
         scaffoldBackgroundColor: const Color(0xFF071B18),

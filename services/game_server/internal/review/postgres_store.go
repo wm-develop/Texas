@@ -188,6 +188,33 @@ func (store *PostgresStore) FindLatestDone(ctx context.Context, userID, handID s
 	return value, err
 }
 
+func (store *PostgresStore) DoneHands(ctx context.Context, userID string, handIDs []string) (map[string]bool, error) {
+	result := map[string]bool{}
+	if len(handIDs) == 0 {
+		return result, nil
+	}
+	rows, err := store.database.QueryContext(ctx,
+		`SELECT DISTINCT hand_id FROM hand_reviews
+		 WHERE user_id = $1 AND hand_id = ANY($2) AND status = 'done'`,
+		userID, handIDs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list reviewed hands: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var handID string
+		if err := rows.Scan(&handID); err != nil {
+			return nil, fmt.Errorf("list reviewed hands: %w", err)
+		}
+		result[handID] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list reviewed hands: %w", err)
+	}
+	return result, nil
+}
+
 func (store *PostgresStore) Create(ctx context.Context, value Review) error {
 	result, err := store.database.ExecContext(ctx,
 		`INSERT INTO hand_reviews (review_id, hand_id, user_id, prompt_version, status, created_at, requested_at)

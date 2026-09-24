@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -138,8 +139,30 @@ func TestHandReviewFlow(t *testing.T) {
 	if queued.Status != review.StatusQueued {
 		t.Fatalf("queued=%+v", queued)
 	}
+	// 牌局记录的标识：排队中还没有结果，不算
+	reviewedIn := func(token string) []string {
+		var payload struct {
+			Hands    []json.RawMessage `json:"hands"`
+			Reviewed []string          `json:"reviewedHandIds"`
+		}
+		decodeBody(t, doJSONRequest(t, http.MethodGet, server.URL+"/v1/hands/recent", token, nil), &payload)
+		if len(payload.Hands) != 1 {
+			t.Fatalf("recent hands=%d", len(payload.Hands))
+		}
+		return payload.Reviewed
+	}
+	if ids := reviewedIn(owner.AccessToken); len(ids) != 0 {
+		t.Fatalf("a queued review is not a result yet: %v", ids)
+	}
 	if !reviews.ProcessNext(ctx) {
 		t.Fatal("the review must be processed")
+	}
+	if ids := reviewedIn(owner.AccessToken); len(ids) != 1 || ids[0] != handID {
+		t.Fatalf("reviewed hands=%v, want [%s]", ids, handID)
+	}
+	// 同一手的对手没有复盘，也看不到别人的
+	if ids := reviewedIn(guest.AccessToken); len(ids) != 0 {
+		t.Fatalf("guest reviewed hands=%v", ids)
 	}
 	var done review.Review
 	decodeBody(t, doJSONRequest(t, http.MethodGet, reviewPath, owner.AccessToken, nil), &done)

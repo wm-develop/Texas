@@ -140,6 +140,19 @@ func (service *Service) Available(ctx context.Context, userID string) (bool, err
 	return true, nil
 }
 
+// DoneHands 返回 handIDs 里本人已有复盘结果（任意版本）的手号，给牌局记录加标识。
+// 现在用不了复盘（没开通、总开关关了、没配置模型）时返回空：结果打不开，不给标识。
+func (service *Service) DoneHands(ctx context.Context, userID string, handIDs []string) (map[string]bool, error) {
+	if len(handIDs) == 0 {
+		return map[string]bool{}, nil
+	}
+	available, err := service.Available(ctx, userID)
+	if err != nil || !available {
+		return map[string]bool{}, err
+	}
+	return service.store.DoneHands(ctx, userID, handIDs)
+}
+
 // Request 为本人某一手发起复盘。已经有结果或正在分析的直接返回那一条，不重复花钱；
 // 失败过的重新排队。
 func (service *Service) Request(ctx context.Context, userID, handID string) (Review, error) {

@@ -17,6 +17,7 @@ import (
 	"texas/services/game_server/internal/game/tablemanager"
 	"texas/services/game_server/internal/history"
 	"texas/services/game_server/internal/replay"
+	"texas/services/game_server/internal/review"
 	"texas/services/game_server/internal/room"
 )
 
@@ -822,7 +823,13 @@ func registerRoomRoutes(
 	})
 }
 
-func registerHistoryRoutes(mux *http.ServeMux, logger *slog.Logger, accounts *account.Service, hands history.Store) {
+func registerHistoryRoutes(
+	mux *http.ServeMux,
+	logger *slog.Logger,
+	accounts *account.Service,
+	hands history.Store,
+	reviews *review.Service,
+) {
 	mux.HandleFunc("GET /v1/hands/recent", func(writer http.ResponseWriter, request *http.Request) {
 		user, ok := authenticateRequest(writer, request, accounts)
 		if !ok {
@@ -854,7 +861,30 @@ func registerHistoryRoutes(mux *http.ServeMux, logger *slog.Logger, accounts *ac
 			writeJSONError(writer, http.StatusInternalServerError, "internal_error")
 			return
 		}
-		writeJSON(writer, http.StatusOK, map[string]any{"hands": page})
+		body := map[string]any{"hands": page}
+		// 本页里本人有 AI 复盘结果的手，牌局记录据此加标识。只是附加信息：查不到
+		// 就不给，不能因此让牌局记录打不开
+		if reviews != nil && len(page) > 0 {
+			handIDs := make([]string, 0, len(page))
+			for _, hand := range page {
+				handIDs = append(handIDs, hand.HandID)
+			}
+			reviewed, err := reviews.DoneHands(request.Context(), user.UserID, handIDs)
+			if err != nil {
+				if logger != nil {
+					logger.Error("reviewed hands could not be read", "userId", user.UserID, "error", err)
+				}
+			} else if len(reviewed) > 0 {
+				ids := make([]string, 0, len(reviewed))
+				for _, handID := range handIDs {
+					if reviewed[handID] {
+						ids = append(ids, handID)
+					}
+				}
+				body["reviewedHandIds"] = ids
+			}
+		}
+		writeJSON(writer, http.StatusOK, body)
 	})
 
 	// 回放：只有这手牌的参与者能看，时间轴按请求者裁剪——本人的底牌每一帧都有，

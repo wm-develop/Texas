@@ -141,6 +141,34 @@ func TestAccessRules(t *testing.T) {
 	}
 }
 
+func TestDoneHandsMarksOnlyUsableResults(t *testing.T) {
+	ctx := context.Background()
+	service, store, _, _ := newTestService(t, &fakeModel{responses: []string{goodOutput}})
+	_ = store.SetAccess(ctx, "usr_zhang", true, "admin", time.Now())
+	if _, err := service.Request(ctx, "usr_zhang", "hand_1"); err != nil {
+		t.Fatal(err)
+	}
+	// 排队中还没有结果
+	if done, err := service.DoneHands(ctx, "usr_zhang", []string{"hand_1"}); err != nil || len(done) != 0 {
+		t.Fatalf("queued done=%v err=%v", done, err)
+	}
+	service.ProcessNext(ctx)
+	if done, err := service.DoneHands(ctx, "usr_zhang", []string{"hand_1", "hand_2"}); err != nil ||
+		len(done) != 1 || !done["hand_1"] {
+		t.Fatalf("done=%v err=%v", done, err)
+	}
+	// 权限收回或总开关关掉后结果打不开，也就不给标识
+	_ = store.SetAccess(ctx, "usr_zhang", false, "admin", time.Now())
+	if done, err := service.DoneHands(ctx, "usr_zhang", []string{"hand_1"}); err != nil || len(done) != 0 {
+		t.Fatalf("revoked done=%v err=%v", done, err)
+	}
+	_ = store.SetAccess(ctx, "usr_zhang", true, "admin", time.Now())
+	_ = store.SaveSettings(ctx, Settings{Enabled: false}, "admin", time.Now())
+	if done, err := service.DoneHands(ctx, "usr_zhang", []string{"hand_1"}); err != nil || len(done) != 0 {
+		t.Fatalf("disabled done=%v err=%v", done, err)
+	}
+}
+
 func TestReviewIsAnalysedOnceAndCached(t *testing.T) {
 	ctx := context.Background()
 	model := &fakeModel{responses: []string{goodOutput}}

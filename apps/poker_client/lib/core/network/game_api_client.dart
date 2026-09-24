@@ -481,8 +481,19 @@ class GameApiClient {
       '${before == null || before.isEmpty ? '' : '&before=${Uri.encodeQueryComponent(before)}'}',
       token: accessToken,
     );
+    // 本人已有 AI 复盘结果的手；旧服务端没有这个字段
+    final reviewed = {
+      ...(payload['reviewedHandIds'] as List<dynamic>? ?? const [])
+          .cast<String>(),
+    };
     return (payload['hands'] as List<dynamic>? ?? const [])
-        .map((value) => RecentHand.fromJson(value as Map<String, dynamic>))
+        .map((value) {
+          final json = value as Map<String, dynamic>;
+          return RecentHand.fromJson(
+            json,
+            aiReviewed: reviewed.contains(json['handId']),
+          );
+        })
         .toList(growable: false);
   }
 

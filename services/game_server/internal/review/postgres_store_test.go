@@ -244,6 +244,18 @@ func runStoreContract(ctx context.Context, t *testing.T, store Store, now time.T
 		t.Fatalf("done review must be kept: %+v", kept)
 	}
 
+	// 牌局记录里的标识：任意版本完成过就算，当前版本失败不影响；只看本人的
+	reviewed, err := store.DoneHands(ctx, "usr_zhang", []string{"hand_pg", "hand_pg_2", "hand_missing"})
+	if err != nil || len(reviewed) != 2 || !reviewed["hand_pg"] || !reviewed["hand_pg_2"] {
+		t.Fatalf("reviewed=%v err=%v", reviewed, err)
+	}
+	if reviewed, err := store.DoneHands(ctx, "usr_li", []string{"hand_pg", "hand_pg_2"}); err != nil || len(reviewed) != 0 {
+		t.Fatalf("someone else's reviewed=%v err=%v", reviewed, err)
+	}
+	if reviewed, err := store.DoneHands(ctx, "usr_zhang", nil); err != nil || len(reviewed) != 0 {
+		t.Fatalf("no hands reviewed=%v err=%v", reviewed, err)
+	}
+
 	// 用量：请求按 requested_at，token 按 finished_at
 	if count, err := store.CountRequests(ctx, "usr_zhang", now); err != nil || count != 2 {
 		t.Fatalf("count=%d err=%v", count, err)

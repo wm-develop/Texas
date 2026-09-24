@@ -1184,6 +1184,48 @@ void main() {
       expect(find.byType(HandReplayPage), findsOneWidget);
     });
 
+    testWidgets('有 AI 复盘结果的手带标识；在回放里分析完，返回时不用刷新就有', (tester) async {
+      final reviewed = RecentHand(
+        handId: 'hand_1',
+        roomCode: '123456',
+        endedAt: DateTime.utc(2026, 9, 23, 12),
+        board: const [],
+        showdown: false,
+        players: hand(1).players,
+        aiReviewed: true,
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RecentHandsPage(
+            userId: 'me',
+            loadHands: ({before}) async => [hand(0), reviewed],
+            loadReplay: (handId) async => _replay(),
+            loadReviewApi: () async => HandReviewApi(
+              request: (_) async => throw StateError('unused'),
+              load: (handId) async => HandReview.fromJson({
+                'handId': handId,
+                'status': 'done',
+                'result': {'summary': '总评', 'decisions': <dynamic>[]},
+              }),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('reviewed-hand_1')), findsOneWidget);
+      expect(find.byKey(const ValueKey('reviewed-hand_0')), findsNothing);
+      expect(find.text('AI 已复盘'), findsOneWidget);
+
+      // hand_0 在回放页里看到了结果：回到列表就带上标识
+      await tester.tap(find.byType(ExpansionTile).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('replay-hand_0')));
+      await tester.pumpAndSettle();
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('reviewed-hand_0')), findsOneWidget);
+    });
+
     testWidgets('没有回放能力时不显示回放入口', (tester) async {
       await tester.pumpWidget(
         MaterialApp(

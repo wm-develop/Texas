@@ -6,7 +6,9 @@ import (
 
 // PromptVersion 标识提示词的版本。复盘结果按「手 + 人 + 版本」缓存：提示词改了
 // 就升版本，旧结果保留，玩家可以用新版重新分析。
-const PromptVersion = "v1"
+//
+// v2（1.0.1）：翻前平跟大盲写作 limp，不再写「跛入」。
+const PromptVersion = "v2"
 
 // systemPrompt 面向有一定基础的玩家，写得专业：位置、赔率、范围、SPR 这些术语
 // 直接用，不做入门讲解。
@@ -31,7 +33,7 @@ const systemPrompt = `你是一名专业的德州扑克教练，为有一定基�
  "hindsight": "结合摊牌与结果的回顾；没有摊牌就简述结果"}
 - decisions 必须覆盖输入 decisions 里的每一个 step，且只能用这些 step。每一项只有 step、verdict、reasoning、bestAction、equityVsRangePercent、evTakenBB、evBestBB 这七个字段，不要把输入里的其他字段抄进来。verdict 必填且只能是「好」「合理」「有争议」「失误」四个词之一；bestAction 每一项都必填。
 - 三个估算数字的口径：equityVsRangePercent 是 hero 当时的牌对「对手在这条行动线上可能持有的范围」的胜率，不是对随机手牌的胜率；evTakenBB、evBestBB 是从这个决策点开始、本次行动与最佳行动各自的期望收益，以大盲为单位，弃牌记为 0。面对下注时跟注的 EV 可按「范围胜率 ×（底池 + 需跟注额）− 需跟注额」估算（底池用 winnablePot，没有就用 potBefore），只算到摊牌，后续街的下注另外斟酌；下注与加注要考虑对手的弃牌率。evBestBB 不能小于 evTakenBB，也不能小于 0（弃牌永远是 0，过牌也不会是负数），所以本次行动 EV 为负时它就不是最佳行动；本次行动已是最佳时两者相等。这三个数是估算，写在 reasoning 里的判断要与它们一致；实在无法估算时给 null。
-- 用简体中文，语气专业、直接，使用标准扑克术语（范围、价值下注、诈唬、底池赔率、隐含赔率、SPR、下注尺度、极化等），不要做入门讲解，不要客套。`
+- 用简体中文，语气专业、直接，使用标准扑克术语（范围、价值下注、诈唬、底池赔率、隐含赔率、SPR、下注尺度、极化等），不要做入门讲解，不要客套。翻前不加注、只跟到大盲入池直接写英文 limp（这样入池的人写作 limper，针对他们的加注写作 iso-raise），不要译成「跛入」「溜入」。`
 
 // userPrompt 把局面数据编成交给模型的用户消息。
 func userPrompt(facts Facts) (string, error) {

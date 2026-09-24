@@ -243,7 +243,16 @@ void main() {
                     },
                   ],
                 },
+                {
+                  'handId': 'hand_0',
+                  'roomCode': '123456',
+                  'endedAt': '2026-08-25T00:59:00Z',
+                  'board': <String>[],
+                  'showdown': false,
+                  'players': <dynamic>[],
+                },
               ],
+              'reviewedHandIds': ['hand_1'],
             }),
           ),
           200,
@@ -253,8 +262,11 @@ void main() {
 
     final hands = await client.recentHands(accessToken: 'access-token');
 
-    expect(hands.single.players.single.delta, 40);
-    expect(hands.single.players.single.holeCards, ['Ah', 'Ad']);
+    expect(hands.first.players.single.delta, 40);
+    expect(hands.first.players.single.holeCards, ['Ah', 'Ad']);
+    // 本人有 AI 复盘结果的手单独列出，按手号对上
+    expect(hands.first.aiReviewed, isTrue);
+    expect(hands.last.aiReviewed, isFalse);
   });
 
   test('loads the current room so a signed-in player can resume it', () async {
