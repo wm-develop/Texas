@@ -873,6 +873,8 @@ void main() {
       );
       await pumpWithReview(tester, api);
       await openPanelAtCopyButtons(tester);
+      // 有结果时先把提示词取好：浏览器只在点击后很短的时间里允许写剪贴板
+      expect(prompts, 1);
       final result = tester.getRect(
         find.byKey(const ValueKey('review-copy-result')),
       );
@@ -905,8 +907,12 @@ void main() {
       await tester.pump(const Duration(seconds: 3));
       expect(find.text('已复制'), findsNothing);
 
-      await tester.tap(find.byKey(const ValueKey('review-copy-prompt')));
+      // 关掉再打开面板、再点复制，都不再向服务端取
+      await tester.tap(find.byTooltip('关闭'));
       await tester.pumpAndSettle();
+      await openPanelAtCopyButtons(tester);
+      await tester.tap(find.byKey(const ValueKey('review-copy-prompt')));
+      await tester.pump();
       expect(prompts, 1);
       final full = copied.last;
       expect(full, startsWith('【系统提示词】（提示词版本 v2）\n系统提示词正文'));

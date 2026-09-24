@@ -109,6 +109,7 @@ Timeline {
 | `GET /v1/hands/{handId}/replay` | 回放时间轴 | 必须是该手参与者，否则 404（不泄露手号是否存在） |
 | `POST /v1/hands/{handId}/review` | 发起复盘；已有结果直接返回，不重复花钱 | 本人 + 复盘权限 |
 | `GET /v1/hands/{handId}/review` | 查询复盘状态与结果 | 本人 + 复盘权限 |
+| `GET /v1/hands/{handId}/review/prompt` | 这一手按当前版本发给模型的提示词与数据，给「复制提示词和结果」用（1.0.2 起） | 本人 + 复盘权限 |
 | `GET/POST /v1/admin/review/...` | 开通名单、全局开关、用量与费用统计 | 管理员 |
 
 ### 4.3 复盘任务

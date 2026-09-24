@@ -220,6 +220,25 @@ class _HandReplayPageState extends State<HandReplayPage>
     });
   }
 
+  /// 这一手的提示词，整个回放页只取一次；取失败了下次再取。
+  Future<ReviewPrompt>? _promptFuture;
+
+  Future<ReviewPrompt> _loadPrompt(
+    Future<ReviewPrompt> Function(String handId) load,
+    String handId,
+  ) {
+    if (_promptFuture case final pending?) return pending;
+    final future = load(handId);
+    _promptFuture = future;
+    future.then<void>(
+      (_) {},
+      onError: (Object _) {
+        if (identical(_promptFuture, future)) _promptFuture = null;
+      },
+    );
+    return future;
+  }
+
   void _setReview(HandReview? value) {
     setState(() => _review = value);
     // 有结果（包括旧版结果、新版失败时带着的旧版）就告诉牌局记录加标识
@@ -332,7 +351,7 @@ class _HandReplayPageState extends State<HandReplayPage>
                   onJump: _jumpToStep,
                   focusStep: _focusStep(),
                   loadPrompt: switch (_reviewApi?.prompt) {
-                    final prompt? => () => prompt(replay.handId),
+                    final prompt? => () => _loadPrompt(prompt, replay.handId),
                     null => null,
                   },
                 ),
@@ -1036,6 +1055,11 @@ class _ReviewPanelState extends State<_ReviewPanel> {
 
   /// 刚复制过的是哪一个（'result' / 'prompt'），按钮暂时显示「已复制」。
   String? _copied;
+
+  /// 预先取好的提示词。浏览器只在点击后很短的时间里允许写剪贴板（Safari 要求
+  /// 就在点击的处理里），点了再去服务端取，回来时可能已经不让写了；所以有结果
+  /// 时就先取好，点击时直接写。
+  ReviewPrompt? _prompt;
   Timer? _copiedTimer;
   bool _loadingPrompt = false;
   String? _copyError;
@@ -1051,6 +1075,17 @@ class _ReviewPanelState extends State<_ReviewPanel> {
   }
 
   Future<void> _copyPromptAndResult(HandReview review) async {
+    if (_prompt case final prompt?) {
+      await _copy(
+        'prompt',
+        reviewPromptText(
+          prompt,
+          _resultText(review),
+          outdated: review.outdated,
+        ),
+      );
+      return;
+    }
     final loadPrompt = widget.loadPrompt;
     if (loadPrompt == null || _loadingPrompt) return;
     setState(() {
@@ -1060,6 +1095,7 @@ class _ReviewPanelState extends State<_ReviewPanel> {
     try {
       final prompt = await loadPrompt();
       if (!mounted) return;
+      _prompt = prompt;
       await _copy(
         'prompt',
         reviewPromptText(
@@ -1190,6 +1226,7 @@ class _ReviewPanelState extends State<_ReviewPanel> {
   void initState() {
     super.initState();
     _scrollToFocus();
+    _prefetchPrompt();
   }
 
   @override
@@ -1199,6 +1236,19 @@ class _ReviewPanelState extends State<_ReviewPanel> {
     if (oldWidget.review?.result == null && widget.review?.result != null) {
       _scrollToFocus();
     }
+    _prefetchPrompt();
+  }
+
+  void _prefetchPrompt() {
+    final load = widget.loadPrompt;
+    if (load == null || widget.review?.done != true || _prompt != null) return;
+    load().then(
+      (prompt) {
+        if (mounted && _prompt == null) setState(() => _prompt = prompt);
+      },
+      // 预取失败不打扰：点按钮时会再取一次，那时再说明原因
+      onError: (Object _) {},
+    );
   }
 
   void _scrollToFocus() {
