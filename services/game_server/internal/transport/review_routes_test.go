@@ -164,6 +164,17 @@ func TestHandReviewFlow(t *testing.T) {
 	if ids := reviewedIn(guest.AccessToken); len(ids) != 0 {
 		t.Fatalf("guest reviewed hands=%v", ids)
 	}
+	// 复制用的提示词：本人拿得到，没开通的对手拿不到
+	var prompt review.Prompt
+	decodeBody(t, doJSONRequest(t, http.MethodGet, reviewPath+"/prompt", owner.AccessToken, nil), &prompt)
+	if prompt.PromptVersion != review.PromptVersion || !strings.Contains(prompt.System, "德州扑克教练") ||
+		!strings.HasPrefix(prompt.User, "请复盘这一手") || strings.Contains(prompt.User, owner.User.UserID) {
+		t.Fatalf("prompt=%+v", prompt)
+	}
+	guestPrompt := doJSONRequest(t, http.MethodGet, reviewPath+"/prompt", guest.AccessToken, nil)
+	if guestPrompt.StatusCode != http.StatusForbidden || responseErrorCode(t, guestPrompt) != "review_not_allowed" {
+		t.Fatalf("guest reading the prompt: status=%d", guestPrompt.StatusCode)
+	}
 	var done review.Review
 	decodeBody(t, doJSONRequest(t, http.MethodGet, reviewPath, owner.AccessToken, nil), &done)
 	if done.Status != review.StatusDone || done.Result == nil || done.Result.Summary != "打得不错" {

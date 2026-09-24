@@ -331,6 +331,9 @@ class _PokerAppState extends State<PokerApp> with WidgetsBindingObserver {
       load: (handId) => _authorized(
         (token) => _api.handReview(accessToken: token, handId: handId),
       ),
+      prompt: (handId) => _authorized(
+        (token) => _api.handReviewPrompt(accessToken: token, handId: handId),
+      ),
     );
   }
 

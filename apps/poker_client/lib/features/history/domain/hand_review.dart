@@ -203,13 +203,35 @@ String reviewEvLabel(double value) {
 
 /// 回放页用到的复盘接口。为空表示当前账号没有开通或服务端没配置大模型。
 class HandReviewApi {
-  const HandReviewApi({required this.request, required this.load});
+  const HandReviewApi({required this.request, required this.load, this.prompt});
 
   /// 发起复盘；已有结果或正在分析时服务端直接返回那一条。
   final Future<HandReview> Function(String handId) request;
 
   /// 查看复盘；没发起过时返回 null。
   final Future<HandReview?> Function(String handId) load;
+
+  /// 这一手按当前版本发给模型的提示词；为空时不提供「复制提示词和结果」。
+  final Future<ReviewPrompt> Function(String handId)? prompt;
+}
+
+/// 某一手按当前版本的提示词发给模型的全部文字：系统提示词与数据（用户消息）。
+class ReviewPrompt {
+  const ReviewPrompt({
+    required this.promptVersion,
+    required this.system,
+    required this.user,
+  });
+
+  factory ReviewPrompt.fromJson(Map<String, dynamic> json) => ReviewPrompt(
+    promptVersion: json['promptVersion'] as String? ?? '',
+    system: json['system'] as String? ?? '',
+    user: json['user'] as String? ?? '',
+  );
+
+  final String promptVersion;
+  final String system;
+  final String user;
 }
 
 /// 管理员看到的全貌。

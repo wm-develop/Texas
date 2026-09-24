@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
 import 'package:poker_client/features/history/domain/hand_replay.dart';
@@ -719,9 +720,13 @@ void main() {
       },
     };
 
-    Future<void> pumpWithReview(WidgetTester tester, HandReviewApi? api) async {
+    Future<void> pumpWithReview(
+      WidgetTester tester,
+      HandReviewApi? api, {
+      Size size = const Size(1280, 720),
+    }) async {
       tester.view.devicePixelRatio = 1;
-      tester.view.physicalSize = const Size(1280, 720);
+      tester.view.physicalSize = size;
       addTearDown(tester.view.reset);
       await tester.pumpWidget(
         MaterialApp(
@@ -821,6 +826,132 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('review-panel')), findsNothing);
       expect(find.byType(TableCanvas), findsOneWidget);
+    });
+
+    /// 截下写进剪贴板的文字。
+    List<String> captureClipboard(WidgetTester tester) {
+      final copied = <String>[];
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied.add(
+            (call.arguments as Map<Object?, Object?>)['text']! as String,
+          );
+        }
+        return null;
+      });
+      addTearDown(
+        () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+      );
+      return copied;
+    }
+
+    Future<void> openPanelAtCopyButtons(WidgetTester tester) async {
+      await tester.tap(find.byKey(const ValueKey('replay-review')));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('review-copy-result')),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('复制复盘结果、复制提示词和结果；大屏上两个按钮并排', (tester) async {
+      final copied = captureClipboard(tester);
+      var prompts = 0;
+      final api = HandReviewApi(
+        request: (_) async => throw StateError('不该重新发起'),
+        load: (_) async => HandReview.fromJson(doneJson),
+        prompt: (handId) async {
+          prompts++;
+          expect(handId, 'hand_1');
+          return const ReviewPrompt(
+            promptVersion: 'v2',
+            system: '系统提示词正文',
+            user: '请复盘这一手：{"hero":{}}',
+          );
+        },
+      );
+      await pumpWithReview(tester, api);
+      await openPanelAtCopyButtons(tester);
+      final result = tester.getRect(
+        find.byKey(const ValueKey('review-copy-result')),
+      );
+      final prompt = tester.getRect(
+        find.byKey(const ValueKey('review-copy-prompt')),
+      );
+      expect(result.top, prompt.top, reason: '面板够宽时并排');
+      expect(result.width, closeTo(prompt.width, 1));
+
+      await tester.tap(find.byKey(const ValueKey('review-copy-result')));
+      await tester.pump();
+      final text = copied.single;
+      for (final part in [
+        'AI 复盘 · 房间 123456',
+        '【总评】\n整体偏被动',
+        '第 3 步 · ',
+        '结论：失误',
+        '底池 30 · 需跟注 10',
+        'AKo 在小盲只跟注太被动',
+        '最佳行动：加注到 60',
+        'AI 估算：对对手范围胜率约 58%',
+        '【要点】\n· 小盲拿强牌要主动',
+        '【对手倾向】\n· BB 翻前很少 3bet',
+        '【结果回顾】\n对手摊牌亮出一对 Q',
+        '由 deepseek-reasoner 生成，仅供参考。',
+      ]) {
+        expect(text, contains(part));
+      }
+      expect(find.text('已复制'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 3));
+      expect(find.text('已复制'), findsNothing);
+
+      await tester.tap(find.byKey(const ValueKey('review-copy-prompt')));
+      await tester.pumpAndSettle();
+      expect(prompts, 1);
+      final full = copied.last;
+      expect(full, startsWith('【系统提示词】（提示词版本 v2）\n系统提示词正文'));
+      expect(full, contains('【发送给 AI 的数据】\n请复盘这一手：{"hero":{}}'));
+      expect(full, contains('【复盘结果】\n$text'));
+      await tester.pump(const Duration(seconds: 3));
+    });
+
+    testWidgets('窄屏上两个复制按钮上下排；提示词取不到时说明原因', (tester) async {
+      captureClipboard(tester);
+      final api = HandReviewApi(
+        request: (_) async => throw StateError('不该重新发起'),
+        load: (_) async => HandReview.fromJson(doneJson),
+        prompt: (_) async =>
+            throw const GameApiException('review_not_allowed', statusCode: 403),
+      );
+      await pumpWithReview(tester, api, size: const Size(360, 760));
+      await openPanelAtCopyButtons(tester);
+      expect(tester.takeException(), isNull);
+      final result = tester.getRect(
+        find.byKey(const ValueKey('review-copy-result')),
+      );
+      final prompt = tester.getRect(
+        find.byKey(const ValueKey('review-copy-prompt')),
+      );
+      expect(prompt.top, greaterThan(result.bottom), reason: '面板窄时上下排');
+      expect(result.left, prompt.left);
+      expect(result.height, greaterThanOrEqualTo(40), reason: '按钮要点得中');
+      await tester.tap(find.byKey(const ValueKey('review-copy-prompt')));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('提示词读取失败：${reviewErrorLabel('review_not_allowed')}'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('没有提示词接口时只有「复制复盘结果」', (tester) async {
+      final api = HandReviewApi(
+        request: (_) async => throw StateError('不该重新发起'),
+        load: (_) async => HandReview.fromJson(doneJson),
+      );
+      await pumpWithReview(tester, api);
+      await openPanelAtCopyButtons(tester);
+      expect(find.byKey(const ValueKey('review-copy-result')), findsOneWidget);
+      expect(find.byKey(const ValueKey('review-copy-prompt')), findsNothing);
     });
 
     testWidgets('额度用完时说明原因；分析失败可以重新分析', (tester) async {

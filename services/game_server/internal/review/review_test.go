@@ -169,6 +169,39 @@ func TestDoneHandsMarksOnlyUsableResults(t *testing.T) {
 	}
 }
 
+func TestPromptIsExactlyWhatTheModelReceived(t *testing.T) {
+	ctx := context.Background()
+	model := &fakeModel{responses: []string{goodOutput}}
+	service, store, _, _ := newTestService(t, model)
+	if _, err := service.Prompt(ctx, "usr_zhang", "hand_1"); codeOf(err) != "review_not_allowed" {
+		t.Fatalf("not on the list: %v", err)
+	}
+	_ = store.SetAccess(ctx, "usr_zhang", true, "admin", time.Now())
+	if _, err := service.Request(ctx, "usr_zhang", "hand_1"); err != nil {
+		t.Fatal(err)
+	}
+	service.ProcessNext(ctx)
+	prompt, err := service.Prompt(ctx, "usr_zhang", "hand_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 事后再算的与当时发给模型的一字不差
+	if prompt.System != systemPrompt || prompt.PromptVersion != PromptVersion || len(model.calls) != 1 ||
+		prompt.User != model.calls[0] {
+		t.Fatalf("prompt=%+v calls=%d", prompt, len(model.calls))
+	}
+	// 只按本人裁剪：不含昵称、账号、房间号，也不含没亮过的底牌
+	for _, secret := range []string{"张三", "李四", "usr_zhang", "usr_li", "654321", "room_secret", "Qc"} {
+		if strings.Contains(prompt.User, secret) {
+			t.Fatalf("prompt leaks %q", secret)
+		}
+	}
+	_ = store.SetAccess(ctx, "outsider", true, "admin", time.Now())
+	if _, err := service.Prompt(ctx, "outsider", "hand_1"); codeOf(err) != "hand_not_found" {
+		t.Fatalf("someone else's hand: %v", err)
+	}
+}
+
 func TestReviewIsAnalysedOnceAndCached(t *testing.T) {
 	ctx := context.Background()
 	model := &fakeModel{responses: []string{goodOutput}}

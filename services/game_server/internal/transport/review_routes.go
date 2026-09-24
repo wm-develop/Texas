@@ -64,6 +64,24 @@ func registerReviewRoutes(mux *http.ServeMux, logger *slog.Logger, accounts *acc
 		writeJSON(writer, http.StatusOK, value)
 	})
 
+	// 这一手按当前版本发给模型的提示词与数据，客户端「复制提示词和结果」用。
+	mux.HandleFunc("GET /v1/hands/{handID}/review/prompt", func(writer http.ResponseWriter, request *http.Request) {
+		user, ok := authenticateRequest(writer, request, accounts)
+		if !ok {
+			return
+		}
+		if reviews == nil {
+			writeJSONError(writer, http.StatusServiceUnavailable, "review_unavailable")
+			return
+		}
+		prompt, err := reviews.Prompt(request.Context(), user.UserID, request.PathValue("handID"))
+		if err != nil {
+			writeReviewError(writer, logger, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, prompt)
+	})
+
 	mux.HandleFunc("GET /v1/admin/review", func(writer http.ResponseWriter, request *http.Request) {
 		if _, ok := authorizeAdminRequest(writer, request, accounts); !ok {
 			return

@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:poker_client/core/network/game_api_client.dart';
 import 'package:poker_client/core/platform/native_display_cutout.dart';
 import 'package:poker_client/features/history/domain/hand_replay.dart';
@@ -330,6 +331,10 @@ class _HandReplayPageState extends State<HandReplayPage>
                   onReanalyse: () => _requestReview(reanalyse: true),
                   onJump: _jumpToStep,
                   focusStep: _focusStep(),
+                  loadPrompt: switch (_reviewApi?.prompt) {
+                    final prompt? => () => prompt(replay.handId),
+                    null => null,
+                  },
                 ),
               ),
             ),
@@ -1003,9 +1008,13 @@ class _ReviewPanel extends StatefulWidget {
     required this.onReanalyse,
     required this.onJump,
     this.focusStep,
+    this.loadPrompt,
   });
 
   final HandReplay replay;
+
+  /// 取这一手发给模型的提示词；为空时不显示「复制提示词和结果」。
+  final Future<ReviewPrompt> Function()? loadPrompt;
   final HandReview? review;
   final bool busy;
   final String? error;
@@ -1024,6 +1033,158 @@ class _ReviewPanel extends StatefulWidget {
 
 class _ReviewPanelState extends State<_ReviewPanel> {
   final _cardKeys = <int, GlobalKey>{};
+
+  /// 刚复制过的是哪一个（'result' / 'prompt'），按钮暂时显示「已复制」。
+  String? _copied;
+  Timer? _copiedTimer;
+  bool _loadingPrompt = false;
+  String? _copyError;
+
+  @override
+  void dispose() {
+    _copiedTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _copyResult(HandReview review) async {
+    await _copy('result', _resultText(review));
+  }
+
+  Future<void> _copyPromptAndResult(HandReview review) async {
+    final loadPrompt = widget.loadPrompt;
+    if (loadPrompt == null || _loadingPrompt) return;
+    setState(() {
+      _loadingPrompt = true;
+      _copyError = null;
+    });
+    try {
+      final prompt = await loadPrompt();
+      if (!mounted) return;
+      await _copy(
+        'prompt',
+        reviewPromptText(
+          prompt,
+          _resultText(review),
+          outdated: review.outdated,
+        ),
+      );
+    } on GameApiException catch (error) {
+      if (mounted) {
+        setState(() => _copyError = '提示词读取失败：${reviewErrorLabel(error.code)}');
+      }
+    } on Object {
+      if (mounted) setState(() => _copyError = '提示词读取失败，请稍后再试');
+    } finally {
+      if (mounted) setState(() => _loadingPrompt = false);
+    }
+  }
+
+  String _resultText(HandReview review) => reviewResultText(
+    review.result!,
+    widget.replay,
+    model: review.model,
+    outdated: review.outdated,
+  );
+
+  Future<void> _copy(String which, String text) async {
+    try {
+      await Clipboard.setData(ClipboardData(text: text));
+    } on Object {
+      if (mounted) setState(() => _copyError = '无法写入剪贴板');
+      return;
+    }
+    if (!mounted) return;
+    _copiedTimer?.cancel();
+    setState(() {
+      _copied = which;
+      _copyError = null;
+    });
+    _copiedTimer = Timer(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _copied = null);
+    });
+  }
+
+  /// 结果最下面的两个复制按钮。面板宽时并排，窄（手机浏览器竖屏）时上下排，
+  /// 字多时缩小而不是折行。
+  Widget _copyButtons(HandReview review) {
+    Widget button({
+      required String which,
+      required String label,
+      required IconData icon,
+      required VoidCallback? onPressed,
+      bool loading = false,
+    }) {
+      final copied = _copied == which;
+      return OutlinedButton.icon(
+        key: ValueKey('review-copy-$which'),
+        onPressed: onPressed,
+        style: OutlinedButton.styleFrom(
+          minimumSize: const Size(0, 40),
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+        ),
+        icon: loading
+            ? const SizedBox.square(
+                dimension: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : Icon(copied ? Icons.check : icon, size: 18),
+        label: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Text(copied ? '已复制' : label, maxLines: 1),
+        ),
+      );
+    }
+
+    final buttons = [
+      button(
+        which: 'result',
+        label: '复制复盘结果',
+        icon: Icons.content_copy,
+        onPressed: () => _copyResult(review),
+      ),
+      if (widget.loadPrompt != null)
+        button(
+          which: 'prompt',
+          label: '复制提示词和结果',
+          icon: Icons.copy_all,
+          loading: _loadingPrompt,
+          onPressed: _loadingPrompt ? null : () => _copyPromptAndResult(review),
+        ),
+    ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        LayoutBuilder(
+          builder: (context, constraints) => constraints.maxWidth >= 360
+              ? Row(
+                  children: [
+                    for (var index = 0; index < buttons.length; index++) ...[
+                      if (index > 0) const SizedBox(width: 8),
+                      Expanded(child: buttons[index]),
+                    ],
+                  ],
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    for (var index = 0; index < buttons.length; index++) ...[
+                      if (index > 0) const SizedBox(height: 8),
+                      buttons[index],
+                    ],
+                  ],
+                ),
+        ),
+        if (_copyError case final error?) ...[
+          const SizedBox(height: 6),
+          Text(
+            error,
+            key: const ValueKey('review-copy-error'),
+            style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+          ),
+        ],
+      ],
+    );
+  }
 
   @override
   void initState() {
@@ -1114,7 +1275,9 @@ class _ReviewPanelState extends State<_ReviewPanel> {
                 ),
               ),
             ..._resultSections(review.result!, focusStep: widget.focusStep),
-            const SizedBox(height: 16),
+            const SizedBox(height: 20),
+            _copyButtons(review),
+            const SizedBox(height: 12),
             Text(
               '由 ${review.model.isEmpty ? 'AI' : review.model} 生成，仅供参考。',
               style: const TextStyle(color: Colors.white38, fontSize: 11),
@@ -1278,7 +1441,7 @@ class _ReviewPanelState extends State<_ReviewPanel> {
                   style: const TextStyle(color: Color(0xFFF6D986)),
                 ),
               ],
-              if (_estimateLine(decision) case final line?) ...[
+              if (reviewEstimateLine(decision) case final line?) ...[
                 const SizedBox(height: 4),
                 Text(
                   line,
@@ -1293,31 +1456,7 @@ class _ReviewPanelState extends State<_ReviewPanel> {
     );
   }
 
-  String _stepLabel(int step) {
-    final replay = widget.replay;
-    if (step < 0 || step >= replay.steps.length) return '';
-    return replayStepLabel(replay, replay.steps[step]);
-  }
-
-  /// 模型估算的胜率与期望收益，明确标成估算。
-  String? _estimateLine(ReviewDecision decision) {
-    final parts = <String>[];
-    if (decision.equityVsRange case final equity?) {
-      parts.add('对对手范围胜率约 ${equity.toStringAsFixed(0)}%');
-    }
-    final taken = decision.evTaken;
-    final best = decision.evBest;
-    if (taken != null && best != null) {
-      parts.add('本次 EV ${reviewEvLabel(taken)}');
-      if (best - taken >= 0.05) {
-        parts.add(
-          '最佳 EV ${reviewEvLabel(best)}（多 ${reviewEvLabel(best - taken)}）',
-        );
-      }
-    }
-    if (parts.isEmpty) return null;
-    return 'AI 估算：${parts.join(' · ')}';
-  }
+  String _stepLabel(int step) => _replayStepLabelAt(widget.replay, step);
 
   Widget _section(String title) => Padding(
     padding: const EdgeInsets.only(top: 14, bottom: 6),
@@ -1338,25 +1477,131 @@ class _DecisionNumbers extends StatelessWidget {
   final ReviewDecisionFacts facts;
 
   @override
-  Widget build(BuildContext context) {
-    final pot = facts.winnablePot > 0
-        ? '底池 ${facts.potBefore}（你最多能赢 ${facts.winnablePot}）'
-        : '底池 ${facts.potBefore}';
-    final call = facts.toCall > 0
-        ? '需跟注 ${facts.toCall}，至少要 ${facts.potOdds?.toStringAsFixed(1) ?? '—'}% 胜率'
-        : '无需跟注';
-    final lines = [
-      '$pot · $call · SPR ${facts.stackToPotRatio.toStringAsFixed(1)}',
-      if (facts.madeHand.isNotEmpty)
-        '牌力：${handCategoryLabel(facts.madeHand)}（${facts.bestFive.map(reviewCardLabel).join(' ')}）'
-            '${facts.boardPlays ? '，公共牌本身就是这个牌力' : '，用到底牌 ${facts.holeCardsUsed.map(reviewCardLabel).join(' ')}'}'
-            ' · 对随机手牌胜率 ${facts.equityVsRandom.toStringAsFixed(0)}%'
-      else
-        '对随机手牌胜率 ${facts.equityVsRandom.toStringAsFixed(0)}%',
-    ];
-    return Text(
-      lines.join('\n'),
-      style: const TextStyle(fontSize: 12, color: Colors.white60, height: 1.4),
-    );
-  }
+  Widget build(BuildContext context) => Text(
+    reviewFactLines(facts).join('\n'),
+    style: const TextStyle(fontSize: 12, color: Colors.white60, height: 1.4),
+  );
 }
+
+String _replayStepLabelAt(HandReplay replay, int step) {
+  if (step < 0 || step >= replay.steps.length) return '';
+  return replayStepLabel(replay, replay.steps[step]);
+}
+
+/// 一个决策点由服务端算好的精确数字，面板与复制的文字共用。
+List<String> reviewFactLines(ReviewDecisionFacts facts) {
+  final pot = facts.winnablePot > 0
+      ? '底池 ${facts.potBefore}（你最多能赢 ${facts.winnablePot}）'
+      : '底池 ${facts.potBefore}';
+  final call = facts.toCall > 0
+      ? '需跟注 ${facts.toCall}，至少要 ${facts.potOdds?.toStringAsFixed(1) ?? '—'}% 胜率'
+      : '无需跟注';
+  return [
+    '$pot · $call · SPR ${facts.stackToPotRatio.toStringAsFixed(1)}',
+    if (facts.madeHand.isNotEmpty)
+      '牌力：${handCategoryLabel(facts.madeHand)}（${facts.bestFive.map(reviewCardLabel).join(' ')}）'
+          '${facts.boardPlays ? '，公共牌本身就是这个牌力' : '，用到底牌 ${facts.holeCardsUsed.map(reviewCardLabel).join(' ')}'}'
+          ' · 对随机手牌胜率 ${facts.equityVsRandom.toStringAsFixed(0)}%'
+    else
+      '对随机手牌胜率 ${facts.equityVsRandom.toStringAsFixed(0)}%',
+  ];
+}
+
+/// 模型估算的胜率与期望收益，明确标成估算；都没有时为 null。
+String? reviewEstimateLine(ReviewDecision decision) {
+  final parts = <String>[];
+  if (decision.equityVsRange case final equity?) {
+    parts.add('对对手范围胜率约 ${equity.toStringAsFixed(0)}%');
+  }
+  final taken = decision.evTaken;
+  final best = decision.evBest;
+  if (taken != null && best != null) {
+    parts.add('本次 EV ${reviewEvLabel(taken)}');
+    if (best - taken >= 0.05) {
+      parts.add(
+        '最佳 EV ${reviewEvLabel(best)}（多 ${reviewEvLabel(best - taken)}）',
+      );
+    }
+  }
+  if (parts.isEmpty) return null;
+  return 'AI 估算：${parts.join(' · ')}';
+}
+
+String _twoDigits(int value) => value.toString().padLeft(2, '0');
+
+/// 「复制复盘结果」的纯文本：内容与面板上显示的一致，按段落排好，贴到聊天或
+/// 笔记里也读得清楚。
+String reviewResultText(
+  ReviewResult result,
+  HandReplay replay, {
+  required String model,
+  bool outdated = false,
+}) {
+  final ended = replay.endedAt.toLocal();
+  final lines = <String>[
+    'AI 复盘 · 房间 ${replay.roomCode} · '
+        '${_twoDigits(ended.month)}-${_twoDigits(ended.day)} '
+        '${_twoDigits(ended.hour)}:${_twoDigits(ended.minute)} · '
+        '盲注 ${replay.smallBlind}/${replay.bigBlind}',
+    if (outdated) '（旧版复盘的结果）',
+    '',
+    '【总评】',
+    result.summary,
+  ];
+  if (result.decisions.isNotEmpty) {
+    lines.addAll(['', '【逐步点评】']);
+    for (final decision in result.decisions) {
+      lines.add(
+        '第 ${decision.step + 1} 步 · ${_replayStepLabelAt(replay, decision.step)}'
+        ' · 结论：${decision.verdict}',
+      );
+      if (decision.facts case final facts?) {
+        lines.addAll(reviewFactLines(facts));
+      }
+      lines.add(decision.reasoning);
+      if (decision.bestAction.isNotEmpty) {
+        lines.add('最佳行动：${decision.bestAction}');
+      }
+      if (reviewEstimateLine(decision) case final line?) lines.add(line);
+      lines.add('');
+    }
+    lines.removeLast();
+  }
+  if (result.keyLessons.isNotEmpty) {
+    lines.addAll([
+      '',
+      '【要点】',
+      for (final lesson in result.keyLessons) '· $lesson',
+    ]);
+  }
+  if (result.opponentNotes.isNotEmpty) {
+    lines.addAll([
+      '',
+      '【对手倾向】',
+      for (final note in result.opponentNotes) '· $note',
+    ]);
+  }
+  if (result.hindsight.isNotEmpty) {
+    lines.addAll(['', '【结果回顾】', result.hindsight]);
+  }
+  lines.addAll(['', '由 ${model.isEmpty ? 'AI' : model} 生成，仅供参考。']);
+  return lines.join('\n');
+}
+
+/// 「复制提示词和结果」的纯文本：系统提示词、发给模型的数据（原样，一字不改）
+/// 与复盘结果。
+String reviewPromptText(
+  ReviewPrompt prompt,
+  String resultText, {
+  bool outdated = false,
+}) => [
+  '【系统提示词】（提示词版本 ${prompt.promptVersion}）',
+  prompt.system,
+  '',
+  '【发送给 AI 的数据】',
+  prompt.user,
+  '',
+  '【复盘结果】',
+  if (outdated) '（注意：下面的结果由旧版提示词生成，上面是当前版本的提示词。）',
+  resultText,
+].join('\n');

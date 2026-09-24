@@ -668,18 +668,9 @@ func (service *Service) analyse(ctx context.Context, value Review) (*Result, Com
 	if err != nil {
 		return nil, Completion{}, "hand_not_found: " + err.Error()
 	}
-	timeline, err := replay.Build(hand, value.UserID)
-	if err != nil {
-		return nil, Completion{}, "replay_unavailable: " + err.Error()
-	}
-	recent, err := service.recentHands(value.UserID, value.HandID)
-	if err != nil {
-		return nil, Completion{}, "history_unavailable: " + err.Error()
-	}
-	facts := BuildFacts(hand, timeline, value.UserID, recent)
-	prompt, err := userPrompt(facts)
-	if err != nil {
-		return nil, Completion{}, "invalid_input: " + err.Error()
+	facts, prompt, failure := service.promptFor(hand, value.UserID)
+	if failure != "" {
+		return nil, Completion{}, failure
 	}
 	steps := make(map[int]bool, len(facts.Decisions))
 	for _, decision := range facts.Decisions {
@@ -712,6 +703,58 @@ func (service *Service) analyse(ctx context.Context, value Review) (*Result, Com
 
 // recentHands 取这一手之前的牌局：本手自己的动作和摊牌、以及之后才打的牌，都是
 // 决策当时不知道的，不能混进对手倾向。
+// promptFor 由请求者裁剪过的牌谱整理出交给模型的数据与用户消息，失败时返回带原因码
+// 的说明。分析与「复制提示词」共用它，两边一字不差：对手倾向只统计这一手之前的
+// 牌局、胜率的随机种子由手号决定，事后再算也与当时发出去的相同。
+func (service *Service) promptFor(hand history.Hand, userID string) (Facts, string, string) {
+	timeline, err := replay.Build(hand, userID)
+	if err != nil {
+		return Facts{}, "", "replay_unavailable: " + err.Error()
+	}
+	recent, err := service.recentHands(userID, hand.HandID)
+	if err != nil {
+		return Facts{}, "", "history_unavailable: " + err.Error()
+	}
+	facts := BuildFacts(hand, timeline, userID, recent)
+	prompt, err := userPrompt(facts)
+	if err != nil {
+		return Facts{}, "", "invalid_input: " + err.Error()
+	}
+	return facts, prompt, ""
+}
+
+// Prompt 是某一手按当前版本的提示词会发给模型的全部文字。
+type Prompt struct {
+	PromptVersion string `json:"promptVersion"`
+	System        string `json:"system"`
+	User          string `json:"user"`
+}
+
+// Prompt 返回本人这一手按当前版本发给模型的系统提示词与数据，玩家可以连同结果
+// 复制出去对照，或自己拿去问别的模型。与复盘本身同样的权限：要在名单里、只能是
+// 自己打过的手；内容就是按本人裁剪过、发给模型的那一份，不含任何别人看不到的东西。
+func (service *Service) Prompt(ctx context.Context, userID, handID string) (Prompt, error) {
+	if _, err := service.checkAccess(ctx, userID); err != nil {
+		return Prompt{}, err
+	}
+	hand, err := service.hands.HandForPlayer(userID, handID)
+	if errors.Is(err, history.ErrHandNotFound) {
+		return Prompt{}, Error{Code: "hand_not_found"}
+	}
+	if err != nil {
+		return Prompt{}, err
+	}
+	_, prompt, failure := service.promptFor(hand, userID)
+	switch code := FailureCode(failure); code {
+	case "":
+		return Prompt{PromptVersion: PromptVersion, System: systemPrompt, User: prompt}, nil
+	case "replay_unavailable":
+		return Prompt{}, Error{Code: code}
+	default:
+		return Prompt{}, errors.New(failure)
+	}
+}
+
 func (service *Service) recentHands(userID, handID string) ([]history.Hand, error) {
 	var result []history.Hand
 	cursor := handID

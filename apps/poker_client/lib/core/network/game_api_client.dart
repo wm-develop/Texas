@@ -550,6 +550,17 @@ class GameApiClient {
     }
   }
 
+  /// 本人某一手按当前版本发给模型的提示词与数据，用来连同结果一起复制。
+  Future<ReviewPrompt> handReviewPrompt({
+    required String accessToken,
+    required String handId,
+  }) async => ReviewPrompt.fromJson(
+    await _get(
+      'v1/hands/${Uri.encodeComponent(handId)}/review/prompt',
+      token: accessToken,
+    ),
+  );
+
   Future<ReviewOverview> adminReviewOverview(String accessToken) async =>
       ReviewOverview.fromJson(
         await _get('v1/admin/review', token: accessToken),
