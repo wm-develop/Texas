@@ -1215,6 +1215,86 @@ void main() {
       }
     });
 
+    test('只换这一手里有的牌，各种写法都认，起手牌写法不动', () {
+      const v = '\uFE0E';
+      final cards = reviewHandCards(['9c', 'Js', '6h', 'Td', 'As', 'Kd', '2c']);
+      String convert(String text) => reviewTextWithSuits(text, cards);
+      // 字母代码：T 保持 T，10 保持 10，连写、括号、紧挨汉字都换
+      expect(convert('翻牌 9c Js 6h，转牌 Td'), '翻牌 9♣$v J♠$v 6♥$v，转牌 T♦$v');
+      expect(convert('(AsKd)'), '(A♠${v}K♦$v)');
+      expect(convert('河牌10d落下'), '河牌10♦$v落下');
+      // 花色字母大写、点数与花色之间有空格
+      expect(convert('9C 和 J s'), '9♣$v 和 J♠$v');
+      // 中文花色名、英文全称
+      expect(convert('梅花9、黑桃 J、红桃6'), '9♣$v、J♠$v、6♥$v');
+      expect(convert('the 9 of clubs'), 'the 9♣$v');
+      // 模型已经写成符号：统一成文本样式，白色花色也换成实心
+      expect(convert('9♣ J♠\uFE0F ♡'), '9♣$v J♠$v ♥$v');
+      // 这一手里没有的牌不动：不能把别的字当成牌
+      expect(convert('2s、Ah、黑桃2、2 of spades'), '2s、Ah、黑桃2、2 of spades');
+      // 起手牌范围写法与普通英文不动（这手里有 As、Kd，也不能动 AKs、as）
+      for (final text in [
+        'AKs',
+        'T9s 与 A5s',
+        'KQo',
+        'JJ+',
+        'QQ/AK',
+        '3bet',
+        'SPR 3.2',
+        'iso-raise',
+        'as a bluff',
+        '梅花同花听牌',
+        '翻牌上有梅花 2 张',
+        '已经出了梅花9个',
+      ]) {
+        expect(convert(text), text);
+      }
+    });
+
+    testWidgets('复盘面板里 AI 写的牌按这一手的牌换成花色符号', (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1280, 720);
+      addTearDown(tester.view.reset);
+      const v = '\uFE0E';
+      await tester.pumpWidget(
+        MaterialApp(
+          home: HandReplayPage(
+            userId: 'me',
+            loadReplay: () async => _replay(),
+            loadReviewApi: () async => HandReviewApi(
+              request: (_) async => throw StateError('不该重新发起'),
+              load: (handId) async => HandReview.fromJson({
+                'handId': handId,
+                'status': 'done',
+                'result': {
+                  // 本人 As Kd，公共牌 2c 7d 9h 3s 4s，对手摊牌 Qh Qc
+                  'summary': '你的 AsKd 在 2c 7d 9h 上落后于对手的 Qh Qc；Ah 不在这一手里',
+                  'decisions': [
+                    {
+                      'step': 2,
+                      'verdict': '合理',
+                      'reasoning': '翻前跟注',
+                      'bestAction': '转牌 3s 上过牌',
+                    },
+                  ],
+                  'keyLessons': ['河牌 4s'],
+                },
+              }),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('replay-review')));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('你的 A♠${v}K♦$v 在 2♣$v 7♦$v 9♥$v 上落后于对手的 Q♥$v Q♣$v；Ah 不在这一手里'),
+        findsOneWidget,
+      );
+      expect(find.text('最佳行动：转牌 3♠$v 上过牌'), findsOneWidget);
+      expect(find.text('· 河牌 4♠$v'), findsOneWidget);
+    });
+
     test('失败原因码都有中文说明', () {
       for (final code in [
         'review_unavailable',

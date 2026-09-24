@@ -35,6 +35,18 @@ class HandReview {
   bool get done => status == 'done' && result != null;
   bool get failed => status == 'failed';
 
+  /// 结果与旧版结果里模型写的文字都过一遍 [convert]。
+  HandReview mapText(String Function(String) convert) => HandReview(
+    handId: handId,
+    status: status,
+    result: result?.mapText(convert),
+    failure: failure,
+    model: model,
+    attempts: attempts,
+    outdated: outdated,
+    previous: previous?.mapText(convert),
+  );
+
   factory HandReview.fromJson(Map<String, dynamic> json) => HandReview(
     handId: json['handId'] as String? ?? '',
     status: json['status'] as String? ?? '',
@@ -81,6 +93,15 @@ class ReviewResult {
         .cast<String>(),
     hindsight: json['hindsight'] as String? ?? '',
   );
+
+  /// 把模型写的每一段文字都过一遍 [convert]，数字与结论不动。
+  ReviewResult mapText(String Function(String) convert) => ReviewResult(
+    summary: convert(summary),
+    decisions: [for (final decision in decisions) decision.mapText(convert)],
+    keyLessons: keyLessons.map(convert).toList(growable: false),
+    opponentNotes: opponentNotes.map(convert).toList(growable: false),
+    hindsight: convert(hindsight),
+  );
 }
 
 class ReviewDecision {
@@ -123,6 +144,17 @@ class ReviewDecision {
     facts: json['facts'] == null
         ? null
         : ReviewDecisionFacts.fromJson(json['facts'] as Map<String, dynamic>),
+  );
+
+  ReviewDecision mapText(String Function(String) convert) => ReviewDecision(
+    step: step,
+    verdict: verdict,
+    reasoning: convert(reasoning),
+    bestAction: convert(bestAction),
+    equityVsRange: equityVsRange,
+    evTaken: evTaken,
+    evBest: evBest,
+    facts: facts,
   );
 }
 
@@ -181,7 +213,7 @@ class ReviewDecisionFacts {
 /// Android / HarmonyOS 上被系统换成彩色 emoji。
 String reviewCardLabel(String code) {
   if (code.length != 2) return code;
-  final rank = code[0] == 'T' ? '10' : code[0];
+  final rank = code[0];
   final suit = switch (code[1]) {
     's' => '♠',
     'h' => '♥',
@@ -190,6 +222,100 @@ String reviewCardLabel(String code) {
     _ => code[1],
   };
   return '$rank$suit\uFE0E';
+}
+
+const _suitOfLetter = {'s': '♠', 'h': '♥', 'd': '♦', 'c': '♣'};
+const _suitOfName = {
+  '黑桃': '♠',
+  '红桃': '♥',
+  '红心': '♥',
+  '方块': '♦',
+  '方片': '♦',
+  '梅花': '♣',
+  '草花': '♣',
+};
+const _suitOfWord = {
+  'spades': '♠',
+  'hearts': '♥',
+  'diamonds': '♦',
+  'clubs': '♣',
+};
+const _letterOfSuit = {'♠': 's', '♥': 'h', '♦': 'd', '♣': 'c'};
+
+/// 花色符号：黑白两套都认，后面可能跟着 emoji / 文本变体选择符。
+final _suitGlyph = RegExp('[♠♥♦♣♤♡♢♧][\\uFE0E\\uFE0F]?');
+const _whiteSuits = {'♤': '♠', '♡': '♥', '♢': '♦', '♧': '♣'};
+
+/// 字母写的牌，可以连写（AsKd），点数与花色之间可以有一个空格，花色字母大小写
+/// 都认；点数的字母必须大写，免得把英文单词 as 当成黑桃 A。整串前后都不能紧挨
+/// 字母或数字：AKs、T9s 里的 Ks、9s 是起手牌范围写法，不是一张牌。
+final _letterRun = RegExp(
+  r'(?<![A-Za-z0-9])(?:(?:10|[2-9TJQKA]) ?[cdhsCDHS])+(?![A-Za-z0-9])',
+);
+final _letterCard = RegExp(r'(10|[2-9TJQKA]) ?([cdhsCDHS])');
+
+/// 中文花色名在前：黑桃 A、红桃10。后面跟着量词的是在数张数（「梅花 2 张」是
+/// 两张梅花），不是一张牌。
+final _namedCard = RegExp(
+  r'(黑桃|红桃|红心|方块|方片|梅花|草花) ?(10|[2-9TJQKA])(?![A-Za-z0-9]| ?[张个条枚])',
+);
+
+/// 英文全称：9 of clubs。
+final _wordCard = RegExp(
+  r'(?<![A-Za-z0-9])(10|[2-9TJQKA]) of (spades|hearts|diamonds|clubs)(?![A-Za-z])',
+  caseSensitive: false,
+);
+
+/// 一手里本人能看到的所有牌（公共牌、发两次的牌面、底牌与摊牌亮出的牌），
+/// 也就是发给模型的那些牌。代码统一成 Ah、Td 这样。
+Set<String> reviewHandCards(Iterable<String> cards) => {
+  for (final card in cards)
+    if (card.length == 2) '${card[0].toUpperCase()}${card[1].toLowerCase()}',
+};
+
+/// 把模型写的文字里提到的牌统一写成与「牌力」一致的样子：点数加花色符号，
+/// 例如 9c、梅花9、9 of clubs 都写成 9♣︎。点数照模型写的保留（T 还是 T）。
+///
+/// 模型输出无法完全控制，所以分三种情况处理：
+/// - 已经是花色符号的（提示词要求模型这样写，多数输出就是这样）：只统一加上文本
+///   变体选择符，免得在 Android / HarmonyOS 上被换成彩色 emoji。花色符号不会是
+///   别的意思，不用看牌局。
+/// - 用字母、中文花色名或英文全称写的：只换 [handCards] 里真有的牌。一手最多
+///   十几张牌，没出现过的写法（比如这手没有黑桃 A 时的 As）一律不动，所以不会把
+///   别的字误当成牌。
+/// - 都认不出来的写法原样保留：宁可没换成符号，也不能换错。
+String reviewTextWithSuits(String text, Set<String> handCards) {
+  String? symbolFor(String rank, String suit) {
+    final code = '${rank == '10' ? 'T' : rank}${_letterOfSuit[suit]}';
+    return handCards.contains(code) ? '$rank$suit' : null;
+  }
+
+  var result = text.replaceAllMapped(
+    _letterRun,
+    (run) => run[0]!.replaceAllMapped(
+      _letterCard,
+      (card) =>
+          symbolFor(card[1]!, _suitOfLetter[card[2]!.toLowerCase()]!) ??
+          card[0]!,
+    ),
+  );
+  result = result.replaceAllMapped(
+    _namedCard,
+    (card) => symbolFor(card[2]!, _suitOfName[card[1]!]!) ?? card[0]!,
+  );
+  result = result.replaceAllMapped(
+    _wordCard,
+    (card) =>
+        symbolFor(
+          card[1]!.toUpperCase(),
+          _suitOfWord[card[2]!.toLowerCase()]!,
+        ) ??
+        card[0]!,
+  );
+  return result.replaceAllMapped(_suitGlyph, (glyph) {
+    final symbol = glyph[0]![0];
+    return '${_whiteSuits[symbol] ?? symbol}\uFE0E';
+  });
 }
 
 /// 期望收益写成带正负号的大盲数。

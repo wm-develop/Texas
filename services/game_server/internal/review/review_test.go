@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -234,6 +235,14 @@ func TestReviewIsAnalysedOnceAndCached(t *testing.T) {
 	}
 }
 
+func TestWithSuitSymbols(t *testing.T) {
+	got := withSuitSymbols(`{"board":["Th","2c","Ks"],"holeCards":["As","Td"],"position":"CO","street":"flop"}`)
+	want := `{"board":["T♥","2♣","K♠"],"holeCards":["A♠","T♦"],"position":"CO","street":"flop"}`
+	if got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
 // 交给模型的内容不含昵称、用户 ID、房间码，也不含没亮过的底牌。
 func TestPromptCarriesNoIdentityOrHiddenCards(t *testing.T) {
 	ctx := context.Background()
@@ -245,13 +254,18 @@ func TestPromptCarriesNoIdentityOrHiddenCards(t *testing.T) {
 	}
 	service.ProcessNext(ctx)
 	prompt := model.calls[0]
+	// 没亮过的底牌两种写法都不能出现
 	for _, forbidden := range []string{"张三", "李四", "王五", "usr_zhang", "usr_li", "usr_wang", "room_secret", "654321",
-		"Qc", "Qd", "8h", "8s"} {
+		"Qc", "Qd", "8h", "8s", "Q♣", "Q♦", "8♥", "8♠"} {
 		if strings.Contains(prompt, forbidden) {
 			t.Fatalf("the prompt leaks %q", forbidden)
 		}
 	}
-	for _, required := range []string{"\"As\"", "\"Kd\"", "\"SB\"", "\"BTN\"", "potOddsPercent"} {
+	// 牌一律是花色符号，一个字母代码都不剩
+	if leftover := regexp.MustCompile(`"[2-9TJQKA][cdhs]"`).FindString(prompt); leftover != "" {
+		t.Fatalf("card code %s is still in the prompt", leftover)
+	}
+	for _, required := range []string{"\"A♠\"", "\"K♦\"", "\"A♥\"", "\"SB\"", "\"BTN\"", "potOddsPercent"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("the prompt is missing %s", required)
 		}

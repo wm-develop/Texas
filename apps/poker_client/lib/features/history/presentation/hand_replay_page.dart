@@ -239,7 +239,24 @@ class _HandReplayPageState extends State<HandReplayPage>
     return future;
   }
 
-  void _setReview(HandReview? value) {
+  /// 这一手里本人能看到的所有牌，也就是发给模型的那些牌。模型文字里的牌只按
+  /// 这些来认，见 [reviewTextWithSuits]。
+  Set<String> _handCards(HandReplay replay) => reviewHandCards([
+    for (final step in replay.steps) ...[
+      ...step.board,
+      for (final board in step.runoutBoards) ...board,
+      for (final seat in step.seats) ...seat.holeCards,
+    ],
+    for (final revealed in replay.revealedHands) ...revealed.holeCards,
+  ]);
+
+  void _setReview(HandReview? loaded) {
+    // 牌写成花色符号：面板、回放左栏的摘要与复制出去的文字都用这一份
+    final replay = _replay;
+    final cards = replay == null ? null : _handCards(replay);
+    final value = cards == null
+        ? loaded
+        : loaded?.mapText((text) => reviewTextWithSuits(text, cards));
     setState(() => _review = value);
     // 有结果（包括旧版结果、新版失败时带着的旧版）就告诉牌局记录加标识
     if (value != null && (value.done || value.previous != null)) {

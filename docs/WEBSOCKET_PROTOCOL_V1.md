@@ -454,7 +454,7 @@
 | `GET /v1/review/access` | 当前账号能不能用复盘：`{"available": bool}`。服务端没配置模型、总开关关着或不在名单里都是 `false`；客户端据此决定显不显示入口，老服务端返回 404 时客户端也当作 `false` |
 | `POST /v1/hands/{handId}/review` | 为本人这一手发起复盘，请求体为 `{}`。已有结果或正在分析时直接返回那一条（不重复计次），失败过的重新排队。返回复盘对象 |
 | `GET /v1/hands/{handId}/review` | 查看本人这一手的复盘。当前版本的提示词还没分析过、但旧版分析过时返回旧版结果并带 `outdated: true`，客户端提供「用新版重新分析」（即 `POST`）；都没有时返回 404 `review_not_found` |
-| `GET /v1/hands/{handId}/review/prompt` | 本人这一手按当前版本的提示词发给模型的全部文字：`promptVersion`、`system`（系统提示词）、`user`（数据，即用户消息，原样）。客户端「复制提示词和结果」用。权限与发起复盘相同（在名单里、是自己打过的手），错误码同上；内容与分析时发出去的一字不差：对手倾向只统计这一手之前的牌局，胜率的随机种子由手号决定。结果是旧版提示词生成的时，这里给的仍是当前版本（1.0.2 起） |
+| `GET /v1/hands/{handId}/review/prompt` | 本人这一手按当前版本的提示词发给模型的全部文字：`promptVersion`、`system`（系统提示词）、`user`（数据，即用户消息，原样；提示词 v3 起其中的牌写作 `A♠`、`T♥` 这样的点数加花色符号，结果里 `facts` 的牌仍是 `Ah` 这样的代码）。客户端「复制提示词和结果」用。权限与发起复盘相同（在名单里、是自己打过的手），错误码同上；内容与分析时发出去的一字不差：对手倾向只统计这一手之前的牌局，胜率的随机种子由手号决定。结果是旧版提示词生成的时，这里给的仍是当前版本（1.0.2 起） |
 | `GET /v1/hands/recent` | 牌局记录的响应里另有 `reviewedHandIds`：本页里本人已有复盘结果（任意版本）的手号，客户端据此在牌局记录上显示「AI 已复盘」。现在用不了复盘（没配置模型、总开关关着、不在名单里）时不给，结果打不开也就不标；排队中、分析中、失败的不算；一个都没有时省略这个字段。查不到时只写服务端日志，不影响牌局记录本身 |
 | `GET /v1/admin/review` | 管理员：设置、开通名单（每人带 `dailyLimit`、`maxInFlight`，`null` 表示跟随全局）、用量（`requests24h`、`requests30d`、`tokens30d`）、`modelConfigured`、模型名、`workers`（同时分析几条），以及 `modelHealth`（最近一次余额不足或密钥失效：`failure`、`at`、`coolingDown` 是否还在 5 分钟冷却期内，恢复正常后不再出现） |
 | `POST /v1/admin/review/settings` | 管理员：`enabled`、`dailyLimitPerUser`、`monthlyTokenBudget` 必须都传，漏传返回 `invalid_review_settings`；`maxInFlightPerUser` 不传时保持原值（兼容 0.9.0 的管理页）；0 表示不限 |
