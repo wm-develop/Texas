@@ -11,10 +11,10 @@ func (table *Table) CurrentActionOptions() (ActionOptions, error) {
 }
 
 func (table *Table) SubmitAction(request ActionRequest) (ActionResult, error) {
-	if request.ActionID == "" || request.PlayerID == "" {
+	if !validActionID(request.ActionID) || request.PlayerID == "" {
 		return ActionResult{}, RuleError{Code: "invalid_action"}
 	}
-	idempotencyKey := request.PlayerID + "\x00" + request.ActionID
+	idempotencyKey := actionIdempotencyKey(request.PlayerID, request.ActionID)
 	if previous, exists := table.actionResults[idempotencyKey]; exists {
 		return previous, nil
 	}
@@ -311,4 +311,29 @@ func uintToString(value uint64) string {
 		value /= 10
 	}
 	return string(buffer[index:])
+}
+
+// 幂等键随 actionResults 进牌桌状态并写入 PostgreSQL jsonb：键里出现控制字符
+// 会被序列化成 \uXXXX 转义，其中 \u0000 是 jsonb 唯一拒收的（SQLSTATE 22P05）。
+// 此前分隔符就是 \x00，于是一手牌自第一个动作起状态落盘全部失败、只剩 Warn
+// 日志，崩溃恢复形同虚设。用户 ID 是 usr_ 加 base64url，不含「|」，同一玩家的
+// 键唯一性由 ActionID 保证，跨玩家由 PlayerID 前缀保证。
+func actionIdempotencyKey(playerID, actionID string) string {
+	return playerID + "|" + actionID
+}
+
+// ActionID 由客户端生成、服务端原样透传（见 transport 的 ActionSubmitPayload），
+// 必须在进引擎前设防：只接受可打印 ASCII（0x21–0x7E），不给控制字符进幂等键的
+// 机会。长度上限要容纳服务端自己生成的超时动作 ID（timeout_ + handID + …），
+// 官方客户端的「微秒时间戳-序号」远低于此。
+func validActionID(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		if value[index] < 0x21 || value[index] > 0x7e {
+			return false
+		}
+	}
+	return true
 }

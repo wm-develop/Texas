@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"texas/services/game_server/internal/metrics"
 	"texas/services/game_server/internal/tablestate"
 )
 
@@ -21,6 +22,9 @@ import (
 type stateWriter struct {
 	store  tablestate.Store
 	logger *slog.Logger
+	// failures 计数落盘失败：失败只剩 Warn 日志时没人看得到，牌局照打、
+	// 崩溃恢复却已悄悄失效。指标让监控能在第一时间抓住它。nil 时 Inc 是安全的空操作。
+	failures *metrics.Counter
 
 	mu      sync.Mutex
 	idle    *sync.Cond
@@ -38,13 +42,14 @@ type pendingWrite struct {
 	remove bool
 }
 
-func newStateWriter(store tablestate.Store, logger *slog.Logger) *stateWriter {
+func newStateWriter(store tablestate.Store, logger *slog.Logger, failures *metrics.Counter) *stateWriter {
 	writer := &stateWriter{
-		store:   store,
-		logger:  logger,
-		pending: make(map[string]pendingWrite),
-		wake:    make(chan struct{}, 1),
-		done:    make(chan struct{}),
+		store:    store,
+		logger:   logger,
+		failures: failures,
+		pending:  make(map[string]pendingWrite),
+		wake:     make(chan struct{}, 1),
+		done:     make(chan struct{}),
 	}
 	writer.idle = sync.NewCond(&writer.mu)
 	go writer.run()
@@ -112,6 +117,9 @@ func (writer *stateWriter) drain() {
 				err = writer.store.Save(ctx, write.record)
 			}
 			cancel()
+			if err != nil {
+				writer.failures.Inc()
+			}
 			if err != nil && writer.logger != nil {
 				// 只记录不重试：下一个动作会带来更新的状态并再写一次，
 				// 而重试一份已经过期的状态没有意义。

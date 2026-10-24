@@ -132,9 +132,14 @@ func main() {
 		logger.Error("room service initialization failed", "error", err)
 		os.Exit(1)
 	}
+	// 运行时指标在此注册一次；进程启动时间用于观测脚本识别静默重启。
+	// 牌桌管理器也要用（状态落盘失败计数器），必须先于它创建。
+	metricsRegistry := metrics.NewRegistry()
+	metricsRegistry.RegisterRuntime(time.Now())
+
 	tableManager, err := tablemanager.NewWithConfig(roomService, holdem.CryptoRandom{}, tablemanager.ManagerConfig{
 		Ledger: ledgerStore, History: historyStore, Bankroll: bankrollService,
-		TableStates: tableStates, Logger: logger,
+		TableStates: tableStates, Logger: logger, Metrics: metricsRegistry,
 		// 抽水打进管理员钱包；系统只允许一个管理员，取最早创建的在用管理员。
 		RakeRecipient: func(ctx context.Context) (string, error) {
 			admin, err := accountService.EarliestActiveAdmin(ctx)
@@ -207,10 +212,6 @@ func main() {
 		)
 		logger.Info("TRTC credential issuer enabled")
 	}
-
-	// 运行时指标在此注册一次；进程启动时间用于观测脚本识别静默重启。
-	metricsRegistry := metrics.NewRegistry()
-	metricsRegistry.RegisterRuntime(time.Now())
 
 	server := &http.Server{
 		Addr: address,

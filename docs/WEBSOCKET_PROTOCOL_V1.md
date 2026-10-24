@@ -54,7 +54,7 @@
 
 服务端按账号串行处理这些请求，并缓存最近 256 条 `(userID, requestID)` 结果。重复 `requestId` 直接返回第一次的回执，不再次执行。
 
-牌局动作（`table.action.submit`）还必须携带唯一 `actionId`、当前 `handId` 和 `tableRevision`。
+牌局动作（`table.action.submit`）还必须携带唯一 `actionId`、当前 `handId` 和 `tableRevision`。`actionId` 只接受 1–128 个可打印 ASCII 字符（0x21–0x7E）：它要进引擎的幂等键并随牌桌状态落盘，控制字符会让 PostgreSQL jsonb 拒收整行状态；不合规一律返回 `invalid_action`。
 
 `table.join` 和 `table.snapshot.request` 不走幂等缓存。
 

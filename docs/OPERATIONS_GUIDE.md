@@ -80,6 +80,7 @@ curl -s -H "Authorization: Bearer $METRICS_TOKEN" http://127.0.0.1:8080/metrics
 | `texas_table_actions_total{result}` | counter | 牌局动作提交数，`accepted` / `rejected` |
 | `texas_tables_active` | gauge | 本进程内存中的运行中牌桌数 |
 | `texas_snapshot_broadcast_failures_total` | counter | **整桌无人收到快照的次数，每一次都是一桌卡死** |
+| `texas_table_state_persist_failures_total` | counter | **牌桌状态落盘被拒次数；增长期间崩溃恢复停留在最后一次成功的状态** |
 | `texas_rate_limited_total{scope}` | counter | 被限流拒绝的请求数，按作用域 |
 | `texas_goroutines` | gauge | 进程内协程数；连接回落后不回落即为泄漏 |
 | `texas_memory_heap_bytes` | gauge | 已分配堆对象字节数 |
@@ -89,6 +90,7 @@ curl -s -H "Authorization: Bearer $METRICS_TOKEN" http://127.0.0.1:8080/metrics
 几条值得盯的信号：
 
 - `texas_snapshot_broadcast_failures_total` **任何增长**都应当排查，它对应 P0 加的全桌级错误日志。
+- `texas_table_state_persist_failures_total` **任何增长**都应当排查：落盘失败只记 Warn 日志，牌局照打，但 `table_states` 停在最后一次成功的状态，崩溃恢复会从那里继续。日志里找 `could not persist the table state`。
 - `texas_rate_limited_total{scope="auth_ip"}` 或 `{scope="login_failures_user"}` 持续增长说明有人在撞库。
 - `texas_rate_limited_total{scope="trtc"}` 增长说明有人在刷凭证。
 - `texas_http_requests_total{status="5xx"}` 出现即为服务端异常。

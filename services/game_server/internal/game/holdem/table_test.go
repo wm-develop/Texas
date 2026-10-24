@@ -497,3 +497,30 @@ func playersByID(players []Player) map[string]Player {
 	}
 	return result
 }
+
+// ActionID 是客户端原样透传的字符串，而幂等键要随牌桌状态写进 PostgreSQL
+// jsonb：含控制字符（尤其是 \x00）的 ActionID 会让整行落盘被拒（SQLSTATE
+// 22P05）。必须在进引擎时拦住，不能等落盘失败。
+func TestSubmitActionRejectsControlCharactersInActionID(t *testing.T) {
+	table := mustTable(t, Config{MaxSeats: 2, SmallBlind: 5, BigBlind: 10})
+	mustAddReady(t, table, "a", 1, 100)
+	mustAddReady(t, table, "b", 2, 100)
+	if err := table.StartHand(zeroRandom{}); err != nil {
+		t.Fatal(err)
+	}
+	player := table.players[table.CurrentSeat()]
+	for _, actionID := range []string{"poison\x00key", "with\nnewline", "with space", "", string(make([]byte, 200))} {
+		_, err := table.SubmitAction(ActionRequest{
+			ActionID:      actionID,
+			PlayerID:      player.PlayerID,
+			HandID:        table.HandID(),
+			TableRevision: table.Revision(),
+			Action:        ActionFold,
+		})
+		if err == nil {
+			t.Fatalf("action id %q must be rejected", actionID)
+		}
+	}
+	// 合法 ID 照常执行：上面的拒绝不能误伤正常动作。
+	mustAct(t, table, "perfectly-valid-action", ActionCall, 0)
+}

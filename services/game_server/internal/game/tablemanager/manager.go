@@ -15,6 +15,7 @@ import (
 	"texas/services/game_server/internal/game/holdem"
 	"texas/services/game_server/internal/history"
 	"texas/services/game_server/internal/ledger"
+	"texas/services/game_server/internal/metrics"
 	"texas/services/game_server/internal/room"
 	"texas/services/game_server/internal/tablestate"
 )
@@ -133,6 +134,9 @@ type ManagerConfig struct {
 	// 与 0.5.0 之前的行为相同。
 	TableStates tablestate.Store
 	Logger      *slog.Logger
+	// Metrics 用于登记牌桌状态落盘失败计数器（texas_table_state_persist_failures_total）。
+	// 为空时不登记：失败仍只记 Warn 日志，监控看不到。
+	Metrics *metrics.Registry
 	// RakeRecipient 返回抽水的收款账户（管理员）的用户 ID。为空或返回错误时，
 	// 即使房间开了抽水也不抽：宁可少收，也不能让筹码流向一个不存在的账户。
 	RakeRecipient func(ctx context.Context) (string, error)
@@ -290,7 +294,14 @@ func NewWithConfig(rooms *room.Service, random holdem.IntnSource, config Manager
 		rakeRecipient: config.RakeRecipient,
 	}
 	if config.TableStates != nil {
-		manager.stateWriter = newStateWriter(config.TableStates, config.Logger)
+		var persistFailures *metrics.Counter
+		if config.Metrics != nil {
+			persistFailures = config.Metrics.NewCounter(
+				"texas_table_state_persist_failures_total",
+				"Table state snapshots the store rejected; crash recovery is stale while this grows.",
+			)
+		}
+		manager.stateWriter = newStateWriter(config.TableStates, config.Logger, persistFailures)
 	}
 	return manager, nil
 }

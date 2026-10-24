@@ -3,6 +3,7 @@ package holdem
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -98,6 +99,56 @@ func TestTableStateRoundTripPreservesEverything(t *testing.T) {
 	}
 	if original[0] != same[0] {
 		t.Fatalf("restored deck deals a different card: %v vs %v", original[0], same[0])
+	}
+}
+
+// 行动后的状态要原样写进 PostgreSQL 的 jsonb：序列化结果里出现 \u0000 转义
+// 就会被整行拒收（SQLSTATE 22P05）。幂等键曾用 \x00 分隔，于是一手牌自第一个
+// 动作起状态落盘全部失败、只剩 Warn 日志，崩溃恢复实际失效。这里在纯 Go 侧
+// 盯住这条不变量，并验证恢复后的幂等重放仍命中缓存而不是再执行一次。
+func TestStateAfterActionStaysJSONBSafe(t *testing.T) {
+	table := stateTestTable(t)
+	if err := table.StartHand(CryptoRandom{}); err != nil {
+		t.Fatal(err)
+	}
+	actor := table.players[table.CurrentSeat()]
+	request := ActionRequest{
+		ActionID:      "jsonb-safety-call",
+		PlayerID:      actor.PlayerID,
+		HandID:        table.HandID(),
+		TableRevision: table.Revision(),
+		Action:        ActionCall,
+	}
+	result, err := table.SubmitAction(request)
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+
+	encoded, err := json.Marshal(table.State())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `\u0000`) {
+		t.Fatalf("state must never contain a NUL escape, jsonb rejects the whole row:\n%s", encoded)
+	}
+
+	var decoded TableState
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := RestoreTable(decoded)
+	if err != nil {
+		t.Fatalf("RestoreTable: %v", err)
+	}
+	again, err := restored.SubmitAction(request)
+	if err != nil {
+		t.Fatalf("idempotent replay after restore: %v", err)
+	}
+	if !reflect.DeepEqual(result, again) {
+		t.Fatalf("replay after restore returned a different result: first=%#v again=%#v", result, again)
+	}
+	if restored.Revision() != result.Revision {
+		t.Fatalf("idempotent replay must not advance the revision: %d -> %d", result.Revision, restored.Revision())
 	}
 }
 
