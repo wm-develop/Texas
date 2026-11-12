@@ -350,7 +350,7 @@ Compress-Archive -Path "$windowsRelease\*" -DestinationPath $windowsZip -Force
 
 ### HarmonyOS
 
-先确认 DevEco Studio 已生成本机签名配置，且 `apps\poker_client\ohos\build-profile.json5` 中引用的证书和密钥文件仍然有效。该文件包含本机签名信息并已被 Git 忽略，不得提交或复制到服务器。
+先确认 DevEco Studio 已生成本机签名配置，且 `apps\poker_client\ohos\build-profile.json5` 中引用的证书和密钥文件仍然有效。该文件包含本机签名信息并已被 Git 忽略，不得提交或复制到服务器。新克隆的仓库没有这个文件，先把同目录的 `关于build-profile.json5` 复制为 `build-profile.json5`，再在 DevEco Studio 里重新生成签名。
 
 编译已签名 HAP：
 

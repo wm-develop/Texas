@@ -143,7 +143,7 @@ jobs:
         # 本项目使用 CPF-Flutter 的 OpenHarmony 分支，标准 Flutter 无法解析
         # ohos 平台插件，必须克隆同一分支
         run: |
-          git clone -b oh-3.41.9-dev --single-branch \
+          git clone -b oh-3.44.9-dev --single-branch \
             https://gitcode.com/CPF-Flutter/flutter_flutter.git \
             "$GITHUB_WORKSPACE/flutter"
           echo "$GITHUB_WORKSPACE/flutter/bin" >> "$GITHUB_PATH"

@@ -168,7 +168,7 @@ TRTC_USER_SIG_EXPIRE_SECONDS=3600
 TRTC_DEBUG_TOKEN=
 ```
 
-- `.env`、`secrets/`、证书、Android keystore 和 HarmonyOS `build-profile.json5` 均不得提交。
+- `.env`、`secrets/`、证书、Android keystore 和 HarmonyOS `build-profile.json5` 均不得提交；克隆后先复制 `apps/poker_client/ohos/关于build-profile.json5` 为 `build-profile.json5`，再配置本机签名。
 - `ALLOWED_ORIGINS` 是逗号分隔的完整 Web Origin，不含路径、通配符、中文标点或尾随斜杠。
 - 正式客户端用 `--dart-define` 注入 HTTPS/WSS 地址；仓库文档只能使用 `example.com` 占位符。
 - `docs/PRODUCTION_UPDATE_GUIDE_local.md` 是被忽略的本地私有副本，含真实生产地址。修改公开手册的步骤或结构时，同步修改本地副本，但保留其真实值且绝不提交。

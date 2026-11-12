@@ -58,14 +58,14 @@ CLAUDE.md                Claude Code 接手与仓库工作约定（本机文件�
 
 ### 环境要求
 
-- Flutter OH：`oh-3.41.9-dev` 系列，项目验证版本为 `3.41.10-ohos-0.0.3-beta`。
+- Flutter OH：`oh-3.44.9-dev` 系列，当前使用版本为 `3.44.9+ohos-0.0.1-canary1`（Dart 3.12.2）。
 - Go：1.27 或兼容版本。
 - Android：JDK 17、Android SDK/NDK。
 - HarmonyOS：DevEco Studio、API 26 SDK，并在本机完成签名配置。
 - Windows：Visual Studio 及 Windows 桌面开发组件。
 - Web：Edge 或 Chrome。
 
-首次运行前，将 `.env.example` 复制为 `.env`，填写自己的 TRTC 配置。`.env` 和 HarmonyOS 本机签名配置已被 Git 忽略，禁止提交真实密钥。
+首次运行前，将 `.env.example` 复制为 `.env`，填写自己的 TRTC 配置。`.env` 和 HarmonyOS 本机签名配置已被 Git 忽略，禁止提交真实密钥。HarmonyOS 还要求把 `apps/poker_client/ohos/关于build-profile.json5` 复制为同目录的 `build-profile.json5`，再由 DevEco Studio 写入本机签名。
 
 > **构建失败、SDK 版本冲突，或想知道哪些依赖版本是被验证过的**，查[开发环境与工具链](docs/TOOLCHAIN_STATUS.md)。它记录了四端已验证的版本组合，以及几条必须遵守的兼容性约束——例如 `tencent_rtc_sdk` 为什么锁在 `13.4.3`、HarmonyOS 为什么必须开 `useNormalizedOHMUrl`、`permission_handler` 为什么不能升到 13.x。
 

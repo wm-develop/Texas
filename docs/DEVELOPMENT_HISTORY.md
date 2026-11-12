@@ -14,7 +14,7 @@
 - 纯娱乐筹码，不接支付、不提现、不兑换现实资产。
 - 单桌 2～10 人，横屏优先。
 - 首版即包含牌桌文字聊天和 TRTC 自由麦语音。
-- Flutter OH 使用 CPF-Flutter `oh-3.41.9-dev` 系列。
+- Flutter OH 使用 CPF-Flutter `oh-3.41.9-dev` 系列（项目后来升级到 `oh-3.44.9-dev`，见[开发环境与工具链](TOOLCHAIN_STATUS.md)）。
 
 ## 2. 阶段 0：四端技术验证
 

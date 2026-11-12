@@ -24,10 +24,10 @@ flutter test
 
 ## 平台说明
 
-- 使用 Flutter OH `oh-3.41.9-dev` 系列工具链。
+- 使用 Flutter OH `oh-3.44.9-dev` 系列工具链（当前 `3.44.9+ohos-0.0.1-canary1`，Dart 3.12.2）。
 - TRTC 原生端依赖 `tencent_rtc_sdk 13.4.3`。
 - Web 使用仓库内 `web/vendor/trtc/trtc-5.19.1.js`，不依赖运行时 CDN。
-- HarmonyOS 根目录 `build-profile.json5` 含本机签名信息，已被 Git 忽略。
+- HarmonyOS 根目录 `build-profile.json5` 含本机签名信息，已被 Git 忽略；克隆后先把同目录的 `关于build-profile.json5` 复制为 `build-profile.json5`，再在 DevEco Studio 里生成本机签名。
 - Android 与 HarmonyOS 使用原生挖孔 API，经 MethodChannel 补充 Flutter 未覆盖的安全区；不要改回固定像素边距。
 - HarmonyOS 的房间码和金额输入使用自定义横屏数字面板，避免系统输入面板数字不可达或闪退。
 - 所有平台默认横屏运行；移动端进入应用后使用全屏模式。

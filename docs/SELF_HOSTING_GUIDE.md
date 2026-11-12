@@ -37,7 +37,7 @@
 - 已解析到服务器的 Web 域名和 API 域名。
 - 如需语音，准备腾讯云 TRTC `SDKAppID` 和 `SecretKey`。
 
-客户端构建环境参见根目录 [README](../README.md#环境要求)。HarmonyOS 构建还需要本机 DevEco Studio 签名配置；Android 正式分发应使用自己的发布签名。
+客户端构建环境参见根目录 [README](../README.md#环境要求)。HarmonyOS 构建还需要本机 DevEco Studio 签名配置，克隆后先把 `apps/poker_client/ohos/关于build-profile.json5` 复制为同目录的 `build-profile.json5`；Android 正式分发应使用自己的发布签名。
 
 ## 3. 创建服务器目录
 

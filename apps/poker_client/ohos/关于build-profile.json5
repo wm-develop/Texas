@@ -1,0 +1,48 @@
+// 为了避免不同设备的不同签名配置互相干扰
+// git仓库删除并忽略了build-profile.json5
+// 所以克隆代码后第一次运行请自行复制/创建build-profile.json5
+// 复制后在 DevEco Studio 的 Project Structure → Signing Configs 生成或选择本机签名
+// 且不要添加到git
+{
+  "app": {
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "compatibleSdkVersion": "6.0.0(20)",
+        "runtimeOS": "HarmonyOS",
+        "targetSdkVersion": "26.0.0",
+        "buildOption": {
+          "strictMode": {
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "profile"
+      },
+      {
+        "name": "release"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

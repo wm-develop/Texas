@@ -56,7 +56,7 @@
 - UI 框架：Flutter。
 - 业务语言：Dart。
 - Flutter OH 仓库：<https://gitcode.com/CPF-Flutter/flutter_flutter>。
-- 指定分支：[`oh-3.41.9-dev`](https://gitcode.com/CPF-Flutter/flutter_flutter/tree/oh-3.41.9-dev)。
+- 指定分支：[`oh-3.44.9-dev`](https://gitcode.com/CPF-Flutter/flutter_flutter/tree/oh-3.44.9-dev)（2026-11-12 从 `oh-3.41.9-dev` 升级）。
 - HarmonyOS 原生扩展：ArkTS。
 - Android 原生扩展：Kotlin。
 - 状态管理：当前使用 `StatefulWidget`、`ChangeNotifier`、回调和显式 service/client 对象；Riverpod 仅是早期候选，未引入。
@@ -64,7 +64,7 @@
 - 实时牌局通信：WebSocket。
 - 普通业务接口：HTTPS。
 
-`oh-3.41.9-dev` 是可移动的开发分支。根据单人开发的评审决定，阶段 0 暂不锁定具体 commit；每次构建必须记录 `flutter --version` 和实际提交信息，出现工具链变化时先完成全平台回归验证再继续开发。
+`oh-3.44.9-dev` 是可移动的开发分支。根据单人开发的评审决定，阶段 0 暂不锁定具体 commit；每次构建必须记录 `flutter --version` 和实际提交信息，出现工具链变化时先完成全平台回归验证再继续开发。
 
 第三方依赖按以下优先级选择：
 
@@ -223,5 +223,5 @@ flowchart LR
 - [x] 游客账号是否必须绑定后才能查看长期战绩。——不做游客账号，每个玩家都需要注册账号。
 - [x] Windows 内测先提供压缩包，稳定后同时提供安装程序。
 - [x] iOS 是否完全退出首版验收范围。——是的
-- [x] Flutter OH `oh-3.41.9-dev` 的首个锁定 commit。——不需要，项目只有我一人开发
+- [x] Flutter OH `oh-3.44.9-dev` 的首个锁定 commit。——不需要，项目只有我一人开发
 
